@@ -47,6 +47,12 @@ require('"taesd" -> R.string.draw_taesd_label' in draw,
         "TAESD slot has a UI label")
 require('kind == KIND_SINGLE && family == FAM_SD15 -> listOf("model" to true, "vae" to false, "taesd" to false)' in draw,
         "TAESD is optional for single-file SD1.5 models")
+require('fun taesdEnabled(): Boolean' in draw and 'fun setTaesdEnabled(enabled: Boolean)' in draw,
+        "TAESD has an explicit persisted opt-in setting")
+require('if (!taesdEnabled()) slots.remove("taesd")' in draw,
+        "unchecked TAESD setting removes the native TAESD path")
+require('cur.dir == null -> {' in draw and 'LinkedHashMap(cur.files)' in draw,
+        "adding TAESD to a legacy model preserves its main model")
 require('p.taesd_path             = slotPtr[SLOT_TAESD];' in jni,
         "JNI forwards the selected TAESD file to sd_ctx_params_t")
 require("const char* taesd_path;" in header,
@@ -55,8 +61,14 @@ require('if (strlen(SAFE_STR(sd_ctx_params->taesd_path)) > 0)' in diffusion,
         "native model loader checks the TAESD path")
 require('use_tae = true;' in diffusion,
         "successful TAESD load activates the TAE pipeline")
+require('entry.first.rfind("tae.decoder.layers.", 0) == 0' in diffusion,
+        "native loader rejects TAESD files without compatible decoder tensors")
 require('if (options.use_tae && !options.tae_preview_only)' in builders,
         "TAE can replace the final VAE decoder, not only preview")
+require('entry.first.rfind("tae.encoder.layers.", 0) == 0' in builders,
+        "native builder detects whether encoder weights are present")
+require('TAESD encoder tensors not present; using decoder-only TAE' in builders,
+        "decoder-only TAESD skips the unavailable encoder")
 tae_branch = builders.index('} else if (options.use_tae && !options.tae_preview_only) {')
 standard_vae_branch = builders.index('LOG_INFO("using VAE for encoding / decoding")', tae_branch)
 require(tae_branch < standard_vae_branch,
@@ -75,6 +87,10 @@ require('drawPage?.setCpuThreads(threadOptions[position].toInt())' in activity,
         "thread selector writes the chosen value")
 require('nThreads = nThreads,' in draw,
         "model load passes selected thread count into SdCppEngine.create")
+require('R.string.draw_taesd_enable' in activity and 'pickTaesdWeights()' in activity,
+        "drawing settings expose visible TAESD opt-in and file selection")
+require('private fun refreshTaesdUi()' in activity,
+        "TAESD UI mirrors selected weights and enabled state")
 require('nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots)' in engine,
         "Kotlin wrapper forwards the selected thread count to JNI")
 require('p.n_threads    = (nThreads > 0) ? nThreads : sd_get_num_physical_cores();' in jni,
