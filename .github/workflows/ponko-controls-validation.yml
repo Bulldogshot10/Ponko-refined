@@ -57,14 +57,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CACHE="$(find app/.cxx/Debug -name CMakeCache.txt -print -quit)"
+          # Skip CMake's nested try_compile caches. Select the actual Android ABI build.
+          CACHE="$(find app/.cxx/Debug -path '*/CMakeFiles/CMakeScratch/*' -prune -o -path '*/arm64-v8a/CMakeCache.txt' -print -quit)"
           test -n "$CACHE"
           BUILD_DIR="$(dirname "$CACHE")"
+          test -s "$BUILD_DIR/build.ninja"
           grep -F 'CMAKE_CXX_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
           grep -F 'CMAKE_C_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
           grep -F 'diffusion_engine.cpp.o' "$BUILD_DIR/build.ninja" >/dev/null
           grep -F -- '-O3 -DNDEBUG -g' "$BUILD_DIR/build.ninja" >/dev/null
-          echo "PASS: Debug native compile uses -O3 -DNDEBUG -g, matching Release optimization/assert behavior"
+          echo "PASS: Android arm64 Debug native compile uses -O3 -DNDEBUG -g"
       - uses: actions/upload-artifact@v4
         with:
           name: ponko-debug-arm64
