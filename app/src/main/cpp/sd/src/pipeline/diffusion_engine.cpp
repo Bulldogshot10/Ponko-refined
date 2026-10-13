@@ -778,10 +778,22 @@ bool StableDiffusionGGML::init_model_loader(ModelLoader& model_loader, ModelConf
     if (strlen(SAFE_STR(sd_ctx_params->taesd_path)) > 0) {
         LOG_INFO("loading tae from '%s'", sd_ctx_params->taesd_path);
         if (!model_loader.init_from_file(sd_ctx_params->taesd_path, "tae.")) {
-            LOG_WARN("loading tae from '%s' failed", sd_ctx_params->taesd_path);
-        } else {
-            use_tae = true;
+            LOG_ERROR("loading TAESD weights from '%s' failed", sd_ctx_params->taesd_path);
+            return false;
         }
+        bool has_tae_decoder_weights = false;
+        for (const auto& entry : model_loader.get_tensor_storage_map()) {
+            if (entry.first.rfind("tae.decoder.layers.", 0) == 0) {
+                has_tae_decoder_weights = true;
+                break;
+            }
+        }
+        if (!has_tae_decoder_weights) {
+            LOG_ERROR("TAESD file '%s' has no compatible tae.decoder.layers tensors; use sd.cpp-compatible Diffusers TAESD weights (ComfyUI taesd_decoder.pth is not directly compatible)",
+                      sd_ctx_params->taesd_path);
+            return false;
+        }
+        use_tae = true;
     }
 
     if (strlen(SAFE_STR(sd_ctx_params->embeddings_connectors_path)) > 0) {
