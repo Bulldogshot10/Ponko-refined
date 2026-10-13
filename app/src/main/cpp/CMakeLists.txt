@@ -18,7 +18,14 @@ project(ponko_sd CXX C)
 # ---------------------------------------------------------------------------
 # 实测：-O3 + ARMv8.2-A(dotprod+fp16) 使 6 步 256x256 从 116s 降到 56s（约 2x）。
 # 代价：要求 2019 年之后的 arm64 设备，更老的 CPU 会 SIGILL。
-add_compile_options(-march=armv8.2-a+dotprod+fp16)
+# Android's toolchain can define CMAKE_*_FLAGS_DEBUG as normal variables, so a
+# CACHE-only override does not necessarily change the flags used by Ninja. Apply
+# Debug optimization directly to compile rules, while preserving the default -g.
+add_compile_options(
+    -march=armv8.2-a+dotprod+fp16
+    "$<$<CONFIG:Debug>:-O3>"
+    "$<$<CONFIG:Debug>:-DNDEBUG>"
+)
 
 # 强制各 Release 变体都是 -O3 且不带调试符号。
 # （AGP 给 release 变体传的可能是 RelWithDebInfo = -O2 -g，性能与体积都不理想）
@@ -27,10 +34,6 @@ foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_CXX_FLAGS_${_cfg} "-O3 -DNDEBUG" CACHE STRING "" FORCE)
 endforeach()
 
-# The CI artifact is a Debug APK, but native inference must use the same optimization
-# and assertion settings as the upstream Release APK. Keep symbols for diagnosis.
-set(CMAKE_C_FLAGS_DEBUG   "-O3 -DNDEBUG -g" CACHE STRING "" FORCE)
-set(CMAKE_CXX_FLAGS_DEBUG "-O3 -DNDEBUG -g" CACHE STRING "" FORCE)
 
 # 限制并行度：源码含若干超大翻译单元，8GB 内存的机器上 -j4 会 OOM（LLVM ERROR: out of memory）
 set_property(GLOBAL PROPERTY JOB_POOLS ponko_compile=2)

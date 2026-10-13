@@ -62,17 +62,39 @@ jobs:
           test -n "$CACHE"
           BUILD_DIR="$(dirname "$CACHE")"
           test -s "$BUILD_DIR/build.ninja"
-          grep -F 'CMAKE_CXX_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
-          grep -F 'CMAKE_C_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
+          # Check the actual compiler flags emitted into Ninja rules, not cache values.
+          python3 - "$BUILD_DIR/build.ninja" <<'PY'
+          from pathlib import Path
+          import sys
 
-          # Verify generated Android Ninja rules without assuming object/source names.
-          if ! grep -F -- '-O3 -DNDEBUG -g' "$BUILD_DIR/build.ninja" >/dev/null; then
-            echo "FAIL: generated Android Ninja rules do not contain -O3 -DNDEBUG -g" >&2
-            grep -m 10 -nE 'FLAGS =' "$BUILD_DIR/build.ninja" >&2 || true
-            exit 1
-          fi
-          grep -m 3 -nF -- '-O3 -DNDEBUG -g' "$BUILD_DIR/build.ninja"
-          echo "PASS: Android arm64 Debug native compile uses -O3 -DNDEBUG -g"
+          ninja = Path(sys.argv[1]).read_text(encoding="utf-8")
+          arm_flag = "-march=armv8.2-a+dotprod+fp16"
+          compile_rules = [
+              (number, line.strip())
+              for number, line in enumerate(ninja.splitlines(), 1)
+              if line.lstrip().startswith("FLAGS =") and arm_flag in line
+          ]
+          if not compile_rules:
+              print("FAIL: no Android arm64 compile FLAGS rules found", file=sys.stderr)
+              raise SystemExit(1)
+
+          required = {"-g", "-O3", "-DNDEBUG", arm_flag}
+          missing = [
+              (number, line, sorted(required - set(line.split())))
+              for number, line in compile_rules
+              if required - set(line.split())
+          ]
+          if missing:
+              print("FAIL: Android arm64 compile rules are missing required optimization flags:", file=sys.stderr)
+              for number, line, absent in missing[:10]:
+                  print(f"  line {number}: missing {', '.join(absent)}; {line}", file=sys.stderr)
+              raise SystemExit(1)
+
+          print(f"Verified {len(compile_rules)} Android arm64 compile rule(s):")
+          for number, line in compile_rules[:3]:
+              print(f"  line {number}: {line}")
+          print("PASS: generated Android arm64 compile rules use -O3 -DNDEBUG and retain -g")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: ponko-debug-arm64
