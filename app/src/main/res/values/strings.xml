@@ -463,4 +463,15 @@
 <string name="s_426">Drawing model: %1$s</string>
 <string name="s_427">No drawing model loaded yet</string>
 <string name="s_428">The drawing API is generating an image, please wait</string>
+    <string name="s_468">Inference tuning</string>
+    <string name="s_469">CPU threads</string>
+    <string name="s_470">Settings apply after reloading the draw model. TAESD replaces the VAE encoder and decoder, so use a full checkpoint with both sets of weights. Image fidelity may trade off against speed; more threads are not always faster.</string>
+    <string name="s_471">Use TAESD VAE (experimental)</string>
+    <string name="s_472">Select TAESD weights</string>
+    <string name="s_473">No TAESD weights selected</string>
+    <string name="s_474">Importing TAESD weights…</string>
+    <string name="s_475">Unsupported TAESD file. Choose .safetensors, .gguf, .ckpt or .pt.</string>
+    <string name="s_476">TAESD weights imported: %1$s</string>
+    <string name="s_478">Unload and reload the draw model to apply the changed engine settings.</string>
+    <string name="s_479">TAESD weights imported and enabled.</string>
 </resources>

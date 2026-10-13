@@ -86,6 +86,7 @@ object SdCppEngine {
     external fun nativeCreate(
         modelPath: String,
         vaePath: String?,
+        taesdPath: String?,
         nThreads: Int,
         wtype: Int,
         flashAttn: Boolean,
@@ -146,16 +147,18 @@ object SdCppEngine {
      *
      *  flashAttn：CLIP 与 UNet 的 FlashAttention。实测不开会让每步慢约 28%，默认开。
      *  backend：ggml 后端/设备名（"CPU" / "Vulkan0"）；null = 交给 sd.cpp 自动挑。
+     *  taesdPath：可选 TAESD checkpoint；启用时由 sd.cpp 用它替代常规 VAE。
      */
     fun create(
         modelPath: String,
         vaePath: String?,
+        taesdPath: String? = null,
         nThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
         wtype: Int = WTYPE_KEEP,
         flashAttn: Boolean = true,
         backend: String? = null,
         slots: Array<String?>? = null,
-    ): Long = nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots)
+    ): Long = nativeCreate(modelPath, vaePath, taesdPath, nThreads, wtype, flashAttn, backend, slots)
 
     /**
      * 槽位顺序（与 JNI 里的 SlotIndex 一一对应；sd.cpp 的 sd_ctx_params_t 路径字段）。

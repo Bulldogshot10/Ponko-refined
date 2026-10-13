@@ -132,7 +132,7 @@ enum SlotIndex {
     SLOT_COUNT
 };
 
-// nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots) -> handle
+// nativeCreate(modelPath, vaePath, taesdPath, nThreads, wtype, flashAttn, backend, slots) -> handle
 //
 // backend：ggml 后端/设备名（如 "CPU" / "Vulkan0" / "vulkan"），空串或 null = 交给 sd.cpp 自动挑。
 // 显式传值会关掉 sd.cpp 的 auto_fit，行为更可控（选 CPU 就真是 CPU）。
@@ -142,11 +142,12 @@ enum SlotIndex {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
         JNIEnv* env, jobject /*thiz*/,
-        jstring modelPath, jstring vaePath, jint nThreads, jint wtype, jboolean flashAttn,
-        jstring backend, jobjectArray slots) {
-    std::string model, vae, backendStr;
+        jstring modelPath, jstring vaePath, jstring taesdPath,
+        jint nThreads, jint wtype, jboolean flashAttn, jstring backend, jobjectArray slots) {
+    std::string model, vae, taesd, backendStr;
     jstr(env, modelPath, model);
     jstr(env, vaePath, vae);
+    jstr(env, taesdPath, taesd);
     jstr(env, backend, backendStr);
     if (modelPath == nullptr && slots == nullptr) return 0;
 
@@ -188,6 +189,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
     p.llm_path              = slotPtr[SLOT_LLM];
     p.llm_vision_path       = slotPtr[SLOT_LLM_VISION];
     p.vae_path              = vaePathC;
+    p.taesd_path            = taesd.empty() ? nullptr : taesd.c_str();
     p.audio_vae_path        = slotPtr[SLOT_AUDIO_VAE];
     p.n_threads    = (nThreads > 0) ? nThreads : sd_get_num_physical_cores();
     // wtype < 0 表示「保持模型原样」——此时【不能】覆盖，保留 sd_ctx_params_init 给的
