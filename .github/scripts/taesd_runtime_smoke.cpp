@@ -95,6 +95,8 @@ int main(int argc, char** argv) {
         runtime_logs.find("loading tae from") != std::string::npos;
     const bool selected_tae_decoder =
         runtime_logs.find("using TAE for encoding / decoding") != std::string::npos;
+    const bool selected_standard_vae =
+        runtime_logs.find("using VAE for encoding / decoding") != std::string::npos;
 
     if (images != nullptr) {
         free_sd_images(images, image_count);
@@ -106,15 +108,16 @@ int main(int argc, char** argv) {
                   << runtime_logs << '\n';
         return 6;
     }
-    if (!loaded_taesd || !selected_tae_decoder) {
-        std::cerr << "FAIL: generation succeeded but logs do not prove final TAESD decoder selection\n"
+    if (!loaded_taesd || !selected_tae_decoder || selected_standard_vae) {
+        std::cerr << "FAIL: TAESD did not exclusively override the standard VAE decoder\n"
                   << "loaded_taesd=" << loaded_taesd
-                  << ", selected_tae_decoder=" << selected_tae_decoder << '\n'
+                  << ", selected_tae_decoder=" << selected_tae_decoder
+                  << ", selected_standard_vae=" << selected_standard_vae << '\n'
                   << runtime_logs << '\n';
         return 7;
     }
 
     std::cout << "PASS: native context accepted n_threads=2 and the TAESD path.\n"
-              << "PASS: SD1.5 generated a valid 64x64 image using the final TAE decoder.\n";
+              << "PASS: a model with baked-in VAE generated a valid image using only the final TAE decoder.\n";
     return 0;
 }

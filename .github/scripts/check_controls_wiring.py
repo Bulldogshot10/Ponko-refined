@@ -30,18 +30,18 @@ builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
 # The slot order is an ABI contract between Kotlin and C++.
 keys_match = re.search(r"val SLOT_KEYS = arrayOf\((.*?)\)", engine, re.S)
 require(keys_match is not None, "Kotlin SLOT_KEYS declaration exists")
-kotlin_keys = re.findall(r'"([a-z_]+)"', keys_match.group(1))
+kotlin_keys = re.findall(r'"([a-z0-9_]+)"', keys_match.group(1))
 
 enum_match = re.search(r"enum SlotIndex\s*\{(.*?)\};", jni, re.S)
 require(enum_match is not None, "JNI SlotIndex declaration exists")
 native_slots = []
-for name in re.findall(r"\b(SLOT_[A-Z_]+)\b", enum_match.group(1)):
+for name in re.findall(r"\b(SLOT_[A-Z0-9_]+)\b", enum_match.group(1)):
     if name == "SLOT_COUNT":
         continue
     native_slots.append(name.removeprefix("SLOT_").lower())
 
-require(kotlin_keys == native_slots,
-        f"Kotlin/native slot order matches ({len(kotlin_keys)} entries)")
+require(kotlin_keys == native_slots and len(kotlin_keys) == 13,
+        f"Kotlin/native slot order matches all {len(kotlin_keys)} entries")
 
 require('"taesd" -> R.string.draw_taesd_label' in draw,
         "TAESD slot has a UI label")
@@ -57,6 +57,10 @@ require('use_tae = true;' in diffusion,
         "successful TAESD load activates the TAE pipeline")
 require('if (options.use_tae && !options.tae_preview_only)' in builders,
         "TAE can replace the final VAE decoder, not only preview")
+tae_branch = builders.index('} else if (options.use_tae && !options.tae_preview_only) {')
+standard_vae_branch = builders.index('LOG_INFO("using VAE for encoding / decoding")', tae_branch)
+require(tae_branch < standard_vae_branch,
+        "TAE opt-in branch is exclusive and selected before the standard VAE branch")
 
 # CPU selection is persisted, bounded, and carried all the way to sd.cpp.
 require('private const val KEY_CPU_THREADS = "drawCpuThreads"' in draw,
