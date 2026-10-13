@@ -109,6 +109,7 @@ class MainActivity : Activity() {
         private const val REQ_PICK_MMPROJ = 1008
         private const val REQ_PERM_STORAGE = 1009
         private const val REQ_PICK_FILE = 1010
+        private const val REQ_PICK_TAESD = 1011
         /** Android 13+ 常驻通知权限（对话 API 用） */
         private const val REQ_NOTIF = 1020
 
@@ -741,6 +742,9 @@ class MainActivity : Activity() {
     private var drawImportBtn: TextView? = null
     /** 绘图模型导入进度条（本地复制时显示） */
     private var drawProgress: ProgressBar? = null
+    private var drawCpuThreadsSpinner: Spinner? = null
+    private var drawTaesdCheck: CheckBox? = null
+    private var drawTaesdStatus: TextView? = null
     /** 打标（Tagger）状态文本（模型页） */
     private var taggerStatusTv: TextView? = null
     /** 打标模型 / 标签表导入按钮 */
@@ -1365,6 +1369,82 @@ class MainActivity : Activity() {
             },
             matchWrap().apply { topMargin = dp(10) }
         )
+
+        // ---- Native inference tuning: CPU threads + optional TAESD ----
+        drawCard.addView(divider(), matchWrap().apply { topMargin = dp(14) })
+        drawCard.addView(subTitle(getString(R.string.s_468)), matchWrap().apply { topMargin = dp(12) })
+        drawCard.addView(
+            hintText(getString(R.string.s_470)),
+            matchWrap().apply { topMargin = dp(4) }
+        )
+
+        val threadRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        threadRow.addView(TextView(this).apply {
+            text = getString(R.string.s_469)
+            textSize = 13f
+            setTextColor(C_TEXT)
+        }, wrapWrap())
+        val threadSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                (1..8).map { it.toString() }
+            )
+            setSelection((drawPage?.cpuThreads() ?: 4) - 1)
+        }
+        drawCpuThreadsSpinner = threadSpinner
+        threadRow.addView(threadSpinner, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { leftMargin = dp(8) })
+        threadSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val dpg = drawPage ?: return
+                val count = position + 1
+                if (dpg.cpuThreads() != count) {
+                    dpg.setCpuThreads(count)
+                    if (dpg.isReady()) toast(getString(R.string.s_478))
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        drawCard.addView(threadRow, matchWrap().apply { topMargin = dp(8) })
+
+        val taesdStatus = TextView(this).apply {
+            text = drawPage?.taesdStatus() ?: getString(R.string.s_473)
+            textSize = 12f
+            setTextColor(C_SUBTEXT)
+            setPadding(0, dp(6), 0, 0)
+        }
+        drawTaesdStatus = taesdStatus
+        drawCard.addView(taesdStatus, matchWrap().apply { topMargin = dp(4) })
+
+        val taesdRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val taesdCheck = CheckBox(this).apply {
+            text = getString(R.string.s_471)
+            buttonTintList = ColorStateList.valueOf(C_PRIMARY)
+            isChecked = drawPage?.isTaesdEnabled() == true
+            isEnabled = drawPage?.hasTaesdWeights() == true
+            setOnCheckedChangeListener { _, checked ->
+                val dpg = drawPage ?: return@setOnCheckedChangeListener
+                dpg.setTaesdEnabled(checked)
+                if (dpg.isReady()) toast(getString(R.string.s_478))
+            }
+        }
+        drawTaesdCheck = taesdCheck
+        taesdRow.addView(taesdCheck, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+        ))
+        taesdRow.addView(
+            smallButton(getString(R.string.s_472)) { pickTaesdFile() },
+            wrapWrap().apply { leftMargin = dp(6) }
+        )
+        drawCard.addView(taesdRow, matchWrap().apply { topMargin = dp(4) })
 
         // ---- 子区块：LoRA 加速（隶属「绘图模型」） ----
         drawCard.addView(divider(), matchWrap().apply { topMargin = dp(14) })
@@ -3162,6 +3242,15 @@ class MainActivity : Activity() {
         startActivityForResult(i, REQ_PICK_DRAW_MODEL)
     }
 
+    /** Select a standalone TAESD checkpoint for the native drawing engine. */
+    private fun pickTaesdFile() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(i, REQ_PICK_TAESD)
+    }
+
     /** 本地 LoRA：选一个 .safetensors 文件 */
     private fun pickLoraFile() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -3289,6 +3378,35 @@ class MainActivity : Activity() {
                     toast(err)
                 }
                 refreshDrawModels()
+            }
+        }
+        if (requestCode == REQ_PICK_TAESD && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            val dpg = drawPage ?: return
+            setBusy(true)
+            setDrawBusy(true)
+            showDrawProgress(true)
+            setStatus(getString(R.string.s_131), C_WARN)
+            scope.launch {
+                val err = dpg.importTaesdFile(
+                    uri,
+                    onStage = { stage -> drawModelStatus?.text = stage },
+                    onProgress = { done, total -> updateDrawProgress(done, total) }
+                )
+                setBusy(false)
+                setDrawBusy(false)
+                showDrawProgress(false)
+                if (err == null) {
+                    drawTaesdStatus?.text = dpg.taesdStatus()
+                    drawTaesdCheck?.isEnabled = dpg.hasTaesdWeights()
+                    drawTaesdCheck?.isChecked = dpg.isTaesdEnabled()
+                    if (dpg.isReady()) toast(getString(R.string.s_478))
+                    else toast(getString(R.string.s_479))
+                    refreshDrawModels()
+                } else {
+                    drawModelStatus?.text = err
+                    toast(err)
+                }
             }
         }
         if (requestCode == REQ_PICK_LORA && resultCode == RESULT_OK) {
