@@ -106,7 +106,7 @@ jobs:
             -o build/runtime-models/taesd.safetensors
           test "$(stat -c %s build/runtime-models/sd15-q4_0.gguf)" -gt 1400000000
           echo "db169d69145ec4ff064e49d99c95fa05d3eb04ee453de35824a6d0f325513549  build/runtime-models/taesd.safetensors" | sha256sum --check
-          if ! strings -a build/runtime-models/sd15-q4_0.gguf | grep -Fq "first_stage_model.decoder.conv_in.weight"; then
+          if ! strings -a build/runtime-models/sd15-q4_0.gguf | grep -F "first_stage_model.decoder.conv_in.weight" > /dev/null; then
             echo "FAIL: test SD1.5 GGUF does not contain the baked-in VAE decoder tensor" >&2
             exit 1
           fi
