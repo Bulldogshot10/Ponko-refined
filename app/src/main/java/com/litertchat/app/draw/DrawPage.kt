@@ -83,6 +83,16 @@ class DrawPage(
         prefs().edit().putInt(KEY_CPU_THREADS, nThreads).apply()
     }
 
+    fun taesdEnabled(): Boolean = prefs().getBoolean(KEY_TAESD_ENABLED, false)
+
+    fun setTaesdEnabled(enabled: Boolean) {
+        prefs().edit().putBoolean(KEY_TAESD_ENABLED, enabled).apply()
+    }
+
+    fun taesdFileName(): String? = activeSetOrSelected()?.files?.get("taesd")?.name
+
+    fun hasTaesdFile(): Boolean = activeSetOrSelected()?.files?.get("taesd")?.isFile == true
+
     companion object {
         const val DIR_NAME = "draw"
         /** 打标模型/标签表目录：filesDir/tagger */
@@ -100,6 +110,7 @@ class DrawPage(
         /** 模型集偏好键（当前选中的模型集 id） */
         private const val KEY_SEL_SET = "selSet"
         private const val KEY_CPU_THREADS = "drawCpuThreads"
+        private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -1549,7 +1560,10 @@ class DrawPage(
             o.put("kind", s.kind)
             o.put("family", s.family)
             val a = org.json.JSONObject()
-            s.files.forEach { (k, f) -> a.put(k, f.name) }
+            s.files.forEach { (k, f) ->
+                val insideSet = f.parentFile?.absoluteFile == d.absoluteFile
+                a.put(k, if (insideSet) f.name else f.absolutePath)
+            }
             o.put("slots", a)
             File(d, "ponko-set.json").writeText(o.toString())
         }
@@ -1563,7 +1577,8 @@ class DrawPage(
             while (keys.hasNext()) {
                 val k = keys.next()
                 val fn = a.optString(k, "")
-                val f = File(dir, fn)
+                val stored = File(fn)
+                val f = if (stored.isAbsolute) stored else File(dir, fn)
                 if (fn.isNotEmpty() && f.isFile) files[k] = f
             }
         }
@@ -1628,6 +1643,7 @@ class DrawPage(
     fun clearSlot(key: String) {
         val s = activeSetOrSelected() ?: return
         s.files.remove(key)
+        if (key == "taesd") setTaesdEnabled(false)
         writeSetJson(s)
     }
 
@@ -1661,14 +1677,26 @@ class DrawPage(
             }
             val key = slotKey ?: if (pendingKind == KIND_SINGLE) "model" else "diffusion"
             val cur = activeSet
-            val useSet: ModelSet = if (cur == null || cur.dir == null || pendingNewSet) {
-                val id = newSetId(name.substringBeforeLast('.'))
-                val dir = File(setsDir(), id).apply { mkdirs() }
-                ModelSet(id, id, pendingKind, pendingFamily, dir).also {
-                    activeSet = it
-                    pendingNewSet = false
+            val useSet: ModelSet = when {
+                pendingNewSet || cur == null -> {
+                    val id = newSetId(name.substringBeforeLast('.'))
+                    val dir = File(setsDir(), id).apply { mkdirs() }
+                    ModelSet(id, id, pendingKind, pendingFamily, dir).also {
+                        activeSet = it
+                        pendingNewSet = false
+                    }
                 }
-            } else cur
+                cur.dir == null -> {
+                    // Upgrade a legacy loose-file model to a model set without copying multi-GB
+                    // weights. Persist external paths so adding TAESD never replaces the main model.
+                    val id = newSetId(cur.name)
+                    val dir = File(setsDir(), id).apply { mkdirs() }
+                    ModelSet(id, cur.name, cur.kind, cur.family, dir, LinkedHashMap(cur.files)).also {
+                        activeSet = it
+                    }
+                }
+                else -> cur
+            }
             val dir: File = useSet.dir ?: return@withContext c.getString(R.string.s_106)
 
             withContext(Dispatchers.Main) { onStage(c.getString(R.string.v_033, name)) }
@@ -1701,6 +1729,7 @@ class DrawPage(
             useSet.files[key] = dest
             writeSetJson(useSet)
             selectSet(useSet)
+            if (key == "taesd") setTaesdEnabled(true)
             withContext(Dispatchers.Main) {
                 statusText.text = c.getString(R.string.s_161)
             }
@@ -1799,6 +1828,7 @@ class DrawPage(
         // 槽位表 → sd.cpp 的路径参数
         val slots = LinkedHashMap<String, String>()
         set.files.forEach { (k, f) -> slots[k] = f.absolutePath }
+        if (!taesdEnabled()) slots.remove("taesd")
         val missing = slotMissingIds(set).map { c.getString(slotLabelRes(it)) }
         if (missing.isNotEmpty()) {
             val msg = c.getString(R.string.s_363, missing.joinToString("、"))
