@@ -1614,7 +1614,6 @@ class DrawPage(
         return ok
     }
 
-    /** 只把槽位从集里摘掉，不删文件（同一个文件可能被多个槽位共用） */
     /** CPU thread count is applied when the drawing context is next loaded. */
     fun cpuThreads(): Int = nThreads
 
@@ -1645,6 +1644,7 @@ class DrawPage(
     private fun activeTaesdPath(): String? =
         if (isTaesdEnabled()) selectedTaesdFile()?.absolutePath else null
 
+    /** 只把槽位从集里摘掉，不删文件（同一个文件可能被多个槽位共用） */
     fun clearSlot(key: String) {
         val s = activeSetOrSelected() ?: return
         s.files.remove(key)
