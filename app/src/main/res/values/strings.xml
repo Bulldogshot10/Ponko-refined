@@ -465,7 +465,12 @@
 <string name="s_428">The drawing API is generating an image, please wait</string>
 
     <string name="draw_taesd_label">TAESD weights</string>
-    <string name="draw_taesd_hint">Choose compatible TAESD .safetensors or .gguf weights. When loaded, TAESD replaces the standard VAE for faster decoding; output may differ. Clear this slot to disable it.</string>
+    <string name="draw_taesd_enable">Use TAESD decoder</string>
+    <string name="draw_taesd_choose">Choose TAESD</string>
+    <string name="draw_taesd_missing">No TAESD weights selected</string>
+    <string name="draw_taesd_need_model">Import or select a drawing model before adding TAESD weights.</string>
+    <string name="draw_taesd_reload_hint">TAESD changes apply after unloading and reloading the drawing model.</string>
+    <string name="draw_taesd_hint">Choose compatible sd.cpp TAESD .safetensors or .gguf weights. The official madebyollin/taesd diffusion_pytorch_model.safetensors works; decoder-only files with decoder.layers.* keys also work. ComfyUI taesd_decoder.pth is not directly compatible. TAESD replaces the standard VAE decoder, and output may differ.</string>
     <string name="draw_cpu_threads">CPU threads</string>
     <string name="draw_cpu_threads_hint">Applies the next time you load the drawing model.</string>
 </resources>
