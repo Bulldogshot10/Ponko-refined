@@ -147,6 +147,7 @@ object SdCppEngine {
      *
      *  flashAttn：CLIP 与 UNet 的 FlashAttention。实测不开会让每步慢约 28%，默认开。
      *  backend：ggml 后端/设备名（"CPU" / "Vulkan0"）；null = 交给 sd.cpp 自动挑。
+     *  taesdPath：可选 TAESD checkpoint；启用时由 sd.cpp 用它替代常规 VAE。
      */
     fun create(
         modelPath: String,
