@@ -465,7 +465,12 @@
     <string name="s_428">绘图 API 正在出图，请稍候</string>
 
     <string name="draw_taesd_label">TAESD 权重</string>
-    <string name="draw_taesd_hint">选择兼容的 TAESD .safetensors 或 .gguf 权重。加载后会用 TAESD 替代标准 VAE，以加快解码速度；输出可能有所不同。清空此槽位即可关闭。</string>
+    <string name="draw_taesd_enable">启用 TAESD 解码器</string>
+    <string name="draw_taesd_choose">选择 TAESD</string>
+    <string name="draw_taesd_missing">尚未选择 TAESD 权重</string>
+    <string name="draw_taesd_need_model">请先导入或选择绘图模型，再添加 TAESD 权重。</string>
+    <string name="draw_taesd_reload_hint">卸载并重新加载绘图模型后，TAESD 设置才会生效。</string>
+    <string name="draw_taesd_hint">请选择兼容 sd.cpp 的 TAESD .safetensors 或 .gguf 权重。madebyollin/taesd 的 diffusion_pytorch_model.safetensors 可用；键名为 decoder.layers.* 的 decoder-only 文件也可用。ComfyUI 的 taesd_decoder.pth 不能直接使用。TAESD 会替代标准 VAE 解码器，输出可能有所不同。</string>
     <string name="draw_cpu_threads">CPU 线程数</string>
     <string name="draw_cpu_threads_hint">下次加载绘图模型时生效。</string>
 </resources>
