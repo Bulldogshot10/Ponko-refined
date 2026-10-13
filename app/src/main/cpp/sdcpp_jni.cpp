@@ -132,7 +132,7 @@ enum SlotIndex {
     SLOT_COUNT
 };
 
-// nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots) -> handle
+// nativeCreate(modelPath, vaePath, taesdPath, nThreads, wtype, flashAttn, backend, slots) -> handle
 //
 // backend：ggml 后端/设备名（如 "CPU" / "Vulkan0" / "vulkan"），空串或 null = 交给 sd.cpp 自动挑。
 // 显式传值会关掉 sd.cpp 的 auto_fit，行为更可控（选 CPU 就真是 CPU）。
