@@ -53,6 +53,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Assemble debug APK
         run: bash ./gradlew --no-daemon --max-workers=2 assembleDebug
+      - name: Verify native Debug optimization flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE="$(find app/.cxx/Debug -name CMakeCache.txt -print -quit)"
+          test -n "$CACHE"
+          BUILD_DIR="$(dirname "$CACHE")"
+          grep -F 'CMAKE_CXX_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
+          grep -F 'CMAKE_C_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
+          grep -F 'diffusion_engine.cpp.o' "$BUILD_DIR/build.ninja" >/dev/null
+          grep -F -- '-O3 -DNDEBUG -g' "$BUILD_DIR/build.ninja" >/dev/null
+          echo "PASS: Debug native compile uses -O3 -DNDEBUG -g, matching Release optimization/assert behavior"
       - uses: actions/upload-artifact@v4
         with:
           name: ponko-debug-arm64
