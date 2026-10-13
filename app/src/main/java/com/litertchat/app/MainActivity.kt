@@ -756,6 +756,8 @@ class MainActivity : Activity() {
     /** 正在等文件选择结果的槽位（null = 主模型文件） */
     private var pendingSlotKey: String? = null
     private var drawSlotsContainer: LinearLayout? = null
+    private var drawTaesdCheck: android.widget.CheckBox? = null
+    private var drawTaesdFileTv: TextView? = null
     /** 槽位面板的折叠标题行 */
     private var drawSlotsHeader: TextView? = null
     /** 槽位面板是否展开（默认收起，省地方） */
@@ -1315,6 +1317,36 @@ class MainActivity : Activity() {
             hintText(getString(R.string.draw_cpu_threads_hint)),
             matchWrap().apply { topMargin = dp(3) }
         )
+
+        val taesdRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val taesdCheck = android.widget.CheckBox(this).apply {
+            text = getString(R.string.draw_taesd_enable)
+            textSize = 13f
+            setTextColor(C_TEXT)
+        }
+        drawTaesdCheck = taesdCheck
+        taesdRow.addView(
+            taesdCheck,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        taesdRow.addView(
+            smallButton(getString(R.string.draw_taesd_choose)) { pickTaesdWeights() },
+            wrapWrap().apply { leftMargin = dp(8) }
+        )
+        drawCard.addView(taesdRow, matchWrap().apply { topMargin = dp(10) })
+        drawTaesdFileTv = TextView(this).apply {
+            textSize = 11.5f
+            setTextColor(C_SUBTEXT)
+        }
+        drawCard.addView(drawTaesdFileTv, matchWrap().apply { topMargin = dp(2) })
+        drawCard.addView(
+            hintText(getString(R.string.draw_taesd_hint)),
+            matchWrap().apply { topMargin = dp(3) }
+        )
+
         // 上次崩溃信息（自捕获，供排查）
         if (pendingDrawCrash) {
             drawCard.addView(TextView(this).apply {
@@ -3125,12 +3157,42 @@ class MainActivity : Activity() {
         pickDrawModelFile()
     }
 
+    private fun pickTaesdWeights() {
+        val dpg = drawPage
+        if (dpg?.activeSetOrSelected() == null) {
+            toast(getString(R.string.draw_taesd_need_model))
+            return
+        }
+        dpg.pendingNewSet = false
+        pendingSlotKey = "taesd"
+        pickDrawModelFile()
+    }
+
+    private fun refreshTaesdUi() {
+        val dpg = drawPage ?: return
+        val fileName = dpg.taesdFileName()
+        drawTaesdFileTv?.text = fileName ?: getString(R.string.draw_taesd_missing)
+        val check = drawTaesdCheck ?: return
+        check.setOnCheckedChangeListener(null)
+        check.isEnabled = fileName != null
+        check.isChecked = fileName != null && dpg.taesdEnabled()
+        check.setOnCheckedChangeListener { _, enabled ->
+            if (!dpg.hasTaesdFile()) {
+                refreshTaesdUi()
+                return@setOnCheckedChangeListener
+            }
+            dpg.setTaesdEnabled(enabled)
+            toast(getString(R.string.draw_taesd_reload_hint))
+        }
+    }
+
     /** 当前模型集的槽位列表（多文件模型在这里逐个补文件） */
     private fun refreshDrawSlots() {
         val box = drawSlotsContainer ?: return
         val hdr = drawSlotsHeader ?: return
         box.removeAllViews()
         val dpg = drawPage ?: return
+        refreshTaesdUi()
         val set = dpg.activeSetOrSelected()
         if (set == null) {
             hdr.visibility = View.GONE
@@ -3177,12 +3239,6 @@ class MainActivity : Activity() {
                 })
             }
             box.addView(row, matchWrap().apply { topMargin = dp(6) })
-            if (key == "taesd") {
-                box.addView(
-                    hintText(getString(R.string.draw_taesd_hint)),
-                    matchWrap().apply { topMargin = dp(3) }
-                )
-            }
         }
     }
 
@@ -3697,6 +3753,7 @@ class MainActivity : Activity() {
 
     /** 列出已有的绘图模型集（点击选用 · 长按删除）。单文件与多文件都在这。 */
     private fun refreshDrawModels() {
+        refreshTaesdUi()
         refreshDrawToggle()
         val box = drawSavedContainer ?: return
         box.removeAllViews()
