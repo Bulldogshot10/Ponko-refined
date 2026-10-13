@@ -107,4 +107,22 @@ require('p.n_threads    = (nThreads > 0) ? nThreads : sd_get_num_physical_cores(
 require('int n_threads;' in header,
         "native context has an explicit thread-count parameter")
 
-print("All TAESD and CPU-thread wiring checks passed.")
+# Four LoRA slots: UI selection and per-slot weight flow through Kotlin, JNI, and sd.cpp.
+require('private const val MAX_LORA_SLOTS = 4' in draw,
+        "UI defines four LoRA slots")
+require('private fun selectedLoras(page: String): List<SdCppEngine.Lora>' in draw,
+        "generation resolves selected LoRA files and per-slot weights")
+require('t2iLoraSpinners' in draw and 'i2iLoraSpinners' in draw,
+        "text-to-image and image-to-image have independent LoRA selections")
+require('data class Lora(val path: String, val scale: Float)' in engine,
+        "Kotlin represents each LoRA as a path and multiplier pair")
+require('loras.map { it.path }.toTypedArray()' in engine and 'loras.map { it.scale }.toFloatArray()' in engine,
+        "Kotlin passes matched LoRA path and scale arrays to JNI")
+require('jobjectArray loraPaths, jfloatArray loraScales' in jni,
+        "JNI accepts multiple LoRA paths and scales")
+require('g.lora_count = static_cast<uint32_t>(nativeLoras.size());' in jni,
+        "JNI forwards all selected LoRAs to sd.cpp")
+require('const sd_lora_t* loras;' in header and 'uint32_t lora_count;' in header,
+        "sd.cpp generation parameters support multiple LoRAs")
+
+print("All TAESD, CPU-thread, and four-slot LoRA wiring checks passed.")

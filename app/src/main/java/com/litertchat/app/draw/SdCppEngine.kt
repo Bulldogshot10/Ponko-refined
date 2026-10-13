@@ -93,12 +93,14 @@ object SdCppEngine {
         slots: Array<String?>?,
     ): Long
 
+    data class Lora(val path: String, val scale: Float)
+
     external fun nativeGenerate(
         handle: Long,
         prompt: String,
         negative: String,
-        loraPath: String?,
-        loraScale: Float,
+        loraPaths: Array<String>,
+        loraScales: FloatArray,
         width: Int,
         height: Int,
         steps: Int,
@@ -186,8 +188,7 @@ object SdCppEngine {
         handle: Long,
         prompt: String,
         negative: String = "",
-        loraPath: String? = null,
-        loraScale: Float = 1.0f,
+        loras: List<Lora> = emptyList(),
         width: Int = 512,
         height: Int = 512,
         steps: Int = 20,
@@ -204,8 +205,10 @@ object SdCppEngine {
     ): Bitmap? {
         val effectiveSeed = if (seed < 0) (System.currentTimeMillis() % 1_000_000_000L) else seed
         val useInit = initImage != null && initImage.isNotEmpty() && initWidth > 0 && initHeight > 0
+        val loraPaths = loras.map { it.path }.toTypedArray()
+        val loraScales = loras.map { it.scale }.toFloatArray()
         val px = nativeGenerate(
-            handle, prompt, negative, loraPath, loraScale,
+            handle, prompt, negative, loraPaths, loraScales,
             width, height, steps, cfg, effectiveSeed,
             sampler.code, scheduler.code, cb, onPreview,
             if (useInit) initImage else null,

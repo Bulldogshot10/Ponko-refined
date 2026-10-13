@@ -233,7 +233,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         JNIEnv* env, jobject /*thiz*/,
         jlong handle,
         jstring prompt, jstring negative,
-        jstring loraPath, jfloat loraScale,
+        jobjectArray loraPaths, jfloatArray loraScales,
         jint width, jint height, jint steps, jfloat cfg, jlong seed,
         jint sampleMethod, jint scheduler,
         jobject cb, jobject pcb,
@@ -241,10 +241,33 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     SdHandle* h = reinterpret_cast<SdHandle*>(handle);
     if (h == nullptr || h->ctx == nullptr) return nullptr;
 
-    std::string sPrompt, sNeg, sLora;
+    std::string sPrompt, sNeg;
     jstr(env, prompt, sPrompt);
     jstr(env, negative, sNeg);
-    jstr(env, loraPath, sLora);
+
+    const jsize pathCount = loraPaths == nullptr ? 0 : env->GetArrayLength(loraPaths);
+    const jsize scaleCount = loraScales == nullptr ? 0 : env->GetArrayLength(loraScales);
+    const jsize loraInputCount = pathCount < scaleCount ? pathCount : scaleCount;
+    std::vector<std::string> sLoras(static_cast<size_t>(loraInputCount));
+    std::vector<float> loraMultipliers(static_cast<size_t>(loraInputCount), 1.0f);
+    if (loraInputCount > 0) {
+        env->GetFloatArrayRegion(loraScales, 0, loraInputCount, loraMultipliers.data());
+        for (jsize i = 0; i < loraInputCount; ++i) {
+            auto js = static_cast<jstring>(env->GetObjectArrayElement(loraPaths, i));
+            jstr(env, js, sLoras[static_cast<size_t>(i)]);
+            if (js != nullptr) env->DeleteLocalRef(js);
+        }
+    }
+    std::vector<sd_lora_t> nativeLoras;
+    nativeLoras.reserve(sLoras.size());
+    for (size_t i = 0; i < sLoras.size(); ++i) {
+        if (sLoras[i].empty()) continue;
+        sd_lora_t entry{};
+        entry.is_high_noise = false;
+        entry.multiplier = loraMultipliers[i];
+        entry.path = sLoras[i].c_str();
+        nativeLoras.push_back(entry);
+    }
 
     // 进度回调（全局注册，data 指向本 handle）
     if (cb != nullptr) {
@@ -275,9 +298,6 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     h->cancelled.store(false);
     g_active = h;
     sd_set_progress_callback(progressTrampoline, h);
-
-    sd_lora_t lora{};
-    bool useLora = !sLora.empty();
 
     sd_img_gen_params_t g;
     sd_img_gen_params_init(&g);
@@ -310,13 +330,8 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
             LOGE("img2img: GetByteArrayElements returned null");
         }
     }
-    if (useLora) {
-        lora.is_high_noise = false;
-        lora.multiplier    = loraScale;
-        lora.path          = sLora.c_str();
-        g.loras            = &lora;
-        g.lora_count       = 1;
-    }
+    g.loras = nativeLoras.empty() ? nullptr : nativeLoras.data();
+    g.lora_count = static_cast<uint32_t>(nativeLoras.size());
     g.sample_params.sample_steps  = steps;
     g.sample_params.guidance.txt_cfg = cfg;
     g.sample_params.sample_method = static_cast<enum sample_method_t>(sampleMethod);
