@@ -90,6 +90,9 @@ class DrawPage(
 
         /** 模型集偏好键（当前选中的模型集 id） */
         private const val KEY_SEL_SET = "selSet"
+        private const val KEY_DRAW_CPU_THREADS = "drawCpuThreads"
+        private const val KEY_USE_TAESD = "drawUseTaesd"
+        private const val KEY_TAESD_FILE = "drawTaesdFile"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -209,7 +212,8 @@ class DrawPage(
     var pendingNewSet: Boolean = false
 
     /** 推理线程数：默认 4（多数手机的大核数；开太多会跑到小核上，反而变慢） */
-    private var nThreads: Int = 4
+    private var nThreads: Int = act.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getInt(KEY_DRAW_CPU_THREADS, 4).coerceIn(1, 8)
 
     /** FlashAttention（CLIP + UNet）。实测不开每步慢约 28%（6 步 125s vs 98s）。 */
     private var flashAttn: Boolean = true
@@ -1611,6 +1615,36 @@ class DrawPage(
     }
 
     /** 只把槽位从集里摘掉，不删文件（同一个文件可能被多个槽位共用） */
+    /** CPU thread count is applied when the drawing context is next loaded. */
+    fun cpuThreads(): Int = nThreads
+
+    fun setCpuThreads(value: Int) {
+        nThreads = value.coerceIn(1, 8)
+        prefs().edit().putInt(KEY_DRAW_CPU_THREADS, nThreads).apply()
+    }
+
+    fun hasTaesdWeights(): Boolean = selectedTaesdFile() != null
+
+    fun isTaesdEnabled(): Boolean =
+        prefs().getBoolean(KEY_USE_TAESD, false) && hasTaesdWeights()
+
+    fun setTaesdEnabled(enabled: Boolean) {
+        prefs().edit().putBoolean(KEY_USE_TAESD, enabled && hasTaesdWeights()).apply()
+    }
+
+    fun taesdStatus(): String =
+        selectedTaesdFile()?.name ?: c.getString(R.string.s_473)
+
+    private fun selectedTaesdFile(): File? {
+        val name = prefs().getString(KEY_TAESD_FILE, null) ?: return null
+        return File(taesdDir(), File(name).name).takeIf { it.isFile && it.length() > 0L }
+    }
+
+    private fun taesdDir(): File = File(c.filesDir, "$DIR_NAME/taesd").apply { mkdirs() }
+
+    private fun activeTaesdPath(): String? =
+        if (isTaesdEnabled()) selectedTaesdFile()?.absolutePath else null
+
     fun clearSlot(key: String) {
         val s = activeSetOrSelected() ?: return
         s.files.remove(key)
@@ -1741,6 +1775,62 @@ class DrawPage(
         }
     }
 
+    /** Import a standalone TAESD checkpoint without adding it to the main model set. */
+    suspend fun importTaesdFile(
+        uri: Uri,
+        onStage: (String) -> Unit,
+        onProgress: ((Long, Long) -> Unit)? = null
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val name = queryDisplayName(uri)?.let { File(it).name }
+                ?: return@withContext c.getString(R.string.s_106)
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext !in listOf("safetensors", "gguf", "ckpt", "pt")) {
+                return@withContext c.getString(R.string.s_475)
+            }
+
+            val dir = taesdDir()
+            val dest = File(dir, name)
+            val total = runCatching {
+                c.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            }.getOrDefault(-1L)
+            withContext(Dispatchers.Main) {
+                onStage(c.getString(R.string.s_474))
+                onProgress?.invoke(0L, total)
+            }
+            c.contentResolver.openInputStream(uri)?.use { ins ->
+                dest.outputStream().use { outs ->
+                    val buf = ByteArray(1 shl 20)
+                    var done = 0L
+                    var tick = 0L
+                    while (true) {
+                        val n = ins.read(buf)
+                        if (n < 0) break
+                        outs.write(buf, 0, n)
+                        done += n
+                        if (done - tick >= (1L shl 20)) {
+                            tick = done
+                            val d = done
+                            withContext(Dispatchers.Main) { onProgress?.invoke(d, total) }
+                        }
+                    }
+                    withContext(Dispatchers.Main) { onProgress?.invoke(done, total) }
+                }
+            } ?: return@withContext c.getString(R.string.s_106)
+
+            withContext(Dispatchers.Main) {
+                prefs().edit()
+                    .putString(KEY_TAESD_FILE, name)
+                    .putBoolean(KEY_USE_TAESD, true)
+                    .apply()
+                onStage(c.getString(R.string.s_476, name))
+            }
+            null
+        } catch (e: Throwable) {
+            c.getString(R.string.v_038, (e.message ?: e.javaClass.simpleName))
+        }
+    }
+
     /** 从 content:// URI 取显示文件名 */
     private fun queryDisplayName(uri: Uri): String? =
         c.contentResolver.query(uri, null, null, null, null)?.use { cur ->
@@ -1827,9 +1917,11 @@ class DrawPage(
                 stage("4a no vulkan device -> CPU")
                 toast(c.getString(R.string.s_332))
             }
+            val taesdPath = activeTaesdPath()
             fun createWith(b: String) = SdCppEngine.create(
                 modelPath = slots["model"].orEmpty(),
-                vaePath = slots["vae"],
+                vaePath = if (taesdPath == null) slots["vae"] else null,
+                taesdPath = taesdPath,
                 nThreads = nThreads,
                 wtype = SdCppEngine.WTYPE_KEEP,
                 flashAttn = flashAttn,
