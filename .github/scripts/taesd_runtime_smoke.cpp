@@ -97,6 +97,8 @@ int main(int argc, char** argv) {
         runtime_logs.find("using TAE for encoding / decoding") != std::string::npos;
     const bool selected_standard_vae =
         runtime_logs.find("using VAE for encoding / decoding") != std::string::npos;
+    const bool decoder_only_tae =
+        runtime_logs.find("TAESD encoder tensors not present; using decoder-only TAE") != std::string::npos;
 
     if (images != nullptr) {
         free_sd_images(images, image_count);
@@ -108,8 +110,8 @@ int main(int argc, char** argv) {
                   << runtime_logs << '\n';
         return 6;
     }
-    if (!loaded_taesd || !selected_tae_decoder || selected_standard_vae) {
-        std::cerr << "FAIL: TAESD did not exclusively override the standard VAE decoder\n"
+    if (!loaded_taesd || !selected_tae_decoder || selected_standard_vae || !decoder_only_tae) {
+        std::cerr << "FAIL: decoder-only TAESD did not exclusively override the standard VAE decoder\n"
                   << "loaded_taesd=" << loaded_taesd
                   << ", selected_tae_decoder=" << selected_tae_decoder
                   << ", selected_standard_vae=" << selected_standard_vae << '\n'
@@ -117,7 +119,7 @@ int main(int argc, char** argv) {
         return 7;
     }
 
-    std::cout << "PASS: native context accepted n_threads=2 and the TAESD path.\n"
+    std::cout << "PASS: native context accepted n_threads=2 and decoder-only TAESD weights.\n"
               << "PASS: a model with baked-in VAE generated a valid image using only the final TAE decoder.\n";
     return 0;
 }
