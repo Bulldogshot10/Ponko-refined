@@ -27,6 +27,12 @@ foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_CXX_FLAGS_${_cfg} "-O3 -DNDEBUG" CACHE STRING "" FORCE)
 endforeach()
 
+# The CI test artifact is an installable Debug APK. Keep the native diffusion runtime
+# optimized there too; otherwise the first CPU forward pass can be several times slower
+# than the upstream Release APK. Retain debug symbols and assertions for native diagnosis.
+set(CMAKE_C_FLAGS_DEBUG   "-O3 -g" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_DEBUG "-O3 -g" CACHE STRING "" FORCE)
+
 # 限制并行度：源码含若干超大翻译单元，8GB 内存的机器上 -j4 会 OOM（LLVM ERROR: out of memory）
 set_property(GLOBAL PROPERTY JOB_POOLS ponko_compile=2)
 set(CMAKE_JOB_POOL_COMPILE ponko_compile)
