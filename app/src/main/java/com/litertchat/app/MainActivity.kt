@@ -3177,6 +3177,12 @@ class MainActivity : Activity() {
                 })
             }
             box.addView(row, matchWrap().apply { topMargin = dp(6) })
+            if (key == "taesd") {
+                box.addView(
+                    hintText(getString(R.string.draw_taesd_hint)),
+                    matchWrap().apply { topMargin = dp(3) }
+                )
+            }
         }
     }
 
