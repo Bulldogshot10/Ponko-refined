@@ -98,7 +98,8 @@ jobs:
       - name: Download pinned SD1.5 and TAESD test weights
         run: |
           mkdir -p build/runtime-models
-          python3 -m pip install --user numpy safetensors
+          python3 -m venv build/taesd-tools
+          build/taesd-tools/bin/python -m pip install numpy safetensors
           curl -fL --retry 5 --retry-all-errors --connect-timeout 30 \
             "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/f41080936c76af537542aedf67f0dab94e1f337f/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf?download=true" \
             -o build/runtime-models/sd15-q4_0.gguf
@@ -107,7 +108,7 @@ jobs:
             -o build/runtime-models/taesd-full.safetensors
           test "$(stat -c %s build/runtime-models/sd15-q4_0.gguf)" -gt 1400000000
           echo "db169d69145ec4ff064e49d99c95fa05d3eb04ee453de35824a6d0f325513549  build/runtime-models/taesd-full.safetensors" | sha256sum --check
-          python3 .github/scripts/extract_taesd_decoder.py \
+          build/taesd-tools/bin/python .github/scripts/extract_taesd_decoder.py \
             build/runtime-models/taesd-full.safetensors \
             build/runtime-models/taesd-decoder-only.safetensors
           if ! strings -a build/runtime-models/sd15-q4_0.gguf | grep -F "first_stage_model.decoder.conv_in.weight" > /dev/null; then
