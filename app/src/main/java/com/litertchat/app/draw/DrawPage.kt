@@ -2003,6 +2003,8 @@ class DrawPage(
             Toast.makeText(c, c.getString(R.string.s_047), Toast.LENGTH_SHORT).show()
             return
         }
+        val requestedSteps = stepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
+        denoisingStarted = false
         setGenerating(true)
         progressText.visibility = View.VISIBLE
         progressText.text = c.getString(R.string.s_126)
@@ -2020,7 +2022,9 @@ class DrawPage(
                     delay(1000)
                     val sec = (System.currentTimeMillis() - startedAt) / 1000
                     progressText.post {
-                        val phase = if (sec < 8) c.getString(R.string.s_127) else c.getString(R.string.s_129)
+                        // sd.cpp reuses the progress callback for lazy tensor loading. Keep the
+                        // UI in Loading model until a callback matches this request's sample-step count.
+                        val phase = if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)
                         val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
                         progressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
                         if (::procStepText.isInitialized) {
@@ -2039,8 +2043,17 @@ class DrawPage(
                 val img = generateImage(
                     prompt,
                     onProgress = { cur, total ->
-                        curStep = cur
-                        totalStep = total
+                        // ModelLoader::pretty_bytes_progress shares the native callback and can
+                        // report tensor counts (e.g. 686/686), not denoising steps. Ignore those
+                        // until the sampler reports a plausible step count for this request.
+                        if (total in 1..(requestedSteps + 2)) {
+                            denoisingStarted = true
+                            curStep = cur.coerceIn(0, total)
+                            totalStep = total
+                        } else if (!denoisingStarted) {
+                            curStep = 0
+                            totalStep = 0
+                        }
                     },
                     onPreview = { st, w, h, rgb -> onPreviewFrame(st, w, h, rgb) },
                 )
@@ -2083,6 +2096,7 @@ class DrawPage(
 
     private var curStep = 0
     private var totalStep = 0
+    @Volatile private var denoisingStarted = false
 
     /** 用户是否已请求中断当前生成（用于把“取消”与“真失败”区分开）。 */
     @Volatile private var cancelRequested = false
