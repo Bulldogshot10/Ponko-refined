@@ -89,6 +89,15 @@ require('nThreads = nThreads,' in draw,
         "model load passes selected thread count into SdCppEngine.create")
 require('R.string.draw_taesd_enable' in activity and 'pickTaesdWeights()' in activity,
         "drawing settings expose visible TAESD opt-in and file selection")
+
+# ModelLoader and sampler share sd_progress_cb in native code. Only sample-step-shaped
+# progress values should be surfaced as denoising steps in the drawing UI.
+require('@Volatile private var denoisingStarted = false' in draw,
+        "denoising phase is tracked independently of model loading")
+require('total in 1..(requestedSteps + 2)' in draw,
+        "tensor-count progress is not mistaken for sampler progress")
+require('if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)' in draw,
+        "UI remains in model-loading phase until actual sampling starts")
 require('private fun refreshTaesdUi()' in activity,
         "TAESD UI mirrors selected weights and enabled state")
 require('nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots)' in engine,
