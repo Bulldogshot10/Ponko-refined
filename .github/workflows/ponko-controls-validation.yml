@@ -64,8 +64,15 @@ jobs:
           test -s "$BUILD_DIR/build.ninja"
           grep -F 'CMAKE_CXX_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
           grep -F 'CMAKE_C_FLAGS_DEBUG:STRING=-O3 -DNDEBUG -g' "$CACHE"
-          grep -F 'diffusion_engine.cpp.o' "$BUILD_DIR/build.ninja" >/dev/null
-          grep -F -- '-O3 -DNDEBUG -g' "$BUILD_DIR/build.ninja" >/dev/null
+
+          # Inspect actual compile commands, not Ninja's generated file layout.
+          NATIVE_COMMANDS="$RUNNER_TEMP/native-commands.txt"
+          cmake --build "$BUILD_DIR" -- -t commands > "$NATIVE_COMMANDS"
+          DIFFUSION_CMD="$(grep -F 'diffusion_engine.cpp' "$NATIVE_COMMANDS" | head -n 1 || true)"
+          test -n "$DIFFUSION_CMD"
+          grep -F -- '-O3 -DNDEBUG -g' <<< "$DIFFUSION_CMD" >/dev/null
+          echo "Verified diffusion_engine.cpp compiler command:"
+          echo "$DIFFUSION_CMD"
           echo "PASS: Android arm64 Debug native compile uses -O3 -DNDEBUG -g"
       - uses: actions/upload-artifact@v4
         with:
