@@ -463,4 +463,9 @@
 <string name="s_426">Drawing model: %1$s</string>
 <string name="s_427">No drawing model loaded yet</string>
 <string name="s_428">The drawing API is generating an image, please wait</string>
+
+    <string name="draw_taesd_label">TAESD weights</string>
+    <string name="draw_taesd_hint">Choose compatible TAESD .safetensors or .gguf weights. When loaded, TAESD replaces the standard VAE for faster decoding; output may differ. Clear this slot to disable it.</string>
+    <string name="draw_cpu_threads">CPU threads</string>
+    <string name="draw_cpu_threads_hint">Applies the next time you load the drawing model.</string>
 </resources>

@@ -1282,6 +1282,39 @@ class MainActivity : Activity() {
         }
         drawModelStatus = dStatus
         drawCard.addView(dStatus, matchWrap().apply { topMargin = dp(6) })
+
+        val threadLimit = Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
+        val threadOptions = (1..threadLimit).map { it.toString() }
+        val threadRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        threadRow.addView(TextView(this).apply {
+            text = getString(R.string.draw_cpu_threads)
+            textSize = 13f
+            setTextColor(C_TEXT)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val threadSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                threadOptions
+            )
+            val selectedThreads = (drawPage?.cpuThreads() ?: 4).coerceIn(1, threadLimit)
+            setSelection(selectedThreads - 1, false)
+        }
+        threadSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                drawPage?.setCpuThreads(threadOptions[position].toInt())
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        threadRow.addView(threadSpinner, wrapWrap().apply { leftMargin = dp(8) })
+        drawCard.addView(threadRow, matchWrap().apply { topMargin = dp(10) })
+        drawCard.addView(
+            hintText(getString(R.string.draw_cpu_threads_hint)),
+            matchWrap().apply { topMargin = dp(3) }
+        )
         // 上次崩溃信息（自捕获，供排查）
         if (pendingDrawCrash) {
             drawCard.addView(TextView(this).apply {

@@ -164,7 +164,7 @@ object SdCppEngine {
     val SLOT_KEYS = arrayOf(
         "model", "diffusion", "high_noise", "uncond",
         "clip_l", "clip_g", "clip_vision", "t5xxl",
-        "llm", "llm_vision", "vae", "audio_vae",
+        "llm", "llm_vision", "vae", "audio_vae", "taesd",
     )
 
     /** 把槽位表（key -> 文件绝对路径）转成 JNI 要的定长数组 */

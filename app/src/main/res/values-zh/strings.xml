@@ -463,4 +463,9 @@
     <string name="s_426">绘图模型：%1$s</string>
     <string name="s_427">尚未加载绘图模型</string>
     <string name="s_428">绘图 API 正在出图，请稍候</string>
+
+    <string name="draw_taesd_label">TAESD 权重</string>
+    <string name="draw_taesd_hint">选择兼容的 TAESD .safetensors 或 .gguf 权重。加载后会用 TAESD 替代标准 VAE，以加快解码速度；输出可能有所不同。清空此槽位即可关闭。</string>
+    <string name="draw_cpu_threads">CPU 线程数</string>
+    <string name="draw_cpu_threads_hint">下次加载绘图模型时生效。</string>
 </resources>

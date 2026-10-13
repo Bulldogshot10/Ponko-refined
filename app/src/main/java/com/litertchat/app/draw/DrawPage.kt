@@ -74,6 +74,15 @@ class DrawPage(
     /** 是否正在出图（换主题要重建视图，出图途中不适合重建） */
     fun isBusy(): Boolean = generating
 
+    /** CPU worker count used for the next native drawing-model load. */
+    fun cpuThreads(): Int = nThreads
+
+    fun setCpuThreads(value: Int) {
+        val maxThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
+        nThreads = value.coerceIn(1, maxThreads)
+        prefs().edit().putInt(KEY_CPU_THREADS, nThreads).apply()
+    }
+
     companion object {
         const val DIR_NAME = "draw"
         /** 打标模型/标签表目录：filesDir/tagger */
@@ -90,6 +99,7 @@ class DrawPage(
 
         /** 模型集偏好键（当前选中的模型集 id） */
         private const val KEY_SEL_SET = "selSet"
+        private const val KEY_CPU_THREADS = "drawCpuThreads"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -130,6 +140,7 @@ class DrawPage(
             "llm" -> R.string.s_355
             "llm_vision" -> R.string.s_356
             "vae" -> R.string.s_357
+            "taesd" -> R.string.draw_taesd_label
             else -> R.string.s_358
         }
 
@@ -140,7 +151,8 @@ class DrawPage(
             kind == KIND_SINGLE && family == FAM_OTHER -> listOf(
                 "model" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
                 "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
-                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false)
+                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false, "taesd" to false)
+            kind == KIND_SINGLE && family == FAM_SD15 -> listOf("model" to true, "vae" to false, "taesd" to false)
             kind == KIND_SINGLE -> listOf("model" to true, "vae" to false)
             family == FAM_SDXL -> listOf(
                 "diffusion" to true, "clip_l" to true, "clip_g" to true, "vae" to true)
@@ -209,7 +221,9 @@ class DrawPage(
     var pendingNewSet: Boolean = false
 
     /** 推理线程数：默认 4（多数手机的大核数；开太多会跑到小核上，反而变慢） */
-    private var nThreads: Int = 4
+    private var nThreads: Int = prefs().getInt(KEY_CPU_THREADS, 4).coerceIn(
+        1, Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
+    )
 
     /** FlashAttention（CLIP + UNet）。实测不开每步慢约 28%（6 步 125s vs 98s）。 */
     private var flashAttn: Boolean = true
