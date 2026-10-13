@@ -27,9 +27,8 @@ foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_CXX_FLAGS_${_cfg} "-O3 -DNDEBUG" CACHE STRING "" FORCE)
 endforeach()
 
-# The CI test artifact is an installable Debug APK. Keep the native diffusion runtime
-# optimized there too; otherwise the first CPU forward pass can be several times slower
-# than the upstream Release APK. Retain debug symbols and assertions for native diagnosis.
+# The CI artifact is a Debug APK, but native inference must use the same optimization
+# and assertion settings as the upstream Release APK. Keep symbols for diagnosis.
 set(CMAKE_C_FLAGS_DEBUG   "-O3 -DNDEBUG -g" CACHE STRING "" FORCE)
 set(CMAKE_CXX_FLAGS_DEBUG "-O3 -DNDEBUG -g" CACHE STRING "" FORCE)
 
