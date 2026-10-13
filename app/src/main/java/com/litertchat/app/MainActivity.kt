@@ -3397,9 +3397,15 @@ class MainActivity : Activity() {
                 setDrawBusy(false)
                 showDrawProgress(false)
                 if (err == null) {
+                    drawModelStatus?.text = dpg.modelSummary()
                     drawTaesdStatus?.text = dpg.taesdStatus()
+                    drawTaesdCheck?.setOnCheckedChangeListener(null)
                     drawTaesdCheck?.isEnabled = dpg.hasTaesdWeights()
                     drawTaesdCheck?.isChecked = dpg.isTaesdEnabled()
+                    drawTaesdCheck?.setOnCheckedChangeListener { _, checked ->
+                        dpg.setTaesdEnabled(checked)
+                        if (dpg.isReady()) toast(getString(R.string.s_478))
+                    }
                     if (dpg.isReady()) toast(getString(R.string.s_478))
                     else toast(getString(R.string.s_479))
                     refreshDrawModels()
