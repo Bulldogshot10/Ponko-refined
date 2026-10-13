@@ -465,8 +465,8 @@
     <string name="s_428">绘图 API 正在出图，请稍候</string>
     <string name="s_468">推理引擎设置</string>
     <string name="s_469">CPU 线程数</string>
-    <string name="s_470">设置将在卸载并重新加载绘图模型后生效。线程越多不一定越快。</string>
-    <string name="s_471">使用 TAESD 解码器（实验性）</string>
+    <string name="s_470">设置将在重新加载绘图模型后生效。TAESD 会替换 VAE 编码器和解码器，请使用同时包含两者权重的完整模型。速度提升可能伴随画质变化；线程越多不一定越快。</string>
+    <string name="s_471">使用 TAESD VAE（实验性）</string>
     <string name="s_472">选择 TAESD 权重文件</string>
     <string name="s_473">尚未选择 TAESD 权重</string>
     <string name="s_474">正在导入 TAESD 权重…</string>
