@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [feat/taesd-cpu-threads]
+    branches: [feat/taesd-cpu-threads, feat/exynos2400e-cpu-opt]
   workflow_dispatch:
 
 permissions:
