@@ -121,6 +121,19 @@ if (SD_VULKAN)
         set(_ponko_glslc_name "glslc")
     endif ()
 
+    # Optional host glslc override. NDK-bundled shaderc can be too old to compile
+    # GL_KHR_cooperative_matrix. A newer host compiler only emits SPIR-V at build time;
+    # the Samsung Vulkan driver still decides whether the optimized kernels can run.
+    if (DEFINED ENV{PONKO_VULKAN_GLSLC} AND NOT "$ENV{PONKO_VULKAN_GLSLC}" STREQUAL "")
+        set(_ponko_host_glslc "$ENV{PONKO_VULKAN_GLSLC}")
+        if (EXISTS "${_ponko_host_glslc}")
+            set(Vulkan_GLSLC_EXECUTABLE "${_ponko_host_glslc}" CACHE FILEPATH "Ponko host glslc override" FORCE)
+            message(STATUS "Ponko: using host glslc override = ${Vulkan_GLSLC_EXECUTABLE}")
+        else ()
+            message(WARNING "Ponko: PONKO_VULKAN_GLSLC path does not exist (${_ponko_host_glslc}); falling back to the NDK glslc")
+        endif ()
+    endif ()
+
     if (NOT Vulkan_GLSLC_EXECUTABLE)
         set(_ponko_glslc "${ANDROID_NDK}/shader-tools/${_ponko_host_tag}/${_ponko_glslc_name}")
         if (EXISTS "${_ponko_glslc}")

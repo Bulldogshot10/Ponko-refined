@@ -51,6 +51,22 @@ jobs:
             "ndk;27.3.13750724" \
             "cmake;3.31.6"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Probe host glslc cooperative-matrix support
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y glslc
+          GLSLC="$(command -v glslc)"
+          echo "Host shader compiler: $GLSLC"
+          "$GLSLC" --version
+          SHADER="app/src/main/cpp/sd/ggml/src/ggml-vulkan/vulkan-shaders/feature-tests/coopmat.comp"
+          if "$GLSLC" -o /dev/null -fshader-stage=compute --target-env=vulkan1.3 "$SHADER"; then
+            echo "PONKO_VULKAN_GLSLC=$GLSLC" >> "$GITHUB_ENV"
+            echo "PASS: host glslc supports GL_KHR_cooperative_matrix; optimized SPIR-V variants can be built"
+          else
+            echo "::warning::host glslc lacks GL_KHR_cooperative_matrix; CMake will use the NDK compiler and standard Vulkan kernels remain available"
+          fi
       - name: Assemble debug APK
         run: bash ./gradlew --no-daemon --max-workers=2 assembleDebug
       - name: Verify native Debug optimization flags
@@ -62,6 +78,15 @@ jobs:
           test -n "$CACHE"
           BUILD_DIR="$(dirname "$CACHE")"
           test -s "$BUILD_DIR/build.ninja"
+          if [[ -n "${PONKO_VULKAN_GLSLC:-}" ]]; then
+            if ! grep -F 'GGML_VULKAN_COOPMAT_GLSLC_SUPPORT' "$BUILD_DIR/build.ninja" >/dev/null; then
+              echo "FAIL: host glslc passed the cooperative-matrix probe, but the Android build has no cooperative-matrix shader define" >&2
+              exit 1
+            fi
+            echo "PASS: Android build includes GGML_VULKAN_COOPMAT_GLSLC_SUPPORT"
+          else
+            echo "INFO: cooperative-matrix SPIR-V variants depend on the NDK glslc capabilities"
+          fi
           # Check the actual compiler flags emitted into Ninja rules, not cache values.
           python3 - "$BUILD_DIR/build.ninja" <<'PY'
           from pathlib import Path

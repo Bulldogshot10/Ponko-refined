@@ -27,6 +27,8 @@ header = read("app/src/main/cpp/sd/include/stable-diffusion.h")
 diffusion = read("app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp")
 builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
 vulkan = read("app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
+cmake = read("app/src/main/cpp/CMakeLists.txt")
+workflow = read(".github/workflows/ponko-controls-validation.yml")
 
 # The slot order is an ABI contract between Kotlin and C++.
 keys_match = re.search(r"val SLOT_KEYS = arrayOf\((.*?)\)", engine, re.S)
@@ -141,5 +143,15 @@ require('device->coopmat_support &&' in vulkan
 require('Xclipse 940 profile detected' in vulkan
         and 'Keeping standard Vulkan matmul kernels' in vulkan,
         "Vulkan logs feature availability and preserves generic fallback")
+
+# Use a newer host shader compiler only when it passes the exact cooperative-matrix shader probe.
+require('PONKO_VULKAN_GLSLC' in cmake and 'using host glslc override' in cmake,
+        "CMake can use an explicit host glslc while keeping the NDK fallback")
+require('Probe host glslc cooperative-matrix support' in workflow
+        and 'feature-tests/coopmat.comp' in workflow
+        and 'PONKO_VULKAN_GLSLC=$GLSLC' in workflow,
+        "CI probes host glslc against the cooperative-matrix shader before selecting it")
+require('GGML_VULKAN_COOPMAT_GLSLC_SUPPORT' in workflow,
+        "CI verifies the cooperative-matrix define reached the generated Android build")
 
 print("All TAESD, CPU-thread, four-slot LoRA, and Xclipse Vulkan checks passed.")
