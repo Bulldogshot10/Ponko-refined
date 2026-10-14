@@ -1,0 +1,100 @@
+name: Exynos 2400e KleidiAI CPU APK test
+
+on:
+  push:
+    branches: [feat/exynos2400e-kleidiai-test]
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "build.gradle*"
+      - "settings.gradle*"
+      - "gradle.properties"
+      - ".github/workflows/exynos2400e-kleidiai-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exynos2400e-kleidiai-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-arm64-apk:
+    name: Build optimized Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android SDK and native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          printf 'y\n%.0s' {1..50} | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.3.13750724" \
+            "cmake;3.31.6"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK with optimized native code
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug \
+            -PCMAKE_C_FLAGS_DEBUG="-O3 -DNDEBUG" \
+            -PCMAKE_CXX_FLAGS_DEBUG="-O3 -DNDEBUG"
+
+      - name: Verify native compile flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r file; do
+            if grep -q -- '-march=armv8.6-a+dotprod+i8mm+fp16' "$file" &&
+               grep -q -- '-mtune=cortex-x4' "$file" &&
+               grep -q -- '-O3' "$file" &&
+               grep -q -- '-DNDEBUG' "$file"; then
+              echo "Verified optimized Exynos flags in $file"
+              found=1
+              break
+            fi
+          done < <(find app/.cxx app/build -type f \( -name CMakeCache.txt -o -name build.ninja -o -name flags.make -o -name '*.json' \) 2>/dev/null || true)
+          if [ "$found" -ne 1 ]; then
+            echo "Could not verify Exynos I8MM + -O3 -DNDEBUG flags in generated build files" >&2
+            exit 1
+          fi
+
+      - name: Verify KleidiAI is enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -R -Fq 'GGML_CPU_KLEIDIAI:BOOL=ON' app/.cxx app/build 2>/dev/null; then
+            echo "GGML_CPU_KLEIDIAI=ON was not found in generated CMake cache" >&2
+            exit 1
+          fi
+          echo "Verified GGML_CPU_KLEIDIAI=ON"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponko-exynos2400e-kleidiai-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
