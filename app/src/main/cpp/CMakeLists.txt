@@ -72,6 +72,8 @@ set(SD_MUSA   OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP         ON  CACHE BOOL "" FORCE)  # OpenMP 多线程（运行时用 NDK 的 libomp.so）
 set(GGML_CPU            ON  CACHE BOOL "" FORCE)
 set(GGML_CPU_REPACK     ON  CACHE BOOL "" FORCE)
+# Benchmark branch only: test Arm KleidiAI's I8MM/DOTPROD kernels on Exynos 2400e.
+set(GGML_CPU_KLEIDIAI   ON  CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE         OFF CACHE BOOL "" FORCE)
