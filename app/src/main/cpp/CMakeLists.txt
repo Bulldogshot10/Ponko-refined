@@ -16,13 +16,26 @@ project(ponko_sd CXX C)
 # ---------------------------------------------------------------------------
 # 编译标志
 # ---------------------------------------------------------------------------
-# 实测：-O3 + ARMv8.2-A(dotprod+fp16) 使 6 步 256x256 从 116s 降到 56s（约 2x）。
-# 代价：要求 2019 年之后的 arm64 设备，更老的 CPU 会 SIGILL。
+# Earlier benchmark: -O3 + ARMv8.2-A(dotprod+fp16) reduced a 6-step 256x256 run
+# from 116s to 56s. The Exynos 2400e profile enables I8MM for GGML's ARM quant kernels.
+# Cortex-X4, Cortex-A720 and Cortex-A520 implement I8MM, so this ISA profile is valid
+# across the Exynos 2400e's heterogeneous CPU clusters. Disable the profile for generic
+# ARM64 builds: -DPONKO_EXYNOS_2400E_CPU_PROFILE=OFF.
+option(PONKO_EXYNOS_2400E_CPU_PROFILE
+       "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
+if (PONKO_EXYNOS_2400E_CPU_PROFILE)
+    set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
+    message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
+else()
+    set(PONKO_CPU_ARCH_FLAGS -march=armv8.2-a+dotprod+fp16)
+    message(STATUS "Ponko CPU profile: generic ARMv8.2-A (dotprod + FP16)")
+endif()
+
 # Android's toolchain can define CMAKE_*_FLAGS_DEBUG as normal variables, so a
 # CACHE-only override does not necessarily change the flags used by Ninja. Apply
 # Debug optimization directly to compile rules, while preserving the default -g.
 add_compile_options(
-    -march=armv8.2-a+dotprod+fp16
+    ${PONKO_CPU_ARCH_FLAGS}
     "$<$<CONFIG:Debug>:-O3>"
     "$<$<CONFIG:Debug>:-DNDEBUG>"
 )
