@@ -12,6 +12,7 @@
 #include <cstdio>
 
 #include "ggml.h"
+#include "ggml-vulkan.h"
 #include "stable-diffusion.h"
 
 #define TAG "PonkoSd"
@@ -138,7 +139,22 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_litertchat_app_draw_SdCppEngine_nativeVulkanDiagnostics(JNIEnv* env, jobject /*thiz*/) {
-    const std::string diagnostics = copyVulkanDiagnostics();
+    // Query ggml-vulkan's live device state directly. Log callbacks can be routed through a
+    // different ggml logger instance in shared-library builds, leaving the old report empty.
+    char deviceDiagnostics[2048] = {};
+    const int deviceCount = ggml_backend_vk_get_device_count();
+    if (deviceCount > 0) {
+        ggml_backend_vk_get_device_diagnostics(0, deviceDiagnostics, sizeof(deviceDiagnostics));
+    } else {
+        std::snprintf(deviceDiagnostics, sizeof(deviceDiagnostics), "No Vulkan devices enumerated by ggml-vulkan");
+    }
+
+    std::string diagnostics(deviceDiagnostics);
+    const std::string loggedDiagnostics = copyVulkanDiagnostics();
+    if (!loggedDiagnostics.empty() && diagnostics.find(loggedDiagnostics) == std::string::npos) {
+        if (!diagnostics.empty()) diagnostics += "\n";
+        diagnostics += loggedDiagnostics;
+    }
     return env->NewStringUTF(diagnostics.c_str());
 }
 

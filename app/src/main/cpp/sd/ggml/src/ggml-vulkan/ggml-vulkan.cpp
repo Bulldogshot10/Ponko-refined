@@ -18007,6 +18007,45 @@ void ggml_backend_vk_get_device_description(int device, char * description, size
     ggml_vk_get_device_description(dev_idx, description, description_size);
 }
 
+void ggml_backend_vk_get_device_diagnostics(int device_idx, char * diagnostics, size_t diagnostics_size) {
+    if (diagnostics == nullptr || diagnostics_size == 0) {
+        return;
+    }
+    diagnostics[0] = '\0';
+
+    const int count = ggml_vk_get_device_count();
+    if (device_idx < 0 || device_idx >= count) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device index out of range (index %d, count %d)", device_idx, count);
+        return;
+    }
+
+    try {
+        // Read the exact ggml-vulkan device state used for backend selection and shader tuning.
+        const vk_device device = ggml_vk_get_device(static_cast<size_t>(device_idx));
+        const vk::PhysicalDeviceProperties & props = device->properties;
+        const char * label = ggml_vk_is_xclipse_940(props)
+            ? "Xclipse 940 profile detected"
+            : props.deviceName.data();
+        std::snprintf(diagnostics, diagnostics_size,
+            "%s (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d, UMA %d, shader cores %u, max shared memory %u)",
+            label,
+            static_cast<unsigned int>(VK_VERSION_MAJOR(props.apiVersion)),
+            static_cast<unsigned int>(VK_VERSION_MINOR(props.apiVersion)),
+            static_cast<unsigned int>(device->driver_id),
+            static_cast<unsigned int>(device->subgroup_size),
+            device->fp16 ? 1 : 0,
+            device->integer_dot_product ? 1 : 0,
+            device->coopmat_support ? 1 : 0,
+            device->uma ? 1 : 0,
+            static_cast<unsigned int>(device->shader_core_count),
+            static_cast<unsigned int>(props.limits.maxComputeSharedMemorySize));
+    } catch (const std::exception & e) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: %s", e.what());
+    } catch (...) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: unknown exception");
+    }
+}
+
 void ggml_backend_vk_get_device_memory(int device, size_t * free, size_t * total) {
     GGML_ASSERT(device < (int) vk_instance.device_indices.size());
     GGML_ASSERT(device < (int) vk_instance.device_supports_membudget.size());

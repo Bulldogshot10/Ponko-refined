@@ -27,6 +27,7 @@ header = read("app/src/main/cpp/sd/include/stable-diffusion.h")
 diffusion = read("app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp")
 builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
 vulkan = read("app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
+vulkan_header = read("app/src/main/cpp/sd/ggml/include/ggml-vulkan.h")
 cmake = read("app/src/main/cpp/CMakeLists.txt")
 workflow = read(".github/workflows/ponko-controls-validation.yml")
 
@@ -171,5 +172,10 @@ require('SdCppEngine.vulkanDiagnostics()' in draw,
 require('activeVulkanDiagnostic.contains("cooperative matrix 1")' in draw
         and '" · Xclipse coopmat"' in draw and '" · Xclipse generic"' in draw,
         "model status uses the reported runtime feature flag to distinguish fast and fallback Vulkan paths")
+require('ggml_backend_vk_get_device_diagnostics' in vulkan_header
+        and 'cooperative matrix %d' in vulkan and 'max shared memory %u' in vulkan,
+        "Vulkan capabilities are queried from the live ggml-vulkan device state")
+require('ggml_backend_vk_get_device_diagnostics(0, deviceDiagnostics' in jni,
+        "JNI diagnostics do not depend solely on the GGML log callback")
 
 print("All TAESD, CPU-thread, four-slot LoRA, and Xclipse Vulkan checks passed.")
