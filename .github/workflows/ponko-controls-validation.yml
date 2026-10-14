@@ -93,7 +93,8 @@ jobs:
           import sys
 
           ninja = Path(sys.argv[1]).read_text(encoding="utf-8")
-          arm_flag = "-march=armv8.2-a+dotprod+fp16"
+          arm_flag = "-march=armv8.6-a+dotprod+i8mm+fp16"
+          tune_flag = "-mtune=cortex-x4"
           compile_rules = [
               (number, line.strip())
               for number, line in enumerate(ninja.splitlines(), 1)
@@ -103,7 +104,7 @@ jobs:
               print("FAIL: no Android arm64 compile FLAGS rules found", file=sys.stderr)
               raise SystemExit(1)
 
-          required = {"-g", "-O3", "-DNDEBUG", arm_flag}
+          required = {"-g", "-O3", "-DNDEBUG", arm_flag, tune_flag}
           missing = [
               (number, line, sorted(required - set(line.split())))
               for number, line in compile_rules
