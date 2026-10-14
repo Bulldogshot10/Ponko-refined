@@ -79,6 +79,12 @@ object SdCppEngine {
 
     external fun nativeInfo(): String
 
+    /** Runtime Vulkan capabilities detected by ggml-vulkan for the active GPU. */
+    external fun nativeVulkanDiagnostics(): String
+
+    fun vulkanDiagnostics(): String =
+        runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
+
     /** 最近一次 new_sd_ctx 的完整参数（诊断加载失败用） */
     external fun nativeLastParams(): String
 

@@ -252,6 +252,7 @@ class DrawPage(
 
     /** 当前绘图实际用的后端（"CPU" / "Vulkan0"），显示在状态行 */
     private var activeBackend: String = "CPU"
+    private var activeVulkanDiagnostic: String = ""
 
     /**
      * 是否启用 LoRA 加速（挂 LCM-LoRA，压低步数）。
@@ -2070,6 +2071,14 @@ class DrawPage(
                 return c.getString(R.string.s_059)
             }
             sdHandle = h
+            activeVulkanDiagnostic = if (used.contains("vulkan", ignoreCase = true)) {
+                SdCppEngine.vulkanDiagnostics()
+            } else {
+                ""
+            }
+            if (activeVulkanDiagnostic.isNotBlank()) {
+                stage("4c Vulkan capabilities: " + activeVulkanDiagnostic.replace("\n", " | "))
+            }
             mainModel = set.mainFile()
             vaeModel = set.files["vae"]
             // 登记到进程级单例：API 的绘图接口要复用同一个句柄（界面重建/换主题都不影响）
@@ -2079,9 +2088,16 @@ class DrawPage(
                 stage(c.getString(R.string.s_010) + SdCppEngine.lastParams().replace("\n", "  |  "))
             }
 
+            val vkMode = when {
+                !activeBackend.contains("vulkan", ignoreCase = true) -> ""
+                activeVulkanDiagnostic.contains("cooperative matrix 1") -> " · Xclipse coopmat"
+                activeVulkanDiagnostic.contains("Xclipse 940 profile detected") -> " · Xclipse generic"
+                else -> " · Vulkan caps n/a"
+            }
             val summary = buildString {
                 append(c.getString(R.string.s_094)).append(set.name)
                 append(" · ").append(activeBackend).append(" · ").append(nThreads).append(c.getString(R.string.s_001)).append(if (flashAttn) "FA" else c.getString(R.string.s_110)).append(" · sd.cpp")
+                append(vkMode)
             }
             statusText.post { statusText.text = summary }
             statusText.post { refreshQuantText() }
@@ -2102,6 +2118,7 @@ class DrawPage(
         if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
         sdHandle = 0L
         activeBackend = "CPU"
+        activeVulkanDiagnostic = ""
         try {
             statusText.text = c.getString(R.string.s_115)
         } catch (_: Throwable) {}

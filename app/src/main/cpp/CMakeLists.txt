@@ -180,4 +180,5 @@ endif()
 # JNI 桥 → libponko_sd.so
 # ---------------------------------------------------------------------------
 add_library(ponko_sd SHARED sdcpp_jni.cpp)
+target_include_directories(ponko_sd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include")
 target_link_libraries(ponko_sd PRIVATE stable-diffusion android log)

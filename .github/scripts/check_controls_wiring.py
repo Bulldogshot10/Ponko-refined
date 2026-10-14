@@ -154,4 +154,22 @@ require('Probe host glslc cooperative-matrix support' in workflow
 require('GGML_VULKAN_COOPMAT_GLSLC_SUPPORT' in workflow,
         "CI verifies the cooperative-matrix define reached the generated Android build")
 
+# Runtime Vulkan diagnostics must be retrievable and visible on Android, not only stderr.
+jni = read("app/src/main/cpp/sdcpp_jni.cpp")
+require('ggml_log_set(ponkoGgmlLogCallback, nullptr)' in jni,
+        "GGML logs are forwarded through Ponko's Android logger")
+require('nativeVulkanDiagnostics' in jni,
+        "JNI exposes the runtime Vulkan diagnostic report")
+require('PonkoVulkan' in jni and 'matrix cores:' in jni,
+        "Android Logcat captures Xclipse cooperative-matrix status")
+require('target_include_directories(ponko_sd PRIVATE' in cmake and 'sd/ggml/include' in cmake,
+        "JNI compiles against the bundled ggml logging API")
+require('nativeVulkanDiagnostics' in engine,
+        "Kotlin exposes Vulkan runtime diagnostics")
+require('SdCppEngine.vulkanDiagnostics()' in draw,
+        "model loading collects the current-device Vulkan capabilities")
+require('activeVulkanDiagnostic.contains("cooperative matrix 1")' in draw
+        and '" · Xclipse coopmat"' in draw and '" · Xclipse generic"' in draw,
+        "model status uses the reported runtime feature flag to distinguish fast and fallback Vulkan paths")
+
 print("All TAESD, CPU-thread, four-slot LoRA, and Xclipse Vulkan checks passed.")

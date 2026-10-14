@@ -6471,18 +6471,18 @@ static vk_device ggml_vk_get_device(size_t idx) {
         device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
 
         if (ggml_vk_is_xclipse_940(device->properties)) {
-            std::cerr << "ggml_vulkan: Xclipse 940 profile detected"
-                      << " (Vulkan " << VK_VERSION_MAJOR(device->properties.apiVersion)
-                      << "." << VK_VERSION_MINOR(device->properties.apiVersion)
-                      << ", driver id " << static_cast<uint32_t>(device->driver_id)
-                      << ", subgroup " << device->subgroup_size
-                      << ", fp16 " << device->fp16
-                      << ", integer dot " << device->integer_dot_product
-                      << ", cooperative matrix " << device->coopmat_support << "). "
-                      << (device->coopmat_support
+            GGML_LOG_INFO("ggml_vulkan: Xclipse 940 profile detected"
+                          " (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d). %s\n",
+                          static_cast<unsigned int>(VK_VERSION_MAJOR(device->properties.apiVersion)),
+                          static_cast<unsigned int>(VK_VERSION_MINOR(device->properties.apiVersion)),
+                          static_cast<unsigned int>(device->driver_id),
+                          static_cast<unsigned int>(device->subgroup_size),
+                          device->fp16 ? 1 : 0,
+                          device->integer_dot_product ? 1 : 0,
+                          device->coopmat_support ? 1 : 0,
+                          device->coopmat_support
                               ? "RDNA3 cooperative-matrix matmul tuning is available."
-                              : "Keeping standard Vulkan matmul kernels because cooperative-matrix support is unavailable.")
-                      << std::endl;
+                              : "Keeping standard Vulkan matmul kernels because cooperative-matrix support is unavailable.");
         }
 
         device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
