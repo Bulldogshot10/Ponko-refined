@@ -178,4 +178,16 @@ require('ggml_backend_vk_get_device_diagnostics' in vulkan_header
 require('ggml_backend_vk_get_device_diagnostics(0, deviceDiagnostics' in jni,
         "JNI diagnostics do not depend solely on the GGML log callback")
 
-print("All TAESD, CPU-thread, four-slot LoRA, and Xclipse Vulkan checks passed.")
+# Exynos 2400e CPU profile: build the I8MM kernels present in GGML's ARM quant code.
+arm_quants = read("app/src/main/cpp/sd/ggml/src/ggml-cpu/arch/arm/quants.c")
+require('option(PONKO_EXYNOS_2400E_CPU_PROFILE' in cmake
+        and '-march=armv8.6-a+dotprod+i8mm+fp16' in cmake,
+        "Exynos CPU profile enables the ARMv8.6-A dotprod/I8MM/FP16 ISA")
+require('-mtune=cortex-x4' in cmake
+        and '-march=armv8.2-a+dotprod+fp16' in cmake
+        and 'PONKO_EXYNOS_2400E_CPU_PROFILE=OFF' in cmake,
+        "CPU profile has Cortex-X4 tuning and retains an explicit generic ARMv8.2 fallback")
+require('__ARM_FEATURE_MATMUL_INT8' in arm_quants and 'vmmlaq_s32' in arm_quants,
+        "GGML ARM quant kernels contain the I8MM matrix-multiply implementation")
+
+print("All TAESD, CPU-thread, I8MM CPU profile, LoRA, and Xclipse Vulkan checks passed.")
