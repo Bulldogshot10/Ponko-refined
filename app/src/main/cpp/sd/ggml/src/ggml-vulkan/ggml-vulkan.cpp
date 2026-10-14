@@ -50,6 +50,8 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <tuple>
@@ -401,8 +403,21 @@ enum vk_device_architecture {
     NVIDIA_TURING,
 };
 
+// Samsung reports the integrated Xclipse GPU under its own vendor ID on stock Android.
+// Xclipse 940 is RDNA3-derived, but the upstream AMD-vendor check below can otherwise
+// classify it as OTHER and skip architecture-aware tuning paths.
+static bool ggml_vk_is_xclipse_940(const vk::PhysicalDeviceProperties& props) {
+    return std::string(props.deviceName.data()).find("Xclipse 940") != std::string::npos;
+}
+
 static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
     vk::PhysicalDeviceProperties props = device.getProperties();
+
+    // Identify by the Vulkan device name, not by assuming an AMD vendor ID.
+    // Runtime feature checks below still decide which optional shader paths are safe.
+    if (ggml_vk_is_xclipse_940(props)) {
+        return vk_device_architecture::AMD_RDNA3;
+    }
 
     if (props.vendorID == VK_VENDOR_ID_AMD) {
         const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
@@ -4299,8 +4314,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
-        } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && device->driver_id != vk::DriverId::eAmdProprietary) {
-            // This is intentionally using tx_m values, slight performance increase
+        } else if (device->coopmat_support &&
+                   ((device->vendor_id == VK_VENDOR_ID_AMD && device->driver_id != vk::DriverId::eAmdProprietary) ||
+                    ggml_vk_is_xclipse_940(device->properties))) {
+            // This is intentionally using tx_m values, slight performance increase.
+            // Xclipse 940 exposes the RDNA3 hardware family under Samsung's vendor/driver ID,
+            // so apply these RDNA3 tile presets only for this exact GPU and only when
+            // VK_KHR_cooperative_matrix is available in both the build and runtime driver.
             l_warptile = { 256, 128, 128, 16, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
             l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
             l_warptile_mmq_int_k = { 256, 128, 128, 32, subgroup_size_16, 64, 1, 4, 2, 1, subgroup_size_16 };
@@ -6451,6 +6471,21 @@ static vk_device ggml_vk_get_device(size_t idx) {
         }
 
         device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
+
+        if (ggml_vk_is_xclipse_940(device->properties)) {
+            GGML_LOG_INFO("ggml_vulkan: Xclipse 940 profile detected"
+                          " (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d). %s\n",
+                          static_cast<unsigned int>(VK_VERSION_MAJOR(device->properties.apiVersion)),
+                          static_cast<unsigned int>(VK_VERSION_MINOR(device->properties.apiVersion)),
+                          static_cast<unsigned int>(device->driver_id),
+                          static_cast<unsigned int>(device->subgroup_size),
+                          device->fp16 ? 1 : 0,
+                          device->integer_dot_product ? 1 : 0,
+                          device->coopmat_support ? 1 : 0,
+                          device->coopmat_support
+                              ? "RDNA3 cooperative-matrix matmul tuning is available."
+                              : "Keeping standard Vulkan matmul kernels because cooperative-matrix support is unavailable.");
+        }
 
         device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
 
@@ -17972,6 +18007,45 @@ void ggml_backend_vk_get_device_description(int device, char * description, size
     GGML_ASSERT(device < (int) vk_instance.device_indices.size());
     int dev_idx = vk_instance.device_indices[device];
     ggml_vk_get_device_description(dev_idx, description, description_size);
+}
+
+void ggml_backend_vk_get_device_diagnostics(int device_idx, char * diagnostics, size_t diagnostics_size) {
+    if (diagnostics == nullptr || diagnostics_size == 0) {
+        return;
+    }
+    diagnostics[0] = '\0';
+
+    const int count = ggml_vk_get_device_count();
+    if (device_idx < 0 || device_idx >= count) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device index out of range (index %d, count %d)", device_idx, count);
+        return;
+    }
+
+    try {
+        // Read the exact ggml-vulkan device state used for backend selection and shader tuning.
+        const vk_device device = ggml_vk_get_device(static_cast<size_t>(device_idx));
+        const vk::PhysicalDeviceProperties & props = device->properties;
+        const char * label = ggml_vk_is_xclipse_940(props)
+            ? "Xclipse 940 profile detected"
+            : props.deviceName.data();
+        std::snprintf(diagnostics, diagnostics_size,
+            "%s (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d, UMA %d, shader cores %u, max shared memory %u)",
+            label,
+            static_cast<unsigned int>(VK_VERSION_MAJOR(props.apiVersion)),
+            static_cast<unsigned int>(VK_VERSION_MINOR(props.apiVersion)),
+            static_cast<unsigned int>(device->driver_id),
+            static_cast<unsigned int>(device->subgroup_size),
+            device->fp16 ? 1 : 0,
+            device->integer_dot_product ? 1 : 0,
+            device->coopmat_support ? 1 : 0,
+            device->uma ? 1 : 0,
+            static_cast<unsigned int>(device->shader_core_count),
+            static_cast<unsigned int>(props.limits.maxComputeSharedMemorySize));
+    } catch (const std::exception & e) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: %s", e.what());
+    } catch (...) {
+        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: unknown exception");
+    }
 }
 
 void ggml_backend_vk_get_device_memory(int device, size_t * free, size_t * total) {

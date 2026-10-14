@@ -420,10 +420,24 @@ namespace sd::model_builders {
                                                               weight_manager);
 
             } else {
+                // Text-to-image only needs a decoder. Full Diffusers TAESD weights include an
+                // encoder too, but decoder-only exports should work without fabricating encoder
+                // tensors that are not present in the selected file.
+                bool has_encoder_weights = false;
+                for (const auto& entry : tensor_storage_map) {
+                    if (entry.first.rfind("tae.encoder.layers.", 0) == 0) {
+                        has_encoder_weights = true;
+                        break;
+                    }
+                }
+                const bool decoder_only = decode_only || !has_encoder_weights;
+                if (!decode_only && !has_encoder_weights) {
+                    LOG_INFO("TAESD encoder tensors not present; using decoder-only TAE");
+                }
                 auto model = std::make_shared<TinyImageAutoEncoder>(ctx.backends.runtime_backend(SDBackendModule::VAE),
                                                                     tensor_storage_map,
                                                                     "decoder.layers",
-                                                                    decode_only,
+                                                                    decoder_only,
                                                                     version,
                                                                     weight_manager);
                 return model;

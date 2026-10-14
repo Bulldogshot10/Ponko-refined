@@ -18,7 +18,14 @@ project(ponko_sd CXX C)
 # ---------------------------------------------------------------------------
 # 实测：-O3 + ARMv8.2-A(dotprod+fp16) 使 6 步 256x256 从 116s 降到 56s（约 2x）。
 # 代价：要求 2019 年之后的 arm64 设备，更老的 CPU 会 SIGILL。
-add_compile_options(-march=armv8.2-a+dotprod+fp16)
+# Android's toolchain can define CMAKE_*_FLAGS_DEBUG as normal variables, so a
+# CACHE-only override does not necessarily change the flags used by Ninja. Apply
+# Debug optimization directly to compile rules, while preserving the default -g.
+add_compile_options(
+    -march=armv8.2-a+dotprod+fp16
+    "$<$<CONFIG:Debug>:-O3>"
+    "$<$<CONFIG:Debug>:-DNDEBUG>"
+)
 
 # 强制各 Release 变体都是 -O3 且不带调试符号。
 # （AGP 给 release 变体传的可能是 RelWithDebInfo = -O2 -g，性能与体积都不理想）
@@ -26,6 +33,7 @@ foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_C_FLAGS_${_cfg}   "-O3 -DNDEBUG" CACHE STRING "" FORCE)
     set(CMAKE_CXX_FLAGS_${_cfg} "-O3 -DNDEBUG" CACHE STRING "" FORCE)
 endforeach()
+
 
 # 限制并行度：源码含若干超大翻译单元，8GB 内存的机器上 -j4 会 OOM（LLVM ERROR: out of memory）
 set_property(GLOBAL PROPERTY JOB_POOLS ponko_compile=2)
@@ -113,6 +121,19 @@ if (SD_VULKAN)
         set(_ponko_glslc_name "glslc")
     endif ()
 
+    # Optional host glslc override. NDK-bundled shaderc can be too old to compile
+    # GL_KHR_cooperative_matrix. A newer host compiler only emits SPIR-V at build time;
+    # the Samsung Vulkan driver still decides whether the optimized kernels can run.
+    if (DEFINED ENV{PONKO_VULKAN_GLSLC} AND NOT "$ENV{PONKO_VULKAN_GLSLC}" STREQUAL "")
+        set(_ponko_host_glslc "$ENV{PONKO_VULKAN_GLSLC}")
+        if (EXISTS "${_ponko_host_glslc}")
+            set(Vulkan_GLSLC_EXECUTABLE "${_ponko_host_glslc}" CACHE FILEPATH "Ponko host glslc override" FORCE)
+            message(STATUS "Ponko: using host glslc override = ${Vulkan_GLSLC_EXECUTABLE}")
+        else ()
+            message(WARNING "Ponko: PONKO_VULKAN_GLSLC path does not exist (${_ponko_host_glslc}); falling back to the NDK glslc")
+        endif ()
+    endif ()
+
     if (NOT Vulkan_GLSLC_EXECUTABLE)
         set(_ponko_glslc "${ANDROID_NDK}/shader-tools/${_ponko_host_tag}/${_ponko_glslc_name}")
         if (EXISTS "${_ponko_glslc}")
@@ -159,4 +180,5 @@ endif()
 # JNI 桥 → libponko_sd.so
 # ---------------------------------------------------------------------------
 add_library(ponko_sd SHARED sdcpp_jni.cpp)
+target_include_directories(ponko_sd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include")
 target_link_libraries(ponko_sd PRIVATE stable-diffusion android log)

@@ -1,0 +1,199 @@
+name: Ponko TAESD and CPU-thread validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feat/taesd-cpu-threads]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ponko-controls-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    name: Verify UI-to-native wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check TAESD slot and CPU-thread data flow
+        run: python3 .github/scripts/check_controls_wiring.py
+
+  android-build:
+    name: Build Android arm64 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          printf 'y\n%.0s' {1..50} | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.3.13750724" \
+            "cmake;3.31.6"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Probe host glslc cooperative-matrix support
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y glslc
+          GLSLC="$(command -v glslc)"
+          echo "Host shader compiler: $GLSLC"
+          "$GLSLC" --version
+          SHADER="app/src/main/cpp/sd/ggml/src/ggml-vulkan/vulkan-shaders/feature-tests/coopmat.comp"
+          if "$GLSLC" -o /dev/null -fshader-stage=compute --target-env=vulkan1.3 "$SHADER"; then
+            echo "PONKO_VULKAN_GLSLC=$GLSLC" >> "$GITHUB_ENV"
+            echo "PASS: host glslc supports GL_KHR_cooperative_matrix; optimized SPIR-V variants can be built"
+          else
+            echo "::warning::host glslc lacks GL_KHR_cooperative_matrix; CMake will use the NDK compiler and standard Vulkan kernels remain available"
+          fi
+      - name: Assemble debug APK
+        run: bash ./gradlew --no-daemon --max-workers=2 assembleDebug
+      - name: Verify native Debug optimization flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Skip CMake's nested try_compile caches. Select the actual Android ABI build.
+          CACHE="$(find app/.cxx/Debug -path '*/CMakeFiles/CMakeScratch/*' -prune -o -path '*/arm64-v8a/CMakeCache.txt' -print -quit)"
+          test -n "$CACHE"
+          BUILD_DIR="$(dirname "$CACHE")"
+          test -s "$BUILD_DIR/build.ninja"
+          if [[ -n "${PONKO_VULKAN_GLSLC:-}" ]]; then
+            if ! grep -F 'GGML_VULKAN_COOPMAT_GLSLC_SUPPORT' "$BUILD_DIR/build.ninja" >/dev/null; then
+              echo "FAIL: host glslc passed the cooperative-matrix probe, but the Android build has no cooperative-matrix shader define" >&2
+              exit 1
+            fi
+            echo "PASS: Android build includes GGML_VULKAN_COOPMAT_GLSLC_SUPPORT"
+          else
+            echo "INFO: cooperative-matrix SPIR-V variants depend on the NDK glslc capabilities"
+          fi
+          # Check the actual compiler flags emitted into Ninja rules, not cache values.
+          python3 - "$BUILD_DIR/build.ninja" <<'PY'
+          from pathlib import Path
+          import sys
+
+          ninja = Path(sys.argv[1]).read_text(encoding="utf-8")
+          arm_flag = "-march=armv8.2-a+dotprod+fp16"
+          compile_rules = [
+              (number, line.strip())
+              for number, line in enumerate(ninja.splitlines(), 1)
+              if line.lstrip().startswith("FLAGS =") and arm_flag in line
+          ]
+          if not compile_rules:
+              print("FAIL: no Android arm64 compile FLAGS rules found", file=sys.stderr)
+              raise SystemExit(1)
+
+          required = {"-g", "-O3", "-DNDEBUG", arm_flag}
+          missing = [
+              (number, line, sorted(required - set(line.split())))
+              for number, line in compile_rules
+              if required - set(line.split())
+          ]
+          if missing:
+              print("FAIL: Android arm64 compile rules are missing required optimization flags:", file=sys.stderr)
+              for number, line, absent in missing[:10]:
+                  print(f"  line {number}: missing {', '.join(absent)}; {line}", file=sys.stderr)
+              raise SystemExit(1)
+
+          print(f"Verified {len(compile_rules)} Android arm64 compile rule(s):")
+          for number, line in compile_rules[:3]:
+              print(f"  line {number}: {line}")
+          print("PASS: generated Android arm64 compile rules use -O3 -DNDEBUG and retain -g")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ponko-debug-arm64
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  taesd-native-runtime:
+    name: Run SD1.5 generation with real TAESD weights
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build curl ca-certificates
+      - name: Configure bundled stable-diffusion.cpp for host CPU
+        run: |
+          cmake -S app/src/main/cpp/sd -B build/sd-host -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_EXAMPLES=OFF \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=OFF \
+            -DSD_USE_SYSTEM_GGML=OFF \
+            -DSD_VULKAN=OFF \
+            -DSD_CUDA=OFF \
+            -DSD_OPENCL=OFF \
+            -DSD_METAL=OFF \
+            -DSD_SYCL=OFF \
+            -DSD_HIPBLAS=OFF \
+            -DSD_MUSA=OFF \
+            -DSD_WEBP=OFF \
+            -DSD_WEBM=OFF \
+            -DGGML_OPENMP=ON \
+            -DGGML_CPU=ON \
+            -DGGML_CPU_REPACK=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF
+      - name: Compile native inference library
+        run: cmake --build build/sd-host --target stable-diffusion --parallel 2
+      - name: Download pinned SD1.5 and TAESD test weights
+        run: |
+          mkdir -p build/runtime-models
+          python3 -m venv build/taesd-tools
+          build/taesd-tools/bin/python -m pip install numpy safetensors
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 30 \
+            "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/f41080936c76af537542aedf67f0dab94e1f337f/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf?download=true" \
+            -o build/runtime-models/sd15-q4_0.gguf
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 30 \
+            "https://huggingface.co/madebyollin/taesd/resolve/9565f9356505d7c3537d0e15c558520ed95142ee/diffusion_pytorch_model.safetensors?download=true" \
+            -o build/runtime-models/taesd-full.safetensors
+          test "$(stat -c %s build/runtime-models/sd15-q4_0.gguf)" -gt 1400000000
+          echo "db169d69145ec4ff064e49d99c95fa05d3eb04ee453de35824a6d0f325513549  build/runtime-models/taesd-full.safetensors" | sha256sum --check
+          build/taesd-tools/bin/python .github/scripts/extract_taesd_decoder.py \
+            build/runtime-models/taesd-full.safetensors \
+            build/runtime-models/taesd-decoder-only.safetensors
+          if ! strings -a build/runtime-models/sd15-q4_0.gguf | grep -F "first_stage_model.decoder.conv_in.weight" > /dev/null; then
+            echo "FAIL: test SD1.5 GGUF does not contain the baked-in VAE decoder tensor" >&2
+            exit 1
+          fi
+          echo "PASS: test model includes its baked-in VAE decoder tensor"
+      - name: Compile native runtime smoke test
+        run: |
+          c++ -std=c++17 -O2 \
+            -I app/src/main/cpp/sd/include \
+            .github/scripts/taesd_runtime_smoke.cpp \
+            -L build/sd-host/bin \
+            -Wl,-rpath,"$PWD/build/sd-host/bin" \
+            -lstable-diffusion \
+            -o build/taesd-runtime-smoke
+      - name: Generate a smoke-test image and verify TAESD was selected
+        run: |
+          ./build/taesd-runtime-smoke \
+            build/runtime-models/sd15-q4_0.gguf \
+            build/runtime-models/taesd-decoder-only.safetensors

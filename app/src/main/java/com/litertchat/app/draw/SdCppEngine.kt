@@ -79,6 +79,12 @@ object SdCppEngine {
 
     external fun nativeInfo(): String
 
+    /** Runtime Vulkan capabilities detected by ggml-vulkan for the active GPU. */
+    external fun nativeVulkanDiagnostics(): String
+
+    fun vulkanDiagnostics(): String =
+        runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
+
     /** 最近一次 new_sd_ctx 的完整参数（诊断加载失败用） */
     external fun nativeLastParams(): String
 
@@ -93,12 +99,14 @@ object SdCppEngine {
         slots: Array<String?>?,
     ): Long
 
+    data class Lora(val path: String, val scale: Float)
+
     external fun nativeGenerate(
         handle: Long,
         prompt: String,
         negative: String,
-        loraPath: String?,
-        loraScale: Float,
+        loraPaths: Array<String>,
+        loraScales: FloatArray,
         width: Int,
         height: Int,
         steps: Int,
@@ -164,7 +172,7 @@ object SdCppEngine {
     val SLOT_KEYS = arrayOf(
         "model", "diffusion", "high_noise", "uncond",
         "clip_l", "clip_g", "clip_vision", "t5xxl",
-        "llm", "llm_vision", "vae", "audio_vae",
+        "llm", "llm_vision", "vae", "audio_vae", "taesd",
     )
 
     /** 把槽位表（key -> 文件绝对路径）转成 JNI 要的定长数组 */
@@ -186,8 +194,7 @@ object SdCppEngine {
         handle: Long,
         prompt: String,
         negative: String = "",
-        loraPath: String? = null,
-        loraScale: Float = 1.0f,
+        loras: List<Lora> = emptyList(),
         width: Int = 512,
         height: Int = 512,
         steps: Int = 20,
@@ -204,8 +211,10 @@ object SdCppEngine {
     ): Bitmap? {
         val effectiveSeed = if (seed < 0) (System.currentTimeMillis() % 1_000_000_000L) else seed
         val useInit = initImage != null && initImage.isNotEmpty() && initWidth > 0 && initHeight > 0
+        val loraPaths = loras.map { it.path }.toTypedArray()
+        val loraScales = loras.map { it.scale }.toFloatArray()
         val px = nativeGenerate(
-            handle, prompt, negative, loraPath, loraScale,
+            handle, prompt, negative, loraPaths, loraScales,
             width, height, steps, cfg, effectiveSeed,
             sampler.code, scheduler.code, cb, onPreview,
             if (useInit) initImage else null,

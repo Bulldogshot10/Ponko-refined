@@ -74,6 +74,25 @@ class DrawPage(
     /** 是否正在出图（换主题要重建视图，出图途中不适合重建） */
     fun isBusy(): Boolean = generating
 
+    /** CPU worker count used for the next native drawing-model load. */
+    fun cpuThreads(): Int = nThreads
+
+    fun setCpuThreads(value: Int) {
+        val maxThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
+        nThreads = value.coerceIn(1, maxThreads)
+        prefs().edit().putInt(KEY_CPU_THREADS, nThreads).apply()
+    }
+
+    fun taesdEnabled(): Boolean = prefs().getBoolean(KEY_TAESD_ENABLED, false)
+
+    fun setTaesdEnabled(enabled: Boolean) {
+        prefs().edit().putBoolean(KEY_TAESD_ENABLED, enabled).apply()
+    }
+
+    fun taesdFileName(): String? = activeSetOrSelected()?.files?.get("taesd")?.name
+
+    fun hasTaesdFile(): Boolean = activeSetOrSelected()?.files?.get("taesd")?.isFile == true
+
     companion object {
         const val DIR_NAME = "draw"
         /** 打标模型/标签表目录：filesDir/tagger */
@@ -90,6 +109,8 @@ class DrawPage(
 
         /** 模型集偏好键（当前选中的模型集 id） */
         private const val KEY_SEL_SET = "selSet"
+        private const val KEY_CPU_THREADS = "drawCpuThreads"
+        private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -130,6 +151,7 @@ class DrawPage(
             "llm" -> R.string.s_355
             "llm_vision" -> R.string.s_356
             "vae" -> R.string.s_357
+            "taesd" -> R.string.draw_taesd_label
             else -> R.string.s_358
         }
 
@@ -140,7 +162,8 @@ class DrawPage(
             kind == KIND_SINGLE && family == FAM_OTHER -> listOf(
                 "model" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
                 "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
-                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false)
+                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false, "taesd" to false)
+            kind == KIND_SINGLE && family == FAM_SD15 -> listOf("model" to true, "vae" to false, "taesd" to false)
             kind == KIND_SINGLE -> listOf("model" to true, "vae" to false)
             family == FAM_SDXL -> listOf(
                 "diffusion" to true, "clip_l" to true, "clip_g" to true, "vae" to true)
@@ -165,6 +188,8 @@ class DrawPage(
         /** SharedPreferences 文件名与键（只存 UI 偏好） */
         private const val PREFS_NAME = "ponko"
         private const val KEY_USE_LORA = "useLora"
+        private const val MAX_LORA_SLOTS = 4
+        private const val LORA_SLOT_NONE = "— none —"
 
         // 绘图参数持久化（提示词按用户要求不保存，每次重来）
         private const val KEY_W = "drawW"
@@ -209,7 +234,9 @@ class DrawPage(
     var pendingNewSet: Boolean = false
 
     /** 推理线程数：默认 4（多数手机的大核数；开太多会跑到小核上，反而变慢） */
-    private var nThreads: Int = 4
+    private var nThreads: Int = prefs().getInt(KEY_CPU_THREADS, 4).coerceIn(
+        1, Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
+    )
 
     /** FlashAttention（CLIP + UNet）。实测不开每步慢约 28%（6 步 125s vs 98s）。 */
     private var flashAttn: Boolean = true
@@ -225,6 +252,7 @@ class DrawPage(
 
     /** 当前绘图实际用的后端（"CPU" / "Vulkan0"），显示在状态行 */
     private var activeBackend: String = "CPU"
+    private var activeVulkanDiagnostic: String = ""
 
     /**
      * 是否启用 LoRA 加速（挂 LCM-LoRA，压低步数）。
@@ -255,7 +283,7 @@ class DrawPage(
      */
     fun syncDrawCore() {
         if (!::stepsEdit.isInitialized || sdHandle == 0L) return
-        val lora = if (useLora) activeLora() else null
+        val loras = selectedLoras("t2i")
         DrawCore.updateParams(
             DrawCore.Params(
                 steps = stepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20,
@@ -265,10 +293,9 @@ class DrawPage(
                 height = (heightEdit.text.toString().toIntOrNull() ?: 512)
                     .let { (it / 64) * 64 }.coerceIn(64, 2048),
                 negative = negEdit.text.toString(),
-                sampler = pickSampler(lora != null),
-                scheduler = pickScheduler(lora != null),
-                loraPath = lora?.absolutePath,
-                loraScale = loraScaleEdit.text.toString().toFloatOrNull()?.coerceIn(0f, 2f) ?: 1.0f,
+                sampler = pickSampler(loras.isNotEmpty()),
+                scheduler = pickScheduler(loras.isNotEmpty()),
+                loras = loras,
             )
         )
     }
@@ -299,8 +326,10 @@ class DrawPage(
     private lateinit var samplerSpinner: android.widget.Spinner
     private lateinit var schedulerSpinner: android.widget.Spinner
 
-    /** LoRA 权重 */
+    /** Four independent LoRA selectors and strengths for text-to-image. */
     private lateinit var loraScaleEdit: EditText
+    private val t2iLoraSpinners = mutableListOf<android.widget.Spinner>()
+    private val t2iLoraWeights = mutableListOf<EditText>()
 
     // 顶部菜单：参数 / 结果
     private lateinit var tabParams: TextView
@@ -354,6 +383,8 @@ class DrawPage(
     private lateinit var i2iSchedulerSpinner: android.widget.Spinner
     private lateinit var i2iLoraCheck: CheckBox
     private lateinit var i2iLoraScaleEdit: EditText
+    private val i2iLoraSpinners = mutableListOf<android.widget.Spinner>()
+    private val i2iLoraWeights = mutableListOf<EditText>()
     private lateinit var i2iLoraHint: TextView
     private lateinit var i2iGenBtn: Button
     private lateinit var i2iProgressText: TextView
@@ -555,9 +586,20 @@ class DrawPage(
             }
         }
         paramCard.addView(loraCheck)
-        loraScaleEdit = smallNumber(loadParam(KEY_LORA_SCALE, defOf("t2i", "loraScale", "1.0")))
-        bindParam(loraScaleEdit, KEY_LORA_SCALE)
-        paramCard.addView(paramRow(c.getString(R.string.s_024), loraScaleEdit, c.getString(R.string.s_037)))
+        t2iLoraSpinners.clear()
+        t2iLoraWeights.clear()
+        for (slot in 0 until MAX_LORA_SLOTS) {
+            val key = loraWeightKey("t2i", slot)
+            val defaultWeight = if (slot == 0) defOf("t2i", "loraScale", "1.0")
+                else defOf("t2i", "loraScale" + (slot + 1), "1.0")
+            val weight = smallNumber(loadParam(key, defaultWeight))
+            if (slot == 0) loraScaleEdit = weight
+            bindParam(weight, key)
+            val selector = android.widget.Spinner(c)
+            t2iLoraSpinners.add(selector)
+            t2iLoraWeights.add(weight)
+            paramCard.addView(loraSlotRow(slot, selector, weight), matchWrap(top = 4))
+        }
         loraHint = TextView(c).apply {
             textSize = 11f
             setTextColor(subText)
@@ -572,6 +614,7 @@ class DrawPage(
 
         // ---- Tagger 页面 ----
         taggerContent = buildTaggerContent()
+        refreshLoraHint()
 
         // 模式容器：用 visibility 切换，不用嵌套 ViewPager，
         // 否则会和外层「参数/结果」的左右翻页抢手势。
@@ -880,9 +923,20 @@ class DrawPage(
             }
         }
         paramCard.addView(i2iLoraCheck)
-        i2iLoraScaleEdit = smallNumber(loadParam(KEY_I2I_LORA_SCALE, defOf("i2i", "loraScale", "1.0")))
-        bindParam(i2iLoraScaleEdit, KEY_I2I_LORA_SCALE)
-        paramCard.addView(paramRow(c.getString(R.string.s_024), i2iLoraScaleEdit, c.getString(R.string.s_037)))
+        i2iLoraSpinners.clear()
+        i2iLoraWeights.clear()
+        for (slot in 0 until MAX_LORA_SLOTS) {
+            val key = loraWeightKey("i2i", slot)
+            val defaultWeight = if (slot == 0) defOf("i2i", "loraScale", "1.0")
+                else defOf("i2i", "loraScale" + (slot + 1), "1.0")
+            val weight = smallNumber(loadParam(key, defaultWeight))
+            if (slot == 0) i2iLoraScaleEdit = weight
+            bindParam(weight, key)
+            val selector = android.widget.Spinner(c)
+            i2iLoraSpinners.add(selector)
+            i2iLoraWeights.add(weight)
+            paramCard.addView(loraSlotRow(slot, selector, weight), matchWrap(top = 4))
+        }
         i2iLoraHint = TextView(c).apply {
             textSize = 11f
             setTextColor(subText)
@@ -1356,18 +1410,143 @@ class DrawPage(
     }
 
     private fun refreshI2iLoraHint() {
-        if (!::i2iLoraHint.isInitialized) return
-        try {
-            val a = activeLora()
-            i2iLoraHint.text = when {
-                a == null -> c.getString(R.string.s_118)
-                useLora -> c.getString(R.string.v_028, (a.nameWithoutExtension))
-                else -> c.getString(R.string.v_029, (a.nameWithoutExtension))
-            }
-        } catch (_: Throwable) {}
+        updateI2iLoraHintText()
     }
 
     // ================= LoRA =================
+
+    private fun loraWeightKey(page: String, slot: Int): String {
+        val base = if (page == "i2i") KEY_I2I_LORA_SCALE else KEY_LORA_SCALE
+        return if (slot == 0) base else base + "_slot" + (slot + 1)
+    }
+
+    private fun loraSlotKey(page: String, slot: Int): String =
+        "drawLora_" + page + "_slot" + (slot + 1)
+
+    private fun loraSlotRow(
+        slot: Int,
+        selector: android.widget.Spinner,
+        weight: EditText,
+    ): LinearLayout = LinearLayout(c).apply {
+        orientation = LinearLayout.HORIZONTAL
+        val label = TextView(c).apply {
+            text = "L" + (slot + 1)
+            textSize = 12f
+            setTextColor(subText)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        addView(label, LinearLayout.LayoutParams(dp(30), dp(46)))
+        addView(selector, LinearLayout.LayoutParams(0, dp(46), 1f))
+        weight.hint = "1.0"
+        addView(weight, LinearLayout.LayoutParams(dp(64), dp(46)).apply {
+            leftMargin = dp(6)
+        })
+    }
+
+    /** Refresh four per-mode selectors after import, delete, or model selection changes. */
+    private fun refreshLoraSelectors() {
+        val files = listLoras()
+        val names = listOf(LORA_SLOT_NONE) + files.map { it.name }
+
+        fun refresh(spinners: List<android.widget.Spinner>, page: String) {
+            spinners.forEachIndexed { slot, spinner ->
+                val key = loraSlotKey(page, slot)
+                val saved = if (prefs().contains(key)) {
+                    prefs().getString(key, "") ?: ""
+                } else if (slot == 0) {
+                    activeLora()?.name.orEmpty()
+                } else {
+                    ""
+                }
+                val adapter = android.widget.ArrayAdapter(
+                    c, android.R.layout.simple_spinner_item, names
+                ).apply {
+                    setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                }
+                spinner.onItemSelectedListener = null
+                spinner.adapter = adapter
+                spinner.setSelection(names.indexOf(saved).coerceAtLeast(0), false)
+                spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(
+                        parent: android.widget.AdapterView<*>?,
+                        view: View?,
+                        position: Int,
+                        id: Long,
+                    ) {
+                        val chosen = names.getOrNull(position)
+                            ?.takeUnless { it == LORA_SLOT_NONE }.orEmpty()
+                        prefs().edit().putString(key, chosen).apply()
+                        if (page == "t2i") {
+                            updateLoraHintText()
+                            syncDrawCore()
+                        } else {
+                            updateI2iLoraHintText()
+                        }
+                    }
+
+                    override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+                }
+            }
+        }
+
+        refresh(t2iLoraSpinners, "t2i")
+        refresh(i2iLoraSpinners, "i2i")
+    }
+
+    /** Selected LoRAs with independent multipliers, bounded to four unique files. */
+    private fun selectedLoras(page: String): List<SdCppEngine.Lora> {
+        if (!useLora) return emptyList()
+        val spinners = if (page == "i2i") i2iLoraSpinners else t2iLoraSpinners
+        val weights = if (page == "i2i") i2iLoraWeights else t2iLoraWeights
+        val files = listLoras()
+        val seen = HashSet<String>()
+        return spinners.mapIndexedNotNull { slot, spinner ->
+            val name = spinner.selectedItem as? String ?: return@mapIndexedNotNull null
+            if (name == LORA_SLOT_NONE) return@mapIndexedNotNull null
+            val file = files.firstOrNull { it.name == name && it.isFile }
+                ?: return@mapIndexedNotNull null
+            if (!seen.add(file.absolutePath)) return@mapIndexedNotNull null
+            val scale = weights.getOrNull(slot)?.text?.toString()
+                ?.toFloatOrNull()?.coerceIn(0f, 2f) ?: 1.0f
+            if (scale <= 0f) null else SdCppEngine.Lora(file.absolutePath, scale)
+        }
+    }
+
+    private fun selectedLoraNames(spinners: List<android.widget.Spinner>): List<String> =
+        spinners.mapNotNull { it.selectedItem as? String }
+            .filter { it != LORA_SLOT_NONE }
+            .distinct()
+
+    private fun updateLoraHintText() {
+        if (!::loraHint.isInitialized) return
+        val names = selectedLoraNames(t2iLoraSpinners).map { File(it).nameWithoutExtension }
+        loraHint.text = when {
+            names.isEmpty() -> c.getString(R.string.s_118)
+            useLora -> c.getString(R.string.v_028, names.joinToString(", "))
+            else -> c.getString(R.string.v_029, names.joinToString(", "))
+        }
+    }
+
+    private fun updateI2iLoraHintText() {
+        if (!::i2iLoraHint.isInitialized) return
+        val names = selectedLoraNames(i2iLoraSpinners).map { File(it).nameWithoutExtension }
+        i2iLoraHint.text = when {
+            names.isEmpty() -> c.getString(R.string.s_118)
+            useLora -> c.getString(R.string.v_028, names.joinToString(", "))
+            else -> c.getString(R.string.v_029, names.joinToString(", "))
+        }
+    }
+
+    /** If a slot has never been configured or is empty, use the newly imported LoRA as slot 1. */
+    private fun selectNewLoraIfFirstSlotEmpty(file: File) {
+        val e = prefs().edit().putString("selLora", file.name)
+        for (page in listOf("t2i", "i2i")) {
+            val key = loraSlotKey(page, 0)
+            val saved = prefs().getString(key, null)
+            if (saved.isNullOrEmpty()) e.putString(key, file.name)
+        }
+        e.apply()
+    }
 
     /** LoRA 目录：filesDir/draw/lora */
     private fun loraDir(): File = File(File(c.filesDir, DIR_NAME), "lora").apply { mkdirs() }
@@ -1390,13 +1569,23 @@ class DrawPage(
         return all.first()
     }
 
-    /** UI 高亮用：当前生效的 LoRA 名 */
-    fun currentLoraName(): String? = activeLora()?.name
+    /** UI 高亮用：第一个文生图槽位中的 LoRA 名 */
+    fun currentLoraName(): String? {
+        if (t2iLoraSpinners.isNotEmpty()) {
+            return (t2iLoraSpinners.first().selectedItem as? String)
+                ?.takeUnless { it == LORA_SLOT_NONE || it.isBlank() }
+        }
+        return activeLora()?.name
+    }
 
-    /** 选中某个 LoRA（持久化选择） */
+    /** 选中某个 LoRA：同时设成两种生成模式的第一个槽位。 */
     fun selectLora(f: File) {
         loraFile = f
-        prefs().edit().putString("selLora", f.name).apply()
+        prefs().edit()
+            .putString("selLora", f.name)
+            .putString(loraSlotKey("t2i", 0), f.name)
+            .putString(loraSlotKey("i2i", 0), f.name)
+            .apply()
         refreshLoraHint()
     }
 
@@ -1411,20 +1600,28 @@ class DrawPage(
     fun deleteLora(f: File): Boolean = runCatching {
         if (loraFile?.absolutePath == f.absolutePath) loraFile = null
         val ok = f.delete()
+        if (ok) {
+            val e = prefs().edit()
+            for (page in listOf("t2i", "i2i")) {
+                for (slot in 0 until MAX_LORA_SLOTS) {
+                    val key = loraSlotKey(page, slot)
+                    if (prefs().getString(key, null) == f.name) e.putString(key, "")
+                }
+            }
+            if (prefs().getString("selLora", null) == f.name) e.remove("selLora")
+            e.apply()
+        }
         refreshLoraHint()
         ok
     }.getOrDefault(false)
 
     private fun refreshLoraHint() {
         try {
-            val a = activeLora()
-            loraHint.text = when {
-                a == null -> c.getString(R.string.s_118)
-                useLora -> c.getString(R.string.v_028, (a.nameWithoutExtension))
-                else -> c.getString(R.string.v_029, (a.nameWithoutExtension))
-            }
+            refreshLoraSelectors()
+            updateLoraHintText()
+            updateI2iLoraHintText()
         } catch (_: Throwable) {}
-        refreshI2iLoraHint()
+        syncDrawCore()
     }
 
     /**
@@ -1437,6 +1634,7 @@ class DrawPage(
         val err = downloadToFile("$host/$LORA_HF_PATH", dest, 100L * 1024, onProgress)
         if (err == null) {
             loraFile = dest
+            selectNewLoraIfFirstSlotEmpty(dest)
             refreshLoraHint()
         }
         return err
@@ -1535,7 +1733,10 @@ class DrawPage(
             o.put("kind", s.kind)
             o.put("family", s.family)
             val a = org.json.JSONObject()
-            s.files.forEach { (k, f) -> a.put(k, f.name) }
+            s.files.forEach { (k, f) ->
+                val insideSet = f.parentFile?.absoluteFile == d.absoluteFile
+                a.put(k, if (insideSet) f.name else f.absolutePath)
+            }
             o.put("slots", a)
             File(d, "ponko-set.json").writeText(o.toString())
         }
@@ -1549,7 +1750,8 @@ class DrawPage(
             while (keys.hasNext()) {
                 val k = keys.next()
                 val fn = a.optString(k, "")
-                val f = File(dir, fn)
+                val stored = File(fn)
+                val f = if (stored.isAbsolute) stored else File(dir, fn)
                 if (fn.isNotEmpty() && f.isFile) files[k] = f
             }
         }
@@ -1614,6 +1816,7 @@ class DrawPage(
     fun clearSlot(key: String) {
         val s = activeSetOrSelected() ?: return
         s.files.remove(key)
+        if (key == "taesd") setTaesdEnabled(false)
         writeSetJson(s)
     }
 
@@ -1647,14 +1850,26 @@ class DrawPage(
             }
             val key = slotKey ?: if (pendingKind == KIND_SINGLE) "model" else "diffusion"
             val cur = activeSet
-            val useSet: ModelSet = if (cur == null || cur.dir == null || pendingNewSet) {
-                val id = newSetId(name.substringBeforeLast('.'))
-                val dir = File(setsDir(), id).apply { mkdirs() }
-                ModelSet(id, id, pendingKind, pendingFamily, dir).also {
-                    activeSet = it
-                    pendingNewSet = false
+            val useSet: ModelSet = when {
+                pendingNewSet || cur == null -> {
+                    val id = newSetId(name.substringBeforeLast('.'))
+                    val dir = File(setsDir(), id).apply { mkdirs() }
+                    ModelSet(id, id, pendingKind, pendingFamily, dir).also {
+                        activeSet = it
+                        pendingNewSet = false
+                    }
                 }
-            } else cur
+                cur.dir == null -> {
+                    // Upgrade a legacy loose-file model to a model set without copying multi-GB
+                    // weights. Persist external paths so adding TAESD never replaces the main model.
+                    val id = newSetId(cur.name)
+                    val dir = File(setsDir(), id).apply { mkdirs() }
+                    ModelSet(id, cur.name, cur.kind, cur.family, dir, LinkedHashMap(cur.files)).also {
+                        activeSet = it
+                    }
+                }
+                else -> cur
+            }
             val dir: File = useSet.dir ?: return@withContext c.getString(R.string.s_106)
 
             withContext(Dispatchers.Main) { onStage(c.getString(R.string.v_033, name)) }
@@ -1687,6 +1902,7 @@ class DrawPage(
             useSet.files[key] = dest
             writeSetJson(useSet)
             selectSet(useSet)
+            if (key == "taesd") setTaesdEnabled(true)
             withContext(Dispatchers.Main) {
                 statusText.text = c.getString(R.string.s_161)
             }
@@ -1733,6 +1949,7 @@ class DrawPage(
             } ?: return@withContext c.getString(R.string.s_106)
             withContext(Dispatchers.Main) {
                 loraFile = dest
+                selectNewLoraIfFirstSlotEmpty(dest)
                 refreshLoraHint()
             }
             null
@@ -1785,6 +2002,7 @@ class DrawPage(
         // 槽位表 → sd.cpp 的路径参数
         val slots = LinkedHashMap<String, String>()
         set.files.forEach { (k, f) -> slots[k] = f.absolutePath }
+        if (!taesdEnabled()) slots.remove("taesd")
         val missing = slotMissingIds(set).map { c.getString(slotLabelRes(it)) }
         if (missing.isNotEmpty()) {
             val msg = c.getString(R.string.s_363, missing.joinToString("、"))
@@ -1853,6 +2071,14 @@ class DrawPage(
                 return c.getString(R.string.s_059)
             }
             sdHandle = h
+            activeVulkanDiagnostic = if (used.contains("vulkan", ignoreCase = true)) {
+                SdCppEngine.vulkanDiagnostics()
+            } else {
+                ""
+            }
+            if (activeVulkanDiagnostic.isNotBlank()) {
+                stage("4c Vulkan capabilities: " + activeVulkanDiagnostic.replace("\n", " | "))
+            }
             mainModel = set.mainFile()
             vaeModel = set.files["vae"]
             // 登记到进程级单例：API 的绘图接口要复用同一个句柄（界面重建/换主题都不影响）
@@ -1862,9 +2088,16 @@ class DrawPage(
                 stage(c.getString(R.string.s_010) + SdCppEngine.lastParams().replace("\n", "  |  "))
             }
 
+            val vkMode = when {
+                !activeBackend.contains("vulkan", ignoreCase = true) -> ""
+                activeVulkanDiagnostic.contains("cooperative matrix 1") -> " · Xclipse coopmat"
+                activeVulkanDiagnostic.contains("Xclipse 940 profile detected") -> " · Xclipse generic"
+                else -> " · Vulkan caps n/a"
+            }
             val summary = buildString {
                 append(c.getString(R.string.s_094)).append(set.name)
                 append(" · ").append(activeBackend).append(" · ").append(nThreads).append(c.getString(R.string.s_001)).append(if (flashAttn) "FA" else c.getString(R.string.s_110)).append(" · sd.cpp")
+                append(vkMode)
             }
             statusText.post { statusText.text = summary }
             statusText.post { refreshQuantText() }
@@ -1885,6 +2118,7 @@ class DrawPage(
         if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
         sdHandle = 0L
         activeBackend = "CPU"
+        activeVulkanDiagnostic = ""
         try {
             statusText.text = c.getString(R.string.s_115)
         } catch (_: Throwable) {}
@@ -1959,6 +2193,8 @@ class DrawPage(
             Toast.makeText(c, c.getString(R.string.s_047), Toast.LENGTH_SHORT).show()
             return
         }
+        val requestedSteps = stepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
+        denoisingStarted = false
         setGenerating(true)
         progressText.visibility = View.VISIBLE
         progressText.text = c.getString(R.string.s_126)
@@ -1976,7 +2212,9 @@ class DrawPage(
                     delay(1000)
                     val sec = (System.currentTimeMillis() - startedAt) / 1000
                     progressText.post {
-                        val phase = if (sec < 8) c.getString(R.string.s_127) else c.getString(R.string.s_129)
+                        // sd.cpp reuses the progress callback for lazy tensor loading. Keep the
+                        // UI in Loading model until a callback matches this request's sample-step count.
+                        val phase = if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)
                         val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
                         progressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
                         if (::procStepText.isInitialized) {
@@ -1995,8 +2233,17 @@ class DrawPage(
                 val img = generateImage(
                     prompt,
                     onProgress = { cur, total ->
-                        curStep = cur
-                        totalStep = total
+                        // ModelLoader::pretty_bytes_progress shares the native callback and can
+                        // report tensor counts (e.g. 686/686), not denoising steps. Ignore those
+                        // until the sampler reports a plausible step count for this request.
+                        if (total in 1..(requestedSteps + 2)) {
+                            denoisingStarted = true
+                            curStep = cur.coerceIn(0, total)
+                            totalStep = total
+                        } else if (!denoisingStarted) {
+                            curStep = 0
+                            totalStep = 0
+                        }
                     },
                     onPreview = { st, w, h, rgb -> onPreviewFrame(st, w, h, rgb) },
                 )
@@ -2039,6 +2286,7 @@ class DrawPage(
 
     private var curStep = 0
     private var totalStep = 0
+    @Volatile private var denoisingStarted = false
 
     /** 用户是否已请求中断当前生成（用于把“取消”与“真失败”区分开）。 */
     @Volatile private var cancelRequested = false
@@ -2065,16 +2313,14 @@ class DrawPage(
         if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
         if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
 
-        // LoRA：走结构化参数（sd.cpp 原生接口，不再拼 prompt 里的 lora: 语法）
-        val lora = if (useLora) activeLora() else null
+        // LoRA 列表按槽位逐个传给 sd.cpp，支持每个 adapter 独立权重。
+        val loras = selectedLoras("t2i")
         // EditText 必须在主线程读，先取出来再进 IO
         val negative = negEdit.text.toString()
 
-        // 采样器/调度器：默认「自动」——勾了 LoRA 就走 LCM（否则 LCM-LoRA 效果大打折扣），否则 Euler a + Discrete
-        val sampler = pickSampler(lora != null)
-        val scheduler = pickScheduler(lora != null)
-        // LoRA 权重：0 = 不挂，1.0 是标准
-        val loraScale = loraScaleEdit.text.toString().toFloatOrNull()?.coerceIn(0f, 2f) ?: 1.0f
+        // 采样器/调度器：默认「自动」, 有任意 LoRA 时走 LCM。
+        val sampler = pickSampler(loras.isNotEmpty())
+        val scheduler = pickScheduler(loras.isNotEmpty())
 
         // 对话页出图不走界面的 setGenerating，这里手动上报一句：
         // 否则 API 侧不知道界面在出图，会插进来抢同一个 native 句柄
@@ -2087,8 +2333,7 @@ class DrawPage(
                     handle = h,
                     prompt = prompt,
                     negative = negative,
-                    loraPath = lora?.absolutePath,
-                    loraScale = loraScale,
+                    loras = loras,
                     width = w,
                     height = hgt,
                     steps = steps,
@@ -2259,11 +2504,10 @@ class DrawPage(
         if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
         val src = i2iBitmap ?: throw IllegalStateException(c.getString(R.string.s_214))
 
-        val lora = if (useLora) activeLora() else null
+        val loras = selectedLoras("i2i")
         val negative = i2iNegEdit.text.toString()
-        val sampler = pickI2iSampler(lora != null)
-        val scheduler = pickI2iScheduler(lora != null)
-        val loraScale = i2iLoraScaleEdit.text.toString().toFloatOrNull()?.coerceIn(0f, 2f) ?: 1.0f
+        val sampler = pickI2iSampler(loras.isNotEmpty())
+        val scheduler = pickI2iScheduler(loras.isNotEmpty())
 
         val bmp = withContext(Dispatchers.IO) {
             val rgb = SdCppEngine.bitmapToRgb888(src)
@@ -2271,8 +2515,7 @@ class DrawPage(
                 handle = h,
                 prompt = prompt,
                 negative = negative,
-                loraPath = lora?.absolutePath,
-                loraScale = loraScale,
+                loras = loras,
                 width = w,
                 height = hgt,
                 steps = steps,
@@ -2567,6 +2810,9 @@ class DrawPage(
             override fun afterTextChanged(s: android.text.Editable?) {
                 val v = s?.toString().orEmpty()
                 if (v.isNotBlank()) prefs().edit().putString(key, v).apply()
+                if (key == KEY_LORA_SCALE || key.startsWith(KEY_LORA_SCALE + "_slot")) {
+                    syncDrawCore()
+                }
             }
             override fun beforeTextChanged(s: CharSequence?, st: Int, b: Int, cnt: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, cnt: Int) {}
@@ -2589,7 +2835,14 @@ class DrawPage(
         put(KEY_STEPS, stepsEdit)
         put(KEY_CFG, cfgEdit)
         put(KEY_SEED, seedEdit)
-        put(KEY_LORA_SCALE, loraScaleEdit)
+        t2iLoraWeights.forEachIndexed { slot, edit ->
+            put(loraWeightKey("t2i", slot), edit)
+        }
+        t2iLoraSpinners.forEachIndexed { slot, spinner ->
+            val name = (spinner.selectedItem as? String)
+                ?.takeUnless { it == LORA_SLOT_NONE }.orEmpty()
+            e.putString(loraSlotKey("t2i", slot), name)
+        }
         e.putInt(KEY_SAMPLER, samplerSpinner.selectedItemPosition)
         e.putInt(KEY_SCHEDULER, schedulerSpinner.selectedItemPosition)
         if (::i2iStepsEdit.isInitialized) {
@@ -2599,7 +2852,14 @@ class DrawPage(
             put(KEY_I2I_CFG, i2iCfgEdit)
             put(KEY_I2I_SEED, i2iSeedEdit)
             put(KEY_I2I_STRENGTH, i2iStrengthEdit)
-            put(KEY_I2I_LORA_SCALE, i2iLoraScaleEdit)
+            i2iLoraWeights.forEachIndexed { slot, edit ->
+                put(loraWeightKey("i2i", slot), edit)
+            }
+            i2iLoraSpinners.forEachIndexed { slot, spinner ->
+                val name = (spinner.selectedItem as? String)
+                    ?.takeUnless { it == LORA_SLOT_NONE }.orEmpty()
+                e.putString(loraSlotKey("i2i", slot), name)
+            }
             e.putInt(KEY_I2I_SAMPLER, i2iSamplerSpinner.selectedItemPosition)
             e.putInt(KEY_I2I_SCHEDULER, i2iSchedulerSpinner.selectedItemPosition)
         }
@@ -2641,14 +2901,20 @@ class DrawPage(
         when (page) {
             "t2i" -> {
                 put("w", widthEdit); put("h", heightEdit); put("steps", stepsEdit)
-                put("cfg", cfgEdit); put("seed", seedEdit); put("loraScale", loraScaleEdit)
+                put("cfg", cfgEdit); put("seed", seedEdit)
+                t2iLoraWeights.forEachIndexed { slot, edit ->
+                    put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
+                }
                 e.putInt("def_t2i_sampler_$lg", samplerSpinner.selectedItemPosition)
                 e.putInt("def_t2i_scheduler_$lg", schedulerSpinner.selectedItemPosition)
             }
             "i2i" -> {
                 put("strength", i2iStrengthEdit)
                 put("w", i2iWidthEdit); put("h", i2iHeightEdit); put("steps", i2iStepsEdit)
-                put("cfg", i2iCfgEdit); put("seed", i2iSeedEdit); put("loraScale", i2iLoraScaleEdit)
+                put("cfg", i2iCfgEdit); put("seed", i2iSeedEdit)
+                i2iLoraWeights.forEachIndexed { slot, edit ->
+                    put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
+                }
                 e.putInt("def_i2i_sampler_$lg", i2iSamplerSpinner.selectedItemPosition)
                 e.putInt("def_i2i_scheduler_$lg", i2iSchedulerSpinner.selectedItemPosition)
             }
@@ -2671,7 +2937,9 @@ class DrawPage(
                 stepsEdit.setText(defOf("t2i", "steps", builtinSteps()))
                 cfgEdit.setText(defOf("t2i", "cfg", builtinCfg()))
                 seedEdit.setText(defOf("t2i", "seed", "-1"))
-                loraScaleEdit.setText(defOf("t2i", "loraScale", "1.0"))
+                t2iLoraWeights.forEachIndexed { slot, edit ->
+                    edit.setText(defOf("t2i", if (slot == 0) "loraScale" else "loraScale" + (slot + 1), "1.0"))
+                }
                 samplerSpinner.setSelection(defOfInt("t2i", "sampler", 0), false)
                 schedulerSpinner.setSelection(defOfInt("t2i", "scheduler", 0), false)
             }
@@ -2682,7 +2950,9 @@ class DrawPage(
                 i2iStepsEdit.setText(defOf("i2i", "steps", builtinSteps()))
                 i2iCfgEdit.setText(defOf("i2i", "cfg", builtinCfg()))
                 i2iSeedEdit.setText(defOf("i2i", "seed", "-1"))
-                i2iLoraScaleEdit.setText(defOf("i2i", "loraScale", "1.0"))
+                i2iLoraWeights.forEachIndexed { slot, edit ->
+                    edit.setText(defOf("i2i", if (slot == 0) "loraScale" else "loraScale" + (slot + 1), "1.0"))
+                }
                 i2iSamplerSpinner.setSelection(defOfInt("i2i", "sampler", 0), false)
                 i2iSchedulerSpinner.setSelection(defOfInt("i2i", "scheduler", 0), false)
             }

@@ -8,7 +8,11 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <cstdio>
 
+#include "ggml.h"
+#include "ggml-vulkan.h"
 #include "stable-diffusion.h"
 
 #define TAG "PonkoSd"
@@ -32,6 +36,45 @@ SdHandle* g_active = nullptr;  // 同时只允许一个生成（进度回调是�
 
 // 最近一次 new_sd_ctx 的参数字符串（供 Kotlin 写进日志文件，方便定位加载失败）
 std::string g_last_dump;
+
+std::mutex g_vulkan_diagnostics_mutex;
+std::string g_vulkan_diagnostics;
+
+void ponkoGgmlLogCallback(enum ggml_log_level level, const char* text, void* /*user_data*/) {
+    if (text == nullptr || text[0] == '\0') return;
+
+    const bool is_vulkan = std::strstr(text, "ggml_vulkan:") != nullptr ||
+                           std::strstr(text, "Xclipse 940") != nullptr;
+    const bool is_warning = level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR;
+
+    // Keep the original stderr behavior, and additionally surface relevant lines in Logcat.
+    std::fputs(text, stderr);
+    std::fflush(stderr);
+    if (is_vulkan || is_warning) {
+        const int priority = level == GGML_LOG_LEVEL_ERROR ? ANDROID_LOG_ERROR :
+                             level == GGML_LOG_LEVEL_WARN  ? ANDROID_LOG_WARN  :
+                             level == GGML_LOG_LEVEL_DEBUG ? ANDROID_LOG_DEBUG : ANDROID_LOG_INFO;
+        __android_log_print(priority, is_vulkan ? "PonkoVulkan" : "PonkoSd", "%s", text);
+    }
+
+    const bool is_capability_line =
+        std::strstr(text, "Xclipse 940 profile detected") != nullptr ||
+        std::strstr(text, "matrix cores:") != nullptr;
+    if (is_capability_line) {
+        std::lock_guard<std::mutex> lock(g_vulkan_diagnostics_mutex);
+        if (g_vulkan_diagnostics.find(text) == std::string::npos) {
+            g_vulkan_diagnostics.append(text);
+            if (g_vulkan_diagnostics.size() > 8192) {
+                g_vulkan_diagnostics.erase(0, g_vulkan_diagnostics.size() - 8192);
+            }
+        }
+    }
+}
+
+std::string copyVulkanDiagnostics() {
+    std::lock_guard<std::mutex> lock(g_vulkan_diagnostics_mutex);
+    return g_vulkan_diagnostics;
+}
 
 const char* jstr(JNIEnv* env, jstring s, std::string& holder) {
     if (s == nullptr) return nullptr;
@@ -90,7 +133,29 @@ void previewTrampoline(int step, int frame_count, sd_image_t* frames, bool /*is_
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
     g_vm = vm;
+    ggml_log_set(ponkoGgmlLogCallback, nullptr);
     return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_litertchat_app_draw_SdCppEngine_nativeVulkanDiagnostics(JNIEnv* env, jobject /*thiz*/) {
+    // Query ggml-vulkan's live device state directly. Log callbacks can be routed through a
+    // different ggml logger instance in shared-library builds, leaving the old report empty.
+    char deviceDiagnostics[2048] = {};
+    const int deviceCount = ggml_backend_vk_get_device_count();
+    if (deviceCount > 0) {
+        ggml_backend_vk_get_device_diagnostics(0, deviceDiagnostics, sizeof(deviceDiagnostics));
+    } else {
+        std::snprintf(deviceDiagnostics, sizeof(deviceDiagnostics), "No Vulkan devices enumerated by ggml-vulkan");
+    }
+
+    std::string diagnostics(deviceDiagnostics);
+    const std::string loggedDiagnostics = copyVulkanDiagnostics();
+    if (!loggedDiagnostics.empty() && diagnostics.find(loggedDiagnostics) == std::string::npos) {
+        if (!diagnostics.empty()) diagnostics += "\n";
+        diagnostics += loggedDiagnostics;
+    }
+    return env->NewStringUTF(diagnostics.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -129,6 +194,7 @@ enum SlotIndex {
     SLOT_LLM_VISION,
     SLOT_VAE,
     SLOT_AUDIO_VAE,
+    SLOT_TAESD,
     SLOT_COUNT
 };
 
@@ -137,7 +203,7 @@ enum SlotIndex {
 // backend：ggml 后端/设备名（如 "CPU" / "Vulkan0" / "vulkan"），空串或 null = 交给 sd.cpp 自动挑。
 // 显式传值会关掉 sd.cpp 的 auto_fit，行为更可控（选 CPU 就真是 CPU）。
 //
-// slots：多文件模型用。长度 12 的字符串数组，按 SlotIndex 顺序给槽位文件路径；
+// slots：模型槽位路径数组，按 SlotIndex 顺序给槽位文件路径（当前 13 项）；
 // 元素可以为 null / 空串（表示该槽位不填）。传 null = 走旧的两参数路径（单文件 + 可选 VAE）。
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
@@ -189,6 +255,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
     p.llm_vision_path       = slotPtr[SLOT_LLM_VISION];
     p.vae_path              = vaePathC;
     p.audio_vae_path        = slotPtr[SLOT_AUDIO_VAE];
+    p.taesd_path             = slotPtr[SLOT_TAESD];
     p.n_threads    = (nThreads > 0) ? nThreads : sd_get_num_physical_cores();
     // wtype < 0 表示「保持模型原样」——此时【不能】覆盖，保留 sd_ctx_params_init 给的
     // SD_TYPE_COUNT。实测把 -1 强转成 sd_type_t 会让 sd.cpp 内部查表越界，native 直接崩溃。
@@ -231,7 +298,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         JNIEnv* env, jobject /*thiz*/,
         jlong handle,
         jstring prompt, jstring negative,
-        jstring loraPath, jfloat loraScale,
+        jobjectArray loraPaths, jfloatArray loraScales,
         jint width, jint height, jint steps, jfloat cfg, jlong seed,
         jint sampleMethod, jint scheduler,
         jobject cb, jobject pcb,
@@ -239,10 +306,33 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     SdHandle* h = reinterpret_cast<SdHandle*>(handle);
     if (h == nullptr || h->ctx == nullptr) return nullptr;
 
-    std::string sPrompt, sNeg, sLora;
+    std::string sPrompt, sNeg;
     jstr(env, prompt, sPrompt);
     jstr(env, negative, sNeg);
-    jstr(env, loraPath, sLora);
+
+    const jsize pathCount = loraPaths == nullptr ? 0 : env->GetArrayLength(loraPaths);
+    const jsize scaleCount = loraScales == nullptr ? 0 : env->GetArrayLength(loraScales);
+    const jsize loraInputCount = pathCount < scaleCount ? pathCount : scaleCount;
+    std::vector<std::string> sLoras(static_cast<size_t>(loraInputCount));
+    std::vector<float> loraMultipliers(static_cast<size_t>(loraInputCount), 1.0f);
+    if (loraInputCount > 0) {
+        env->GetFloatArrayRegion(loraScales, 0, loraInputCount, loraMultipliers.data());
+        for (jsize i = 0; i < loraInputCount; ++i) {
+            auto js = static_cast<jstring>(env->GetObjectArrayElement(loraPaths, i));
+            jstr(env, js, sLoras[static_cast<size_t>(i)]);
+            if (js != nullptr) env->DeleteLocalRef(js);
+        }
+    }
+    std::vector<sd_lora_t> nativeLoras;
+    nativeLoras.reserve(sLoras.size());
+    for (size_t i = 0; i < sLoras.size(); ++i) {
+        if (sLoras[i].empty()) continue;
+        sd_lora_t entry{};
+        entry.is_high_noise = false;
+        entry.multiplier = loraMultipliers[i];
+        entry.path = sLoras[i].c_str();
+        nativeLoras.push_back(entry);
+    }
 
     // 进度回调（全局注册，data 指向本 handle）
     if (cb != nullptr) {
@@ -273,9 +363,6 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     h->cancelled.store(false);
     g_active = h;
     sd_set_progress_callback(progressTrampoline, h);
-
-    sd_lora_t lora{};
-    bool useLora = !sLora.empty();
 
     sd_img_gen_params_t g;
     sd_img_gen_params_init(&g);
@@ -308,13 +395,8 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
             LOGE("img2img: GetByteArrayElements returned null");
         }
     }
-    if (useLora) {
-        lora.is_high_noise = false;
-        lora.multiplier    = loraScale;
-        lora.path          = sLora.c_str();
-        g.loras            = &lora;
-        g.lora_count       = 1;
-    }
+    g.loras = nativeLoras.empty() ? nullptr : nativeLoras.data();
+    g.lora_count = static_cast<uint32_t>(nativeLoras.size());
     g.sample_params.sample_steps  = steps;
     g.sample_params.guidance.txt_cfg = cfg;
     g.sample_params.sample_method = static_cast<enum sample_method_t>(sampleMethod);
