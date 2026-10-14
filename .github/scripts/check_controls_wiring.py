@@ -26,6 +26,7 @@ jni = read("app/src/main/cpp/sdcpp_jni.cpp")
 header = read("app/src/main/cpp/sd/include/stable-diffusion.h")
 diffusion = read("app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp")
 builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
+vulkan = read("app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
 
 # The slot order is an ABI contract between Kotlin and C++.
 keys_match = re.search(r"val SLOT_KEYS = arrayOf\((.*?)\)", engine, re.S)
@@ -125,4 +126,20 @@ require('g.lora_count = static_cast<uint32_t>(nativeLoras.size());' in jni,
 require('const sd_lora_t* loras;' in header and 'uint32_t lora_count;' in header,
         "sd.cpp generation parameters support multiple LoRAs")
 
-print("All TAESD, CPU-thread, and four-slot LoRA wiring checks passed.")
+# Exynos 2400e / Samsung Xclipse 940 Vulkan profile.
+# Only the exact GPU name enables RDNA3 tuning; cooperative-matrix usage remains
+# gated by the build-time shader support and the runtime driver's reported features.
+require('static bool ggml_vk_is_xclipse_940(const vk::PhysicalDeviceProperties& props)' in vulkan
+        and 'find("Xclipse 940")' in vulkan,
+        "Vulkan backend detects the exact Samsung Xclipse 940 GPU")
+require('return vk_device_architecture::AMD_RDNA3;' in vulkan
+        and 'RDNA3 tile presets only for this exact GPU' in vulkan,
+        "Xclipse 940 is mapped to the RDNA3 tuning family")
+require('device->coopmat_support &&' in vulkan
+        and 'ggml_vk_is_xclipse_940(device->properties)' in vulkan,
+        "Xclipse RDNA3 matmul tuning is gated by runtime cooperative-matrix support")
+require('Xclipse 940 profile detected' in vulkan
+        and 'Keeping standard Vulkan matmul kernels' in vulkan,
+        "Vulkan logs feature availability and preserves generic fallback")
+
+print("All TAESD, CPU-thread, four-slot LoRA, and Xclipse Vulkan checks passed.")
