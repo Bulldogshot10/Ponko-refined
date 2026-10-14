@@ -355,7 +355,9 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
             env->DeleteGlobalRef(h->pcb);
             h->pcb = nullptr;
         } else {
-            sd_set_preview_callback(previewTrampoline, PREVIEW_PROJ, 1, true, false, h);
+            // Preview projection + JNI bitmap transfer are extra work on every denoising step.
+            // Publish every second step to reduce overhead on mobile CPUs; progress still updates each step.
+            sd_set_preview_callback(previewTrampoline, PREVIEW_PROJ, 2, true, false, h);
         }
     } else {
         sd_set_preview_callback(nullptr, PREVIEW_NONE, 1, true, false, nullptr);
