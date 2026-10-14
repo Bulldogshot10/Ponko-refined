@@ -31,6 +31,15 @@ else()
     message(STATUS "Ponko CPU profile: generic ARMv8.2-A (dotprod + FP16)")
 endif()
 
+# Keep GGML's own ARM feature detection aligned with the same Exynos ISA profile.
+# This controls backend feature probes and architecture-specific kernel selection;
+# global add_compile_options alone is not enough for every GGML subcomponent.
+if (PONKO_EXYNOS_2400E_CPU_PROFILE)
+    set(GGML_CPU_ARM_ARCH "armv8.6-a+dotprod+i8mm+fp16" CACHE STRING "" FORCE)
+else()
+    set(GGML_CPU_ARM_ARCH "" CACHE STRING "" FORCE)
+endif()
+
 # Android's toolchain can define CMAKE_*_FLAGS_DEBUG as normal variables, so a
 # CACHE-only override does not necessarily change the flags used by Ninja. Apply
 # Debug optimization directly to compile rules, while preserving the default -g.
