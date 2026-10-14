@@ -356,7 +356,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
             h->pcb = nullptr;
         } else {
             // Preview projection + JNI bitmap transfer are extra work on every denoising step.
-            // Publish every second step to reduce overhead on mobile CPUs; progress still updates each step.
+            // Test profile: publish every second denoising step on mobile CPUs; progress still updates each step.
             sd_set_preview_callback(previewTrampoline, PREVIEW_PROJ, 2, true, false, h);
         }
     } else {
