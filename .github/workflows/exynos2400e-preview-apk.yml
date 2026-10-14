@@ -10,6 +10,7 @@ on:
       - "settings.gradle*"
       - "gradle.properties"
       - ".github/workflows/exynos2400e-cpu-apk.yml"
+      - ".github/workflows/exynos2400e-preview-apk.yml"
   workflow_dispatch:
 
 permissions:
@@ -80,6 +81,12 @@ jobs:
             echo "Could not verify Exynos I8MM + -O3 -DNDEBUG flags in generated build files" >&2
             exit 1
           fi
+
+      - name: Verify preview throttling
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'sd_set_preview_callback(previewTrampoline, PREVIEW_PROJ, 2, true, false, h);' app/src/main/cpp/sdcpp_jni.cpp
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
