@@ -1,0 +1,19 @@
+[package]
+name = "ponko-compute"
+version = "0.1.0"
+edition = "2021"
+description = "A small user-space Vulkan compute runtime prototype for Android/Xclipse experiments"
+license = "MIT"
+
+[lib]
+name = "ponko_compute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ponko-compute"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+ash = "0.37.3"
+bytemuck = "1"
