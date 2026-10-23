@@ -17,7 +17,7 @@ This is a bring-up/runtime prototype, not yet a tuned tensor library. Each dispa
 Install Rust, a Vulkan loader/driver, and a GLSL-to-SPIR-V compiler such as glslangValidator. From this directory:
 
     glslangValidator -V --target-env vulkan1.0 shaders/vector_add.comp -o shaders/vector_add.spv
-    cargo fmt --check
+    cargo fmt
     cargo check
     cargo run --release -- shaders/vector_add.spv 65536
 

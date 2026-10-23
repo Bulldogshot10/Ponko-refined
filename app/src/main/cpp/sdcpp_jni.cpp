@@ -420,12 +420,12 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     bool ok = generate_image(h->ctx, &g, &out, &n);
     const auto generationElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - generationStart).count();
+    if (n > 0 && out != nullptr && out->data != nullptr) ok = true;
     LOGI("BENCHMARK generate_image elapsed_ms=%lld mode=%s size=%dx%d steps=%d backend=%s vae_conv_direct=%d ok=%d",
          static_cast<long long>(generationElapsedMs),
          initBytes != nullptr ? "img2img" : "txt2img",
          width, height, steps, h->backend_name.c_str(),
          h->vae_conv_direct ? 1 : 0, ok ? 1 : 0);
-    if (n > 0 && out != nullptr && out->data != nullptr) ok = true;
 
     jintArray result = nullptr;
     if (ok && n > 0 && out != nullptr && out[0].data != nullptr) {
