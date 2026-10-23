@@ -95,8 +95,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'p.vae_conv_direct = true;' app/src/main/cpp/sdcpp_jni.cpp
-          echo "Verified p.vae_conv_direct = true"
+          grep -q 'p.vae_conv_direct = (vaeConvDirect == JNI_TRUE);' app/src/main/cpp/sdcpp_jni.cpp
+          grep -q 'BENCHMARK generate_image elapsed_ms=' app/src/main/cpp/sdcpp_jni.cpp
+          echo "Verified configurable VAE direct-convolution flag and generation timing log"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

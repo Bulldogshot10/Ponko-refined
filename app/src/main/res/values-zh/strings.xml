@@ -473,4 +473,9 @@
     <string name="draw_taesd_hint">请选择兼容 sd.cpp 的 TAESD .safetensors 或 .gguf 权重。madebyollin/taesd 的 diffusion_pytorch_model.safetensors 可用；键名为 decoder.layers.* 的 decoder-only 文件也可用。ComfyUI 的 taesd_decoder.pth 不能直接使用。TAESD 会替代标准 VAE 解码器，输出可能有所不同。</string>
     <string name="draw_cpu_threads">CPU 线程数</string>
     <string name="draw_cpu_threads_hint">下次加载绘图模型时生效。</string>
+    <string name="draw_vae_conv_direct_enable">使用 VAE 直接 Conv2D（基准测试）</string>
+    <string name="draw_vae_conv_direct_hint">实验选项。关闭可使用标准卷积作为基线；切换后需卸载并重新加载模型。A/B 测试时保持后端、模型、种子、尺寸、采样器和步数一致。</string>
+    <string name="draw_vae_conv_direct_reload_hint">VAE 卷积设置已保存，请卸载并重新加载绘图模型以生效。</string>
+    <string name="draw_vae_conv_direct_status">VAE 直接卷积</string>
+    <string name="draw_vae_conv_standard_status">VAE 标准卷积</string>
 </resources>

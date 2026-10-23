@@ -544,6 +544,8 @@ namespace sd::model_builders {
             if (result.preview) {
                 result.preview->set_conv2d_direct_enabled(true);
             }
+        } else {
+            LOG_INFO("Using standard VAE convolution path (direct Conv2D disabled)");
         }
         runners = std::move(result);
         return true;

@@ -89,6 +89,13 @@ class DrawPage(
         prefs().edit().putBoolean(KEY_TAESD_ENABLED, enabled).apply()
     }
 
+    /** Enable GGML's direct Conv2D path for the original VAE; applies on the next model load. */
+    fun vaeConvDirectEnabled(): Boolean = prefs().getBoolean(KEY_VAE_CONV_DIRECT, true)
+
+    fun setVaeConvDirectEnabled(enabled: Boolean) {
+        prefs().edit().putBoolean(KEY_VAE_CONV_DIRECT, enabled).apply()
+    }
+
     fun taesdFileName(): String? = activeSetOrSelected()?.files?.get("taesd")?.name
 
     fun hasTaesdFile(): Boolean = activeSetOrSelected()?.files?.get("taesd")?.isFile == true
@@ -111,6 +118,7 @@ class DrawPage(
         private const val KEY_SEL_SET = "selSet"
         private const val KEY_CPU_THREADS = "drawCpuThreads"
         private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
+        private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -2003,6 +2011,7 @@ class DrawPage(
         val slots = LinkedHashMap<String, String>()
         set.files.forEach { (k, f) -> slots[k] = f.absolutePath }
         if (!taesdEnabled()) slots.remove("taesd")
+        val useVaeConvDirect = vaeConvDirectEnabled()
         val missing = slotMissingIds(set).map { c.getString(slotLabelRes(it)) }
         if (missing.isNotEmpty()) {
             val msg = c.getString(R.string.s_363, missing.joinToString("、"))
@@ -2020,6 +2029,7 @@ class DrawPage(
         runCatching { stageFile.writeText("") }
         stage("2 模型集：${set.id}（${set.kind}/${set.family}，${set.slotCount()} 个文件）")
         slots.forEach { (k, v) -> stage("   槽位 $k = ${File(v).name}（${File(v).length() / 1048576} MB）") }
+        stage("VAE direct-conv: ${if (useVaeConvDirect) "enabled" else "disabled"}")
         activeLora()?.let { stage(c.getString(R.string.v_058, (it.name), (it.length() / 1048576))) }
         stage(c.getString(R.string.v_041, (android.os.Build.SUPPORTED_ABIS.firstOrNull()), (android.os.Build.VERSION.SDK_INT), (android.os.Build.MANUFACTURER), (android.os.Build.MODEL)))
         stage(c.getString(R.string.v_042, (Runtime.getRuntime().maxMemory() / 1048576), (root.usableSpace / 1048576)))
@@ -2051,6 +2061,7 @@ class DrawPage(
                 nThreads = nThreads,
                 wtype = SdCppEngine.WTYPE_KEEP,
                 flashAttn = flashAttn,
+                vaeConvDirect = useVaeConvDirect,
                 backend = b,
                 slots = SdCppEngine.buildSlots(slots),
             )
@@ -2097,6 +2108,7 @@ class DrawPage(
             val summary = buildString {
                 append(c.getString(R.string.s_094)).append(set.name)
                 append(" · ").append(activeBackend).append(" · ").append(nThreads).append(c.getString(R.string.s_001)).append(if (flashAttn) "FA" else c.getString(R.string.s_110)).append(" · sd.cpp")
+                append(" · ").append(c.getString(if (useVaeConvDirect) R.string.draw_vae_conv_direct_status else R.string.draw_vae_conv_standard_status))
                 append(vkMode)
             }
             statusText.post { statusText.text = summary }

@@ -473,4 +473,9 @@
     <string name="draw_taesd_hint">Choose compatible sd.cpp TAESD .safetensors or .gguf weights. The official madebyollin/taesd diffusion_pytorch_model.safetensors works; decoder-only files with decoder.layers.* keys also work. ComfyUI taesd_decoder.pth is not directly compatible. TAESD replaces the standard VAE decoder, and output may differ.</string>
     <string name="draw_cpu_threads">CPU threads</string>
     <string name="draw_cpu_threads_hint">Applies the next time you load the drawing model.</string>
+    <string name="draw_vae_conv_direct_enable">Use direct Conv2D for VAE (benchmark)</string>
+    <string name="draw_vae_conv_direct_hint">Experimental. Turn OFF for the standard-convolution baseline; reload the model before testing. Keep the backend, model, seed, size, sampler and steps identical for A/B runs.</string>
+    <string name="draw_vae_conv_direct_reload_hint">VAE convolution setting saved. Unload and reload the drawing model to apply it.</string>
+    <string name="draw_vae_conv_direct_status">VAE direct-conv</string>
+    <string name="draw_vae_conv_standard_status">VAE standard-conv</string>
 </resources>

@@ -25,6 +25,7 @@ activity = read("app/src/main/java/com/litertchat/app/MainActivity.kt")
 jni = read("app/src/main/cpp/sdcpp_jni.cpp")
 header = read("app/src/main/cpp/sd/include/stable-diffusion.h")
 diffusion = read("app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp")
+runtime = read("app/src/main/cpp/sd/src/stable-diffusion.cpp")
 builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
 vulkan = read("app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
 vulkan_header = read("app/src/main/cpp/sd/ggml/include/ggml-vulkan.h")
@@ -73,6 +74,23 @@ require('entry.first.rfind("tae.encoder.layers.", 0) == 0' in builders,
         "native builder detects whether encoder weights are present")
 require('TAESD encoder tensors not present; using decoder-only TAE' in builders,
         "decoder-only TAESD skips the unavailable encoder")
+
+# VAE direct-convolution experiment: UI preference -> Kotlin -> JNI -> sd.cpp, with a measurable run.
+require('private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"' in draw,
+        "VAE direct-convolution option is persisted")
+require('fun vaeConvDirectEnabled(): Boolean' in draw and 'fun setVaeConvDirectEnabled(enabled: Boolean)' in draw,
+        "VAE direct-convolution option has getter/setter")
+require('vaeConvDirect = useVaeConvDirect' in draw and 'vaeConvDirect: Boolean' in engine,
+        "model load forwards the selected VAE path")
+require('jboolean vaeConvDirect' in jni and 'p.vae_conv_direct = (vaeConvDirect == JNI_TRUE);' in jni,
+        "JNI maps the user-selected option into sd.cpp")
+require('bool vae_conv_direct;' in header and 'BOOL_STR(sd_ctx_params->vae_conv_direct)' in runtime,
+        "native diagnostics record the VAE convolution mode")
+require('Using standard VAE convolution path (direct Conv2D disabled)' in builders,
+        "runtime logs an explicit standard-convolution baseline")
+require('BENCHMARK generate_image elapsed_ms=' in jni,
+        "each native generation reports elapsed time and experiment settings")
+
 tae_branch = builders.index('} else if (options.use_tae && !options.tae_preview_only) {')
 standard_vae_branch = builders.index('LOG_INFO("using VAE for encoding / decoding")', tae_branch)
 require(tae_branch < standard_vae_branch,

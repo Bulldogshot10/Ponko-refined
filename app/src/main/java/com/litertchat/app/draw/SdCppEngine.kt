@@ -95,6 +95,7 @@ object SdCppEngine {
         nThreads: Int,
         wtype: Int,
         flashAttn: Boolean,
+        vaeConvDirect: Boolean,
         backend: String?,
         slots: Array<String?>?,
     ): Long
@@ -161,9 +162,10 @@ object SdCppEngine {
         nThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
         wtype: Int = WTYPE_KEEP,
         flashAttn: Boolean = true,
+        vaeConvDirect: Boolean = true,
         backend: String? = null,
         slots: Array<String?>? = null,
-    ): Long = nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, backend, slots)
+    ): Long = nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, slots)
 
     /**
      * 槽位顺序（与 JNI 里的 SlotIndex 一一对应；sd.cpp 的 sd_ctx_params_t 路径字段）。

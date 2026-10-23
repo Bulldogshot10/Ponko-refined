@@ -757,6 +757,7 @@ class MainActivity : Activity() {
     private var pendingSlotKey: String? = null
     private var drawSlotsContainer: LinearLayout? = null
     private var drawTaesdCheck: android.widget.CheckBox? = null
+    private var drawVaeConvDirectCheck: android.widget.CheckBox? = null
     private var drawTaesdFileTv: TextView? = null
     /** 槽位面板的折叠标题行 */
     private var drawSlotsHeader: TextView? = null
@@ -1317,6 +1318,19 @@ class MainActivity : Activity() {
             hintText(getString(R.string.draw_cpu_threads_hint)),
             matchWrap().apply { topMargin = dp(3) }
         )
+
+        val vaeConvDirectCheck = android.widget.CheckBox(this).apply {
+            text = getString(R.string.draw_vae_conv_direct_enable)
+            textSize = 13f
+            setTextColor(C_TEXT)
+        }
+        drawVaeConvDirectCheck = vaeConvDirectCheck
+        drawCard.addView(vaeConvDirectCheck, matchWrap().apply { topMargin = dp(10) })
+        drawCard.addView(
+            hintText(getString(R.string.draw_vae_conv_direct_hint)),
+            matchWrap().apply { topMargin = dp(3) }
+        )
+        refreshVaeConvDirectUi()
 
         val taesdRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3168,6 +3182,17 @@ class MainActivity : Activity() {
         pickDrawModelFile()
     }
 
+    private fun refreshVaeConvDirectUi() {
+        val dpg = drawPage ?: return
+        val check = drawVaeConvDirectCheck ?: return
+        check.setOnCheckedChangeListener(null)
+        check.isChecked = dpg.vaeConvDirectEnabled()
+        check.setOnCheckedChangeListener { _, enabled ->
+            dpg.setVaeConvDirectEnabled(enabled)
+            toast(getString(R.string.draw_vae_conv_direct_reload_hint))
+        }
+    }
+
     private fun refreshTaesdUi() {
         val dpg = drawPage ?: return
         val fileName = dpg.taesdFileName()
@@ -3188,6 +3213,7 @@ class MainActivity : Activity() {
 
     /** 当前模型集的槽位列表（多文件模型在这里逐个补文件） */
     private fun refreshDrawSlots() {
+        refreshVaeConvDirectUi()
         val box = drawSlotsContainer ?: return
         val hdr = drawSlotsHeader ?: return
         box.removeAllViews()
@@ -3753,6 +3779,7 @@ class MainActivity : Activity() {
 
     /** 列出已有的绘图模型集（点击选用 · 长按删除）。单文件与多文件都在这。 */
     private fun refreshDrawModels() {
+        refreshVaeConvDirectUi()
         refreshTaesdUi()
         refreshDrawToggle()
         val box = drawSavedContainer ?: return

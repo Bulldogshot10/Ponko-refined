@@ -10,6 +10,7 @@
 #include <vector>
 #include <mutex>
 #include <cstdio>
+#include <chrono>
 
 #include "ggml.h"
 #include "ggml-vulkan.h"
@@ -30,6 +31,8 @@ struct SdHandle {
     jobject   pcb = nullptr;    // PreviewCallback（GlobalRef）
     jmethodID pcb_mid = nullptr; // onPreview(III[B)V
     std::atomic<bool> cancelled{false};
+    bool vae_conv_direct = true;
+    std::string backend_name = "auto";
 };
 
 SdHandle* g_active = nullptr;  // 同时只允许一个生成（进度回调是全局的）
@@ -209,7 +212,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
         JNIEnv* env, jobject /*thiz*/,
         jstring modelPath, jstring vaePath, jint nThreads, jint wtype, jboolean flashAttn,
-        jstring backend, jobjectArray slots) {
+        jboolean vaeConvDirect, jstring backend, jobjectArray slots) {
     std::string model, vae, backendStr;
     jstr(env, modelPath, model);
     jstr(env, vaePath, vae);
@@ -268,8 +271,8 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
     const bool fa = (flashAttn == JNI_TRUE);
     p.flash_attn           = fa;
     p.diffusion_flash_attn = fa;
-    // Benchmark: exercise GGML's direct Conv2D path for the original VAE; no TAESD/quality trade-off.
-    p.vae_conv_direct = true;
+    // Expose the direct-convolution experiment as an explicit runtime option.
+    p.vae_conv_direct = (vaeConvDirect == JNI_TRUE);
     p.lora_apply_mode = LORA_APPLY_AUTO;
 
     char* dump = sd_ctx_params_to_str(&p);
@@ -284,7 +287,10 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
     }
     SdHandle* h = new SdHandle();
     h->ctx = ctx;
-    LOGI("ctx created: %p", static_cast<void*>(ctx));
+    h->vae_conv_direct = p.vae_conv_direct;
+    h->backend_name = backendStr.empty() ? "auto" : backendStr;
+    LOGI("ctx created: %p | VAE direct-conv=%d | backend=%s",
+         static_cast<void*>(ctx), h->vae_conv_direct ? 1 : 0, h->backend_name.c_str());
     return reinterpret_cast<jlong>(h);
 }
 
@@ -410,7 +416,15 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
 
     sd_image_t* out = nullptr;
     int n = 0;
+    const auto generationStart = std::chrono::steady_clock::now();
     bool ok = generate_image(h->ctx, &g, &out, &n);
+    const auto generationElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - generationStart).count();
+    LOGI("BENCHMARK generate_image elapsed_ms=%lld mode=%s size=%dx%d steps=%d backend=%s vae_conv_direct=%d ok=%d",
+         static_cast<long long>(generationElapsedMs),
+         initBytes != nullptr ? "img2img" : "txt2img",
+         width, height, steps, h->backend_name.c_str(),
+         h->vae_conv_direct ? 1 : 0, ok ? 1 : 0);
     if (n > 0 && out != nullptr && out->data != nullptr) ok = true;
 
     jintArray result = nullptr;
