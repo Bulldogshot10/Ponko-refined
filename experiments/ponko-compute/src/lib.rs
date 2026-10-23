@@ -192,7 +192,7 @@ impl ComputeDevice {
         let required = vk::MemoryPropertyFlags::HOST_VISIBLE
             | vk::MemoryPropertyFlags::HOST_COHERENT;
         let memory_type = (0..self.inner.memory_properties.memory_type_count).find(|index| {
-            (requirements.memory_type_bits & (1_u32 << index)) != 0
+            (requirements.memory_type_bits & (1_u32 << *index)) != 0
                 && self.inner.memory_properties.memory_types[*index as usize]
                     .property_flags
                     .contains(required)
