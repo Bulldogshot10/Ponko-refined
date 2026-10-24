@@ -79,6 +79,7 @@
 - **参数**：宽高（64 的倍数）、步数、CFG、种子、采样器、调度器都能调，**重启后自动记住**（提示词不保留）。可选采样器已与 sd.cpp 完全对齐（含 DPM++ 2M SDE / SDE B&T / LMS / Res Multistep 等）
 - **深色模式**：「关于」页的「设置」分区里是三档滑块（**亮 / 跟随系统 / 暗**），重启后记住；切换**就地换色**、不重启 App，已加载的模型与会话都保留；页面底、卡片、输入框、按钮、对话框、状态栏与导航栏全部跟随
 - **LoRA**：App 内一键下载 LCM-LoRA（HuggingFace 官方 / hf-mirror 双源），可把 20 步压到 4~8 步；也可**导入本地 LoRA**（`.safetensors` 单文件），多份 LoRA 可在列表里点选切换
+- **ADetailer**：可选 YOLOv8 detection 检测器，生成后自动修复人脸、手部等局部区域；支持独立 prompt、confidence、mask blur、inpaint 尺寸、steps 和 denoising strength。检测器需先按 stable-diffusion.cpp 上游说明转换成兼容的 `.safetensors`，原始 Ultralytics `.pt` 文件不能直接使用。
 - **模型导入**：两种方式——**单文件**（一个 `.gguf`；SD1.x/2、SDXL、SD3/3.5、Flux、Qwen-Image 的 all-in-one 版都走这条）与**多文件**（按家族补齐槽位：SD3/3.5、Flux、Qwen-Image、HiDream、视频等）。多文件时先选类型（家族）与主模型，再在「模型槽位」里逐个补配套文件；每个模型集的文件存在各自子目录里，列表里可点选 / 长按删除
   - **SDXL 只支持单文件**：上游 sd.cpp 要在「第二个文本编码器与主模型在同一个文件里」才能认出 SDXL，拆成 unet + CLIP-L/CLIP-G 多个文件的 SDXL 加载会直接失败——请用单文件 SDXL（有 2.5GB 级的量化单文件）
   - 多文件真正适用的是「官方本来就拆开分发」的家族：Flux、SD3.5、Qwen-Image 等；这类模型最小组合也在 8GB 以上，手机上基本跑不动（机制已支持，留给大内存设备 / 桌面端使用）
