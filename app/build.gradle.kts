@@ -7,6 +7,7 @@ plugins {
 // Keep the requested Exynos ISA profile enabled unless explicitly overridden.
 val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("ON").get()
 val ponkoExynosCpuProfile = providers.gradleProperty("ponkoExynosCpuProfile").orElse("ON").get()
+val ponkoEnableCompilerCache = providers.gradleProperty("ponkoEnableCompilerCache").orElse("ON").get()
 val ponkoRustFacadeEnabled = providers.gradleProperty("ponkoRustFacade")
     .map { it.equals("true", ignoreCase = true) }
     .getOrElse(false)
@@ -53,6 +54,7 @@ android {
             arguments += listOf(
                 "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
                 "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
+                "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
             )
         }
     }
