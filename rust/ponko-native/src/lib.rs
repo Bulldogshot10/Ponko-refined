@@ -35,6 +35,39 @@ pub struct ModelSlots {
     pub taesd: Option<String>,
 }
 
+/// Mirrors the current nativeCreate inputs without relying on positional JNI arguments.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ModelLoadRequest {
+    pub model_path: String,
+    pub vae_path: Option<String>,
+    pub n_threads: u32,
+    /// -1 means preserve the model's original weight type.
+    pub wtype: i32,
+    pub flash_attn: bool,
+    pub vae_conv_direct: bool,
+    pub backend: Option<String>,
+    pub slots: Option<ModelSlots>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct QuantizeUnetRequest {
+    pub input_path: String,
+    pub output_path: String,
+    pub quant_type: String,
+    pub diffusion_slot: bool,
+    pub n_threads: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResAdapterRequest {
+    pub input_model_path: String,
+    pub vae_path: Option<String>,
+    pub normalization_path: String,
+    pub output_path: String,
+    pub quant_type: String,
+    pub n_threads: u32,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct GenerationRequest {
     pub prompt: String,
@@ -127,6 +160,44 @@ pub fn validate_model_slots(slots: ModelSlots) -> ValidationReport {
 
 /// Check cross-field invariants before a request crosses the FFI boundary.
 /// CFG=0 remains valid for TCD and other zero-CFG workflows.
+/// Validate the current model loading contract before forwarding it to the native engine.
+#[uniffi::export]
+pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationReport {
+    let explicit_model = !request.model_path.trim().is_empty();
+    let slot_model = request.slots.as_ref().map(|slots| {
+        slots.model.as_deref().map(str::trim).is_some_and(|path| !path.is_empty())
+            || slots.diffusion.as_deref().map(str::trim).is_some_and(|path| !path.is_empty())
+    }).unwrap_or(false);
+
+    if explicit_model || slot_model {
+        ValidationReport {
+            valid: true,
+            message: "A base model path is configured.".to_owned(),
+        }
+    } else {
+        invalid("A base model or diffusion-model slot is required.")
+    }
+}
+
+#[uniffi::export]
+pub fn validate_unet_quantization_request(request: QuantizeUnetRequest) -> ValidationReport {
+    if request.input_path.trim().is_empty() || request.output_path.trim().is_empty() {
+        return invalid("Quantization input and output paths must not be empty.");
+    }
+    validate_quantization_type(request.quant_type)
+}
+
+#[uniffi::export]
+pub fn validate_res_adapter_request(request: ResAdapterRequest) -> ValidationReport {
+    if request.input_model_path.trim().is_empty()
+        || request.normalization_path.trim().is_empty()
+        || request.output_path.trim().is_empty()
+    {
+        return invalid("ResAdapter base, normalization, and output paths must not be empty.");
+    }
+    validate_quantization_type(request.quant_type)
+}
+
 #[uniffi::export]
 pub fn validate_generation_request(request: GenerationRequest) -> ValidationReport {
     if request.width == 0 || request.height == 0 {
