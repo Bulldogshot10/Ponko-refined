@@ -582,10 +582,11 @@ class DrawPage(
         )
         samplerSpinner.setSelection(loadInt(KEY_SAMPLER, defOfInt("t2i", "sampler", 0)).coerceIn(0, samplerSpinner.adapter.count - 1), false)
         schedulerSpinner.setSelection(loadInt(KEY_SCHEDULER, defOfInt("t2i", "scheduler", 0)).coerceIn(0, schedulerSpinner.adapter.count - 1), false)
+        syncTcdPresetOnRestore(samplerSpinner, schedulerSpinner, KEY_SAMPLER, KEY_SCHEDULER)
         syncKarrasPresetOnRestore(samplerSpinner, schedulerSpinner, KEY_SCHEDULER)
         // Restore first, then attach listeners so initial values aren't persisted as user changes.
         samplerSpinner.onItemSelectedListener = samplerPresetListener(KEY_SAMPLER, samplerSpinner, schedulerSpinner)
-        schedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_SCHEDULER, samplerSpinner)
+        schedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_SCHEDULER, KEY_SAMPLER, samplerSpinner)
         paramCard.addView(paramRow(c.getString(R.string.s_191), samplerSpinner, c.getString(R.string.s_015)))
         paramCard.addView(paramRow(c.getString(R.string.s_176), schedulerSpinner, c.getString(R.string.s_014)))
 
@@ -930,9 +931,10 @@ class DrawPage(
         )
         i2iSamplerSpinner.setSelection(loadInt(KEY_I2I_SAMPLER, defOfInt("i2i", "sampler", 0)).coerceIn(0, i2iSamplerSpinner.adapter.count - 1), false)
         i2iSchedulerSpinner.setSelection(loadInt(KEY_I2I_SCHEDULER, defOfInt("i2i", "scheduler", 0)).coerceIn(0, i2iSchedulerSpinner.adapter.count - 1), false)
+        syncTcdPresetOnRestore(i2iSamplerSpinner, i2iSchedulerSpinner, KEY_I2I_SAMPLER, KEY_I2I_SCHEDULER)
         syncKarrasPresetOnRestore(i2iSamplerSpinner, i2iSchedulerSpinner, KEY_I2I_SCHEDULER)
         i2iSamplerSpinner.onItemSelectedListener = samplerPresetListener(KEY_I2I_SAMPLER, i2iSamplerSpinner, i2iSchedulerSpinner)
-        i2iSchedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_I2I_SCHEDULER, i2iSamplerSpinner)
+        i2iSchedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_I2I_SCHEDULER, KEY_I2I_SAMPLER, i2iSamplerSpinner)
         paramCard.addView(paramRow(c.getString(R.string.s_191), i2iSamplerSpinner, c.getString(R.string.s_015)))
         paramCard.addView(paramRow(c.getString(R.string.s_176), i2iSchedulerSpinner, c.getString(R.string.s_014)))
 
@@ -3421,6 +3423,26 @@ class DrawPage(
 
     private fun karrasSchedulerPosition(): Int = SdCppEngine.Scheduler.entries.indexOf(SdCppEngine.Scheduler.KARRAS) + 1
 
+    private fun tcdSchedulerPosition(): Int = SdCppEngine.Scheduler.entries.indexOf(SdCppEngine.Scheduler.TCD) + 1
+
+    private fun tcdSamplerPosition(): Int = SdCppEngine.Sampler.entries.indexOf(SdCppEngine.Sampler.TCD) + 1
+
+    /** Restore TCD as a combined scheduler/update rule in the split sd.cpp API. */
+    private fun syncTcdPresetOnRestore(
+        sampler: android.widget.Spinner,
+        scheduler: android.widget.Spinner,
+        samplerKey: String,
+        schedulerKey: String,
+    ) {
+        val isTcd = scheduler.selectedItemPosition == tcdSchedulerPosition()
+        if (isTcd) {
+            val position = tcdSamplerPosition()
+            sampler.setSelection(position, false)
+            prefs().edit().putInt(samplerKey, position).putInt(schedulerKey, tcdSchedulerPosition()).apply()
+        }
+        sampler.isEnabled = !isTcd
+    }
+
     /** Restore the explicit "DPM++ SDE Karras" preset coherently with its scheduler. */
     private fun syncKarrasPresetOnRestore(
         sampler: android.widget.Spinner,
@@ -3454,10 +3476,18 @@ class DrawPage(
 
     private fun schedulerPresetListener(
         key: String,
+        samplerKey: String,
         sampler: android.widget.Spinner,
     ) = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
             prefs().edit().putInt(key, pos).apply()
+            val isTcdPosition = pos == tcdSchedulerPosition()
+            sampler.isEnabled = !isTcdPosition
+            if (isTcdPosition) {
+                val tcdPosition = tcdSamplerPosition()
+                sampler.setSelection(tcdPosition)
+                prefs().edit().putInt(samplerKey, tcdPosition).apply()
+            }
             val current = samplerAt(sampler)
             val isKarrasPosition = pos == karrasSchedulerPosition()
             if (current == SdCppEngine.Sampler.DPMPP_SDE_KARRAS && !isKarrasPosition) {

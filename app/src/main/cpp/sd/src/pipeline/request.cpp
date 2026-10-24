@@ -111,10 +111,11 @@ namespace sd::pipeline {
             }
             switch (sample_method) {
                 case DDIM_TRAILING_SAMPLE_METHOD:
-                case TCD_SAMPLE_METHOD:
                 case RES_MULTISTEP_SAMPLE_METHOD:
                 case RES_2S_SAMPLE_METHOD:
                     return 0.0f;
+                case TCD_SAMPLE_METHOD:
+                    return 0.3f;
                 case EULER_A_SAMPLE_METHOD:
                 case DPMPP2S_A_SAMPLE_METHOD:
                 case ER_SDE_SAMPLE_METHOD:
@@ -367,6 +368,11 @@ namespace sd::pipeline {
     void SamplePlan::resolve(StableDiffusionGGML* sd,
                              const GenerationRequest* request,
                              const sd_sample_params_t* sample_params) {
+        if (sample_params->scheduler == TCD_SCHEDULER) {
+            // Diffusers treats TCD as one scheduler object; sd.cpp separates its
+            // timestep schedule from the TCD update equation, so couple them here.
+            sample_method = TCD_SAMPLE_METHOD;
+        }
         sample_method = resolve_sample_method(sd, sample_method);
 
         total_steps = sample_steps + std::max(0, high_noise_sample_steps);

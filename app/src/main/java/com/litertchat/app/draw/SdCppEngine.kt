@@ -61,6 +61,7 @@ object SdCppEngine {
         KL_OPTIMAL(8, "KL Optimal"),
         LCM(9, "LCM"),
         BETA(15, "Beta"),
+        TCD(16, "TCD"),
     }
 
     /** 权重类型（对应 sd.cpp enum sd_type_t）；KEEP = 保持模型原样 */

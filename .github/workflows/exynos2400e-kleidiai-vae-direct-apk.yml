@@ -123,6 +123,20 @@ jobs:
           grep -q 'g.clip_skip       = (clipSkip < 1)' app/src/main/cpp/sdcpp_jni.cpp
           echo "Verified persisted CLIP skip slider reaches the native generation parameter"
 
+      - name: Verify TCD scheduler end-to-end wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'TCD_SCHEDULER' app/src/main/cpp/sd/include/stable-diffusion.h
+          grep -q '"tcd"' app/src/main/cpp/sd/src/stable-diffusion.cpp
+          grep -q 'struct TCDScheduler' app/src/main/cpp/sd/src/runtime/denoiser.hpp
+          grep -q 'case TCD_SCHEDULER:' app/src/main/cpp/sd/src/runtime/denoiser.hpp
+          grep -q 'sample_method = TCD_SAMPLE_METHOD;' app/src/main/cpp/sd/src/pipeline/request.cpp
+          grep -q 'case TCD_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
+          grep -q 'TCD(16, "TCD")' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
+          grep -q 'syncTcdPresetOnRestore' app/src/main/java/com/litertchat/app/draw/DrawPage.kt
+          echo "Verified TCD scheduler timestep schedule and native TCD update rule"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

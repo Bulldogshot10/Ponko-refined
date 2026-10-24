@@ -80,6 +80,7 @@ enum scheduler_t {
     FLUX2_SCHEDULER,
     FLUX_SCHEDULER,
     BETA_SCHEDULER,
+    TCD_SCHEDULER,
     SCHEDULER_COUNT
 };
 

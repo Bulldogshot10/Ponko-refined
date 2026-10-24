@@ -284,6 +284,35 @@ struct LCMScheduler : SigmaScheduler {
     }
 };
 
+/*
+ * TCDScheduler timestep selection following Diffusers' TCDScheduler default
+ * original_inference_steps=50. The TCD update equation is implemented by sample_tcd().
+ * For a 1000-step SD/SDXL training timeline, the origin schedule is 999,979,...,19;
+ * inference selects floor(i * 50 / N) from that reversed 50-point schedule.
+ */
+struct TCDScheduler : SigmaScheduler {
+    std::vector<float> get_sigmas(uint32_t n,
+                                  float /*sigma_min*/,
+                                  float /*sigma_max*/,
+                                  t_to_sigma_t t_to_sigma) override {
+        std::vector<float> result;
+        if (n == 0) return result;
+
+        constexpr int original_steps = 50;
+        const int stride = TIMESTEPS / original_steps;
+        result.reserve(static_cast<size_t>(n) + 1);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint64_t index = (static_cast<uint64_t>(i) * original_steps) / n;
+            const int timestep = std::clamp(
+                (original_steps - static_cast<int>(index)) * stride - 1,
+                0, TIMESTEPS - 1);
+            result.push_back(t_to_sigma(static_cast<float>(timestep)));
+        }
+        result.push_back(0.0f);
+        return result;
+    }
+};
+
 struct KarrasScheduler : SigmaScheduler {
     std::vector<float> get_sigmas(uint32_t n, float sigma_min, float sigma_max, t_to_sigma_t t_to_sigma) override {
         // These *COULD* be function arguments here,
@@ -1106,6 +1135,10 @@ struct Denoiser {
             case LCM_SCHEDULER:
                 LOG_INFO("get_sigmas with LCM scheduler");
                 scheduler = std::make_shared<LCMScheduler>();
+                break;
+            case TCD_SCHEDULER:
+                LOG_INFO("get_sigmas with TCD scheduler");
+                scheduler = std::make_shared<TCDScheduler>();
                 break;
             case LTX2_SCHEDULER:
                 LOG_INFO("get_sigmas with LTX2 scheduler");
