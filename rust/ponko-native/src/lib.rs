@@ -293,7 +293,7 @@ pub struct QuantizeUnetRequest {
     pub output_path: String,
     pub quant_type: String,
     pub diffusion_slot: bool,
-    pub n_threads: u32,
+    pub n_threads: i32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -303,7 +303,7 @@ pub struct ResAdapterRequest {
     pub normalization_path: String,
     pub output_path: String,
     pub quant_type: String,
-    pub n_threads: u32,
+    pub n_threads: i32,
 }
 
 #[uniffi::export(callback_interface)]
@@ -439,7 +439,7 @@ impl NativeEngine {
         self.api.check_native(success, "cancel generation")
     }
 
-    pub fn free_context(&self, handle_id: u64) -> Result<(), PonkoError> {
+    pub fn free_context(&self, handle_id: i64) -> Result<(), PonkoError> {
         let handle = {
             let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
                 message: "native handle registry lock poisoned".to_owned(),
@@ -483,7 +483,7 @@ impl NativeEngine {
         let result = unsafe {
             (self.api.quantize_unet)(
                 input.as_ptr(), output.as_ptr(), kind.as_ptr(), request.diffusion_slot as i32,
-                request.n_threads.min(i32::MAX as u32) as i32,
+                request.n_threads,
             )
         };
         self.api.check_native(result, "UNet quantization")
@@ -502,7 +502,7 @@ impl NativeEngine {
                 input.as_ptr(),
                 vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 normalization.as_ptr(), output.as_ptr(), kind.as_ptr(),
-                request.n_threads.min(i32::MAX as u32) as i32,
+                request.n_threads,
             )
         };
         self.api.check_native(result, "ResAdapter")
@@ -513,7 +513,7 @@ impl NativeEngine {
 impl NativeEngine {
     fn generate_internal(
         &self,
-        handle_id: u64,
+        handle_id: i64,
         request: GenerationRequest,
         step_callback: Option<Arc<dyn StepCallback>>,
         preview_callback: Option<Arc<dyn PreviewCallback>>,
@@ -566,8 +566,8 @@ impl NativeEngine {
             clip_skip: request.clip_skip,
             init_image_rgb888: image.map_or(ptr::null(), |bytes| bytes.as_ptr()),
             init_image_length: image.map_or(0, |bytes| bytes.len()),
-            init_image_width: request.init_image_width.min(i32::MAX as u32) as i32,
-            init_image_height: request.init_image_height.min(i32::MAX as u32) as i32,
+            init_image_width: request.init_image_width,
+            init_image_height: request.init_image_height,
             strength: request.strength,
         };
         let mut callbacks = CallbackState { step: step_callback, preview: preview_callback };
@@ -607,7 +607,7 @@ impl NativeEngine {
     }
 
 
-    fn lookup_handle(&self, handle_id: u64) -> Result<Arc<NativeHandle>, PonkoError> {
+    fn lookup_handle(&self, handle_id: i64) -> Result<Arc<NativeHandle>, PonkoError> {
         self.handles.lock().map_err(|_| PonkoError::Native {
             message: "native handle registry lock poisoned".to_owned(),
         })?.get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
@@ -636,7 +636,7 @@ impl Drop for NativeEngine {
 #[uniffi::export]
 pub fn generate_image(
     engine: Arc<NativeEngine>,
-    handle_id: u64,
+    handle_id: i64,
     request: GenerationRequest,
     step_callback: Option<Arc<dyn StepCallback>>,
     preview_callback: Option<Arc<dyn PreviewCallback>>,
