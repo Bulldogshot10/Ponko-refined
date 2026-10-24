@@ -478,4 +478,7 @@
     <string name="draw_vae_conv_direct_reload_hint">VAE convolution setting saved. Unload and reload the drawing model to apply it.</string>
     <string name="draw_vae_conv_direct_status">VAE direct-conv</string>
     <string name="draw_vae_conv_standard_status">VAE standard-conv</string>
+    <string name="draw_clip_skip_label">CLIP skip</string>
+    <string name="draw_clip_skip_value">CLIP skip: %1$d</string>
+    <string name="draw_clip_skip_hint">1 keeps standard CLIP output; higher values skip more CLIP layers. Support depends on the model.</string>
 </resources>

@@ -295,7 +295,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
 }
 
 // nativeGenerate(handle, prompt, negative, loraPath, loraScale,
-//                width, height, steps, cfg, seed, sampleMethod, scheduler,
+//                width, height, steps, cfg, seed, sampleMethod, scheduler, clipSkip,
 //                cb, initData, initWidth, initHeight, strength) -> IntArray(ARGB)
 //
 // initData 非空 → 图生图（img2img）：RGB888 交错字节（每像素 3 字节，行优先，左上原点），
@@ -308,7 +308,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         jstring prompt, jstring negative,
         jobjectArray loraPaths, jfloatArray loraScales,
         jint width, jint height, jint steps, jfloat cfg, jlong seed,
-        jint sampleMethod, jint scheduler,
+        jint sampleMethod, jint scheduler, jint clipSkip,
         jobject cb, jobject pcb,
         jbyteArray initData, jint initWidth, jint initHeight, jfloat strength) {
     SdHandle* h = reinterpret_cast<SdHandle*>(handle);
@@ -381,7 +381,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     g.seed            = seed;
     g.batch_count     = 1;
     g.strength        = 1.0f;
-    g.clip_skip       = -1;
+    g.clip_skip       = (clipSkip < 1) ? 1 : ((clipSkip > 12) ? 12 : clipSkip);
 
     // 图生图：拿到 RGB888 原始字节，指针在 generate_image 期间必须保持有效。
     // 生成结束（含失败）后统一在下方 ReleaseByteArrayElements 释放。

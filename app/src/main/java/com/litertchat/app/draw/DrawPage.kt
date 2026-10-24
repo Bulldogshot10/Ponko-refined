@@ -204,6 +204,7 @@ class DrawPage(
         private const val KEY_H = "drawH"
         private const val KEY_STEPS = "drawSteps"
         private const val KEY_CFG = "drawCfg"
+        private const val KEY_CLIP_SKIP = "drawClipSkip"
         private const val KEY_SEED = "drawSeed"
         private const val KEY_LORA_SCALE = "drawLoraScale"
         private const val KEY_SAMPLER = "drawSampler"
@@ -214,6 +215,7 @@ class DrawPage(
         private const val KEY_I2I_H = "i2iH"
         private const val KEY_I2I_STEPS = "i2iSteps"
         private const val KEY_I2I_CFG = "i2iCfg"
+        private const val KEY_I2I_CLIP_SKIP = "i2iClipSkip"
         private const val KEY_I2I_SEED = "i2iSeed"
         private const val KEY_I2I_STRENGTH = "i2iStrength"
         private const val KEY_I2I_LORA_SCALE = "i2iLoraScale"
@@ -316,6 +318,7 @@ class DrawPage(
     private lateinit var negEdit: EditText
     private lateinit var stepsEdit: EditText
     private lateinit var cfgEdit: EditText
+    private lateinit var clipSkipSeekBar: android.widget.SeekBar
     private lateinit var seedEdit: EditText
     private lateinit var loraCheck: CheckBox
     private lateinit var loraHint: TextView
@@ -385,6 +388,7 @@ class DrawPage(
     private lateinit var i2iHeightEdit: EditText
     private lateinit var i2iStepsEdit: EditText
     private lateinit var i2iCfgEdit: EditText
+    private lateinit var i2iClipSkipSeekBar: android.widget.SeekBar
     private lateinit var i2iSeedEdit: EditText
     private lateinit var i2iStrengthEdit: EditText
     private lateinit var i2iSamplerSpinner: android.widget.Spinner
@@ -565,6 +569,11 @@ class DrawPage(
 
         stepsEdit = smallNumber(loadParam(KEY_STEPS, defOf("t2i", "steps", builtinSteps())))
         cfgEdit = smallNumber(loadParam(KEY_CFG, defOf("t2i", "cfg", builtinCfg())))
+        val (clipSkipView, clipSkipBar) = buildClipSkipControl(
+            KEY_CLIP_SKIP,
+            loadInt(KEY_CLIP_SKIP, defOfInt("t2i", "clipSkip", 1))
+        )
+        clipSkipSeekBar = clipSkipBar
         seedEdit = smallNumber(loadParam(KEY_SEED, defOf("t2i", "seed", "-1")))
         bindParam(widthEdit, KEY_W)
         bindParam(heightEdit, KEY_H)
@@ -573,6 +582,7 @@ class DrawPage(
         bindParam(seedEdit, KEY_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), stepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), cfgEdit, c.getString(R.string.s_178)))
+        paramCard.addView(clipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), seedEdit, c.getString(R.string.s_008)))
 
         // ---- LoRA 加速开关 ----
@@ -906,12 +916,18 @@ class DrawPage(
 
         i2iStepsEdit = smallNumber(loadParam(KEY_I2I_STEPS, defOf("i2i", "steps", builtinSteps())))
         i2iCfgEdit = smallNumber(loadParam(KEY_I2I_CFG, defOf("i2i", "cfg", builtinCfg())))
+        val (i2iClipSkipView, i2iClipSkipBar) = buildClipSkipControl(
+            KEY_I2I_CLIP_SKIP,
+            loadInt(KEY_I2I_CLIP_SKIP, defOfInt("i2i", "clipSkip", 1))
+        )
+        i2iClipSkipSeekBar = i2iClipSkipBar
         i2iSeedEdit = smallNumber(loadParam(KEY_I2I_SEED, defOf("i2i", "seed", "-1")))
         bindParam(i2iStepsEdit, KEY_I2I_STEPS)
         bindParam(i2iCfgEdit, KEY_I2I_CFG)
         bindParam(i2iSeedEdit, KEY_I2I_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), i2iStepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), i2iCfgEdit, c.getString(R.string.s_178)))
+        paramCard.addView(i2iClipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), i2iSeedEdit, c.getString(R.string.s_008)))
 
         // LoRA（与文生图共用同一个开关，两边 checkbox 相互同步）
@@ -2315,6 +2331,7 @@ class DrawPage(
         if (DrawCore.busy) throw IllegalStateException(c.getString(R.string.s_428))
         val steps = stepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
         val cfg = cfgEdit.text.toString().toFloatOrNull()?.coerceIn(1f, 30f) ?: 7.0f
+        val clipSkip = clipSkipSeekBar.progress + 1
         val seed = seedEdit.text.toString().toLongOrNull() ?: -1L
         val useSeed = if (seed < 0) System.currentTimeMillis() else seed
         // 宽高：sd.cpp 要求 64 的倍数，向下取整；夹到 64~2048 防止手滑
@@ -2352,6 +2369,7 @@ class DrawPage(
                     height = hgt,
                     steps = steps,
                     cfg = cfg,
+                    clipSkip = clipSkip,
                     seed = useSeed,
                     sampler = sampler,
                     scheduler = scheduler,
@@ -2505,6 +2523,7 @@ class DrawPage(
     ): ImageData {
         val steps = i2iStepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
         val cfg = i2iCfgEdit.text.toString().toFloatOrNull()?.coerceIn(1f, 30f) ?: 7.0f
+        val clipSkip = i2iClipSkipSeekBar.progress + 1
         val seed = i2iSeedEdit.text.toString().toLongOrNull() ?: -1L
         val useSeed = if (seed < 0) System.currentTimeMillis() else seed
         val w = (i2iWidthEdit.text.toString().toIntOrNull() ?: 512).let { (it / 64) * 64 }.coerceIn(64, 2048)
@@ -2534,6 +2553,7 @@ class DrawPage(
                 height = hgt,
                 steps = steps,
                 cfg = cfg,
+                clipSkip = clipSkip,
                 seed = useSeed,
                 sampler = sampler,
                 scheduler = scheduler,
@@ -2666,6 +2686,50 @@ class DrawPage(
         inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
         setBackgroundColor(pal.fieldBg)
         setPadding(dp(10), dp(8), dp(10), dp(8))
+    }
+
+    /** CLIP skip slider: 1 keeps the standard final-layer output; higher values skip more CLIP layers. */
+    private fun buildClipSkipControl(
+        preferenceKey: String,
+        initialValue: Int,
+    ): Pair<View, android.widget.SeekBar> {
+        val column = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        val valueLabel = TextView(c).apply {
+            textSize = 12f
+            setTextColor(textColor)
+        }
+        val slider = android.widget.SeekBar(c).apply {
+            max = 11
+            progress = initialValue.coerceIn(1, 12) - 1
+            contentDescription = c.getString(R.string.draw_clip_skip_label)
+        }
+        fun updateLabel(value: Int) {
+            valueLabel.text = c.getString(R.string.draw_clip_skip_value, value)
+        }
+        updateLabel(slider.progress + 1)
+        slider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(
+                seekBar: android.widget.SeekBar?,
+                progress: Int,
+                fromUser: Boolean,
+            ) {
+                val value = progress + 1
+                updateLabel(value)
+                if (fromUser) prefs().edit().putInt(preferenceKey, value).apply()
+            }
+
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+        })
+        column.addView(valueLabel)
+        column.addView(slider, matchWrap(top = 1))
+        column.addView(TextView(c).apply {
+            text = c.getString(R.string.draw_clip_skip_hint)
+            textSize = 10.5f
+            setTextColor(subText)
+            setPadding(0, dp(2), 0, 0)
+        })
+        return column to slider
     }
 
     private fun paramRow(label: String, input: View, hint: String): View {
@@ -2848,6 +2912,7 @@ class DrawPage(
         put(KEY_H, heightEdit)
         put(KEY_STEPS, stepsEdit)
         put(KEY_CFG, cfgEdit)
+        e.putInt(KEY_CLIP_SKIP, clipSkipSeekBar.progress + 1)
         put(KEY_SEED, seedEdit)
         t2iLoraWeights.forEachIndexed { slot, edit ->
             put(loraWeightKey("t2i", slot), edit)
@@ -2864,6 +2929,7 @@ class DrawPage(
             put(KEY_I2I_H, i2iHeightEdit)
             put(KEY_I2I_STEPS, i2iStepsEdit)
             put(KEY_I2I_CFG, i2iCfgEdit)
+            e.putInt(KEY_I2I_CLIP_SKIP, i2iClipSkipSeekBar.progress + 1)
             put(KEY_I2I_SEED, i2iSeedEdit)
             put(KEY_I2I_STRENGTH, i2iStrengthEdit)
             i2iLoraWeights.forEachIndexed { slot, edit ->
@@ -2973,6 +3039,7 @@ class DrawPage(
             "t2i" -> {
                 put("w", widthEdit); put("h", heightEdit); put("steps", stepsEdit)
                 put("cfg", cfgEdit); put("seed", seedEdit)
+                e.putInt("def_t2i_clipSkip_$lg", clipSkipSeekBar.progress + 1)
                 t2iLoraWeights.forEachIndexed { slot, edit ->
                     put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
                 }
@@ -2983,6 +3050,7 @@ class DrawPage(
                 put("strength", i2iStrengthEdit)
                 put("w", i2iWidthEdit); put("h", i2iHeightEdit); put("steps", i2iStepsEdit)
                 put("cfg", i2iCfgEdit); put("seed", i2iSeedEdit)
+                e.putInt("def_i2i_clipSkip_$lg", i2iClipSkipSeekBar.progress + 1)
                 i2iLoraWeights.forEachIndexed { slot, edit ->
                     put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
                 }
@@ -3007,6 +3075,7 @@ class DrawPage(
                 heightEdit.setText(defOf("t2i", "h", "512"))
                 stepsEdit.setText(defOf("t2i", "steps", builtinSteps()))
                 cfgEdit.setText(defOf("t2i", "cfg", builtinCfg()))
+                clipSkipSeekBar.progress = defOfInt("t2i", "clipSkip", 1).coerceIn(1, 12) - 1
                 seedEdit.setText(defOf("t2i", "seed", "-1"))
                 t2iLoraWeights.forEachIndexed { slot, edit ->
                     edit.setText(defOf("t2i", if (slot == 0) "loraScale" else "loraScale" + (slot + 1), "1.0"))
@@ -3020,6 +3089,7 @@ class DrawPage(
                 i2iHeightEdit.setText(defOf("i2i", "h", "512"))
                 i2iStepsEdit.setText(defOf("i2i", "steps", builtinSteps()))
                 i2iCfgEdit.setText(defOf("i2i", "cfg", builtinCfg()))
+                i2iClipSkipSeekBar.progress = defOfInt("i2i", "clipSkip", 1).coerceIn(1, 12) - 1
                 i2iSeedEdit.setText(defOf("i2i", "seed", "-1"))
                 i2iLoraWeights.forEachIndexed { slot, edit ->
                     edit.setText(defOf("i2i", if (slot == 0) "loraScale" else "loraScale" + (slot + 1), "1.0"))

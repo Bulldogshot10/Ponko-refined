@@ -478,4 +478,7 @@
     <string name="draw_vae_conv_direct_reload_hint">VAE 卷积设置已保存，请卸载并重新加载绘图模型以生效。</string>
     <string name="draw_vae_conv_direct_status">VAE 直接卷积</string>
     <string name="draw_vae_conv_standard_status">VAE 标准卷积</string>
+    <string name="draw_clip_skip_label">CLIP skip</string>
+    <string name="draw_clip_skip_value">CLIP skip：%1$d</string>
+    <string name="draw_clip_skip_hint">1 为标准 CLIP 输出；数值越高跳过的 CLIP 层越多。是否生效取决于模型。</string>
 </resources>

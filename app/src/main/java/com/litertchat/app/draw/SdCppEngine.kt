@@ -120,7 +120,8 @@ object SdCppEngine {
         seed: Long,
         sampleMethod: Int,
         scheduler: Int,
-        cb: StepCallback?,
+        clipSkip: Int,
+        cb: StepCallback?
         pcb: PreviewCallback?,
         initData: ByteArray?,
         initWidth: Int,
@@ -206,6 +207,7 @@ object SdCppEngine {
         height: Int = 512,
         steps: Int = 20,
         cfg: Float = 7.0f,
+        clipSkip: Int = 1,
         seed: Long = -1L,
         sampler: Sampler = Sampler.EULER_A,
         scheduler: Scheduler = Scheduler.DISCRETE,
@@ -223,7 +225,7 @@ object SdCppEngine {
         val px = nativeGenerate(
             handle, prompt, negative, loraPaths, loraScales,
             width, height, steps, cfg, effectiveSeed,
-            sampler.code, scheduler.code, cb, onPreview,
+            sampler.code, scheduler.code, clipSkip.coerceIn(1, 12), cb, onPreview,
             if (useInit) initImage else null,
             if (useInit) initWidth else 0,
             if (useInit) initHeight else 0,
