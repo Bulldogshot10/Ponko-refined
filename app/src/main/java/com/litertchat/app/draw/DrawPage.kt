@@ -3311,10 +3311,13 @@ class DrawPage(
         return wrap
     }
 
-    private fun matchWrap(top: Int = 0) = LinearLayout.LayoutParams(
+    private fun matchWrap(top: Int = 0, bottom: Int = 0) = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT,
         LinearLayout.LayoutParams.WRAP_CONTENT
-    ).apply { topMargin = dp(top) }
+    ).apply {
+        topMargin = dp(top)
+        bottomMargin = dp(bottom)
+    }
 
     /** 顶部菜单的一项 */
     private fun tabItem(t: String) = TextView(c).apply {
