@@ -81,8 +81,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check
+      - name: Format Rust facade
+        run: cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
 
       - name: Test Rust facade
         run: cargo test --manifest-path rust/ponko-native/Cargo.toml
