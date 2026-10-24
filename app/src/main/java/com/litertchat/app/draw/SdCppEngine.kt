@@ -252,7 +252,7 @@ object SdCppEngine {
             hiresDenoisingStrength,
             hiresTileSize,
             clipSkip,
-            initData?.map { it.toUByte() },
+            initData,
             initWidth,
             initHeight,
             strength,
@@ -264,8 +264,8 @@ object SdCppEngine {
         }
         val previewProxy = pcb?.let { callback ->
             object : com.litertchat.app.ponko.PreviewCallback {
-                override fun onPreview(step: Int, width: Int, height: Int, rgb888: List<UByte>) {
-                    callback.onPreview(step, width, height, ByteArray(rgb888.size) { index -> rgb888[index].toByte() })
+                override fun onPreview(step: Int, width: Int, height: Int, rgb888: ByteArray) {
+                    callback.onPreview(step, width, height, rgb888)
                 }
             }
         }
