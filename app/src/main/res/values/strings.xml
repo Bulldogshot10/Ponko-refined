@@ -543,4 +543,27 @@
     <string name="draw_resadapter_copy_failed">Unable to read the selected file. Please select it again.</string>
     <string name="draw_resadapter_create_failed">Unable to create the output model-set directory.</string>
     <string name="draw_resadapter_register_failed">The GGUF was created but the new model set could not be registered.</string>
+
+    <string name="draw_adetailer_title">ADetailer · Face / Hand Refinement</string>
+    <string name="draw_adetailer_enable">Run ADetailer after image generation</string>
+    <string name="draw_adetailer_hint">Detects YOLOv8 objects and inpaints each crop after txt2img or img2img. Also applies to image generation started from chat. Detector files must be YOLOv8 detection .safetensors converted for stable-diffusion.cpp.</string>
+    <string name="draw_adetailer_pick_model">Choose YOLOv8 detector (.safetensors)</string>
+    <string name="draw_adetailer_model_selected">Detector: %1$s</string>
+    <string name="draw_adetailer_model_none">No detector selected</string>
+    <string name="draw_adetailer_model_missing">Choose a compatible YOLOv8 detection .safetensors file before enabling ADetailer.</string>
+    <string name="draw_adetailer_bad_model">Choose a converted YOLOv8 detection .safetensors file, not a raw .pt checkpoint.</string>
+    <string name="draw_adetailer_imported">Imported ADetailer detector: %1$s</string>
+    <string name="draw_adetailer_import_failed">Could not import ADetailer detector: %1$s</string>
+    <string name="draw_adetailer_prompt">Detail prompt</string>
+    <string name="draw_adetailer_prompt_hint">Leave blank to reuse the main prompt.</string>
+    <string name="draw_adetailer_negative_prompt">Detail negative prompt</string>
+    <string name="draw_adetailer_negative_prompt_hint">Leave blank to reuse the main negative prompt.</string>
+    <string name="draw_adetailer_confidence">Detection confidence</string>
+    <string name="draw_adetailer_resolution">Inpaint crop size</string>
+    <string name="draw_adetailer_resolution_hint">Square inpaint size; rounded down to a multiple of 64 (128–1024).</string>
+    <string name="draw_adetailer_padding">Crop padding</string>
+    <string name="draw_adetailer_mask_blur">Mask blur</string>
+    <string name="draw_adetailer_denoise">Denoising strength</string>
+    <string name="draw_adetailer_steps">Detail steps</string>
+    <string name="draw_adetailer_steps_hint">0 inherits the main generation step count; 8 is a useful starting point.</string>
 </resources>
