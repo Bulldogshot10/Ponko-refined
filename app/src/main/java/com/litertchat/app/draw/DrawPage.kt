@@ -2550,7 +2550,7 @@ class DrawPage(
                     throw IllegalStateException(c.getString(R.string.draw_resadapter_failed_detail))
                 }
 
-                installedLora = withContext(Dispatchers.IO) {
+                val finalLora = withContext(Dispatchers.IO) {
                     val rawStem = File(loraName).nameWithoutExtension
                         .replace(Regex("[^A-Za-z0-9._-]"), "_")
                         .take(80).ifBlank { "resadapter" }
@@ -2563,6 +2563,7 @@ class DrawPage(
                     stagedLora.copyTo(target, overwrite = false)
                     target
                 }
+                installedLora = finalLora
 
                 val nextFiles = LinkedHashMap<String, File>()
                 nextFiles["model"] = outputFile
@@ -2583,9 +2584,9 @@ class DrawPage(
                 selectSet(resultSet)
                 useLora = true
                 prefs().edit()
-                    .putString("selLora", installedLora.name)
-                    .putString(loraSlotKey("t2i", 0), installedLora.name)
-                    .putString(loraSlotKey("i2i", 0), installedLora.name)
+                    .putString("selLora", finalLora.name)
+                    .putString(loraSlotKey("t2i", 0), finalLora.name)
+                    .putString(loraSlotKey("i2i", 0), finalLora.name)
                     .putString(loraWeightKey("t2i", 0), "1.0")
                     .putString(loraWeightKey("i2i", 0), "1.0")
                     .apply()
