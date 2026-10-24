@@ -42,6 +42,11 @@ object SdCppEngine {
         DPMPP2M_SDE(18, "DPM++ 2M SDE"),
         DPMPP2M_SDE_BT(19, "DPM++ 2M SDE B&T"),
         LMS(20, "LMS"),
+
+        // Appended to preserve existing persisted spinner indices. Both use
+        // the native DPM++ SDE implementation; the second is a Karras preset.
+        DPMPP_SDE(21, "DPM++ SDE"),
+        DPMPP_SDE_KARRAS(21, "DPM++ SDE Karras"),
     }
 
     /** 调度器（对应 sd.cpp enum scheduler_t） */

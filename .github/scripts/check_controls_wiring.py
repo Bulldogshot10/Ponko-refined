@@ -26,6 +26,7 @@ jni = read("app/src/main/cpp/sdcpp_jni.cpp")
 header = read("app/src/main/cpp/sd/include/stable-diffusion.h")
 diffusion = read("app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp")
 runtime = read("app/src/main/cpp/sd/src/stable-diffusion.cpp")
+samplers = read("app/src/main/cpp/sd/src/runtime/denoiser.hpp")
 builders = read("app/src/main/cpp/sd/src/pipeline/model_builders.cpp")
 vulkan = read("app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
 vulkan_header = read("app/src/main/cpp/sd/ggml/include/ggml-vulkan.h")
@@ -90,6 +91,23 @@ require('Using standard VAE convolution path (direct Conv2D disabled)' in builde
         "runtime logs an explicit standard-convolution baseline")
 require('BENCHMARK generate_image elapsed_ms=' in jni,
         "each native generation reports elapsed time and experiment settings")
+
+# DPM++ SDE sampler and explicit Karras preset: Kotlin UI -> native enum -> implementation.
+require('DPMPP_SDE(21, "DPM++ SDE")' in engine
+        and 'DPMPP_SDE_KARRAS(21, "DPM++ SDE Karras")' in engine,
+        "UI exposes DPM++ SDE and DPM++ SDE Karras choices")
+require('DPMPP_SDE_SAMPLE_METHOD' in header
+        and '"dpm++sde"' in runtime
+        and 'case DPMPP_SDE_SAMPLE_METHOD:' in samplers
+        and 'sample_dpmpp_sde(model, std::move(x), sigmas, rng, eta)' in samplers,
+        "native enum, string mapping, and sampler dispatch are connected")
+require('static sd::Tensor<float> sample_dpmpp_sde(' in samplers
+        and 'BrownianTreeNoiseSampler noise_sampler' in samplers,
+        "DPM++ SDE uses its stochastic second-order solver and Brownian noise")
+require('syncKarrasPresetOnRestore' in draw
+        and 'samplerPresetListener' in draw
+        and 'schedulerPresetListener' in draw,
+        "DPM++ SDE Karras preset keeps sampler and scheduler selection consistent")
 
 tae_branch = builders.index('} else if (options.use_tae && !options.tae_preview_only) {')
 standard_vae_branch = builders.index('LOG_INFO("using VAE for encoding / decoding")', tae_branch)

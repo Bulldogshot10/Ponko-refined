@@ -2034,6 +2034,109 @@ private:
     std::map<double, sd::Tensor<float>> cache_;
 };
 
+// DPM-Solver++ SDE, stochastic second-order solver.
+// Reference: k-diffusion sample_dpmpp_sde; Lu et al., DPM-Solver++.
+// Brownian increments run in t = -log(sigma) space, matching the solver time.
+static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
+                                         sd::Tensor<float> x,
+                                         const std::vector<float>& sigmas,
+                                         std::shared_ptr<RNG> rng,
+                                         float eta) {
+    const int steps = static_cast<int>(sigmas.size()) - 1;
+    if (steps <= 0) {
+        return x;
+    }
+
+    double sigma_max = 0.0;
+    double sigma_min = std::numeric_limits<double>::infinity();
+    for (float sigma : sigmas) {
+        if (sigma > 0.0f) {
+            sigma_max = std::max(sigma_max, static_cast<double>(sigma));
+            sigma_min = std::min(sigma_min, static_cast<double>(sigma));
+        }
+    }
+    if (!(sigma_max > 0.0) || !std::isfinite(sigma_min)) {
+        LOG_ERROR("DPM++ SDE received an invalid sigma schedule");
+        return {};
+    }
+
+    uint64_t tree_seed = 0;
+    {
+        const auto draw = rng->randn(2);
+        if (draw.size() >= 2) {
+            std::memcpy(&tree_seed, draw.data(), sizeof(tree_seed));
+        } else {
+            tree_seed = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        }
+    }
+
+    // BrownianTreeNoiseSampler is coordinate-agnostic. Use solver time
+    // t=-log(sigma), not raw sigma, so variance tracks the SDE's time variable.
+    const double t_min = -std::log(sigma_max);
+    const double t_max = -std::log(sigma_min);
+    BrownianTreeNoiseSampler noise_sampler(x, t_min, t_max, tree_seed);
+
+    constexpr float r = 0.5f;
+    constexpr float s_noise = 1.0f;
+    const float fac = 1.0f / (2.0f * r);
+
+    for (int i = 0; i < steps; ++i) {
+        auto denoised_opt = model(x, sigmas[i], i + 1);
+        if (denoised_opt.pred.empty()) {
+            return {};
+        }
+        sd::Tensor<float> denoised = std::move(denoised_opt.pred);
+
+        if (sigmas[i + 1] == 0.0f) {
+            // Final denoising step has no stochastic term.
+            x = std::move(denoised);
+            continue;
+        }
+
+        const float sigma = sigmas[i];
+        const float sigma_next = sigmas[i + 1];
+        const float t = -std::log(sigma);
+        const float t_next = -std::log(sigma_next);
+        const float h = t_next - t;
+        const float s = t + h * r;
+        const float sigma_s = std::exp(-s);
+
+        // Intermediate stochastic step.
+        const auto [sigma_down_s, sigma_up_s] = get_ancestral_step(sigma, sigma_s, eta);
+        if (!(sigma_down_s > 0.0f)) {
+            LOG_ERROR("DPM++ SDE got a non-positive intermediate sigma");
+            return {};
+        }
+        const float t_s = -std::log(sigma_down_s);
+        sd::Tensor<float> x_2 = (sigma_down_s / sigma) * x
+                                - std::expm1(t - t_s) * denoised;
+        if (eta > 0.0f && sigma_up_s > 0.0f) {
+            x_2 += noise_sampler(t, s) * (s_noise * sigma_up_s);
+        }
+
+        auto denoised_2_opt = model(x_2, sigma_s, i + 1);
+        if (denoised_2_opt.pred.empty()) {
+            return {};
+        }
+        sd::Tensor<float> denoised_2 = std::move(denoised_2_opt.pred);
+
+        // Corrector step to the next sigma.
+        const auto [sigma_down_next, sigma_up_next] = get_ancestral_step(sigma, sigma_next, eta);
+        if (!(sigma_down_next > 0.0f)) {
+            LOG_ERROR("DPM++ SDE got a non-positive target sigma before the terminal step");
+            return {};
+        }
+        const float t_next_down = -std::log(sigma_down_next);
+        sd::Tensor<float> denoised_d = (1.0f - fac) * denoised + fac * denoised_2;
+        x = (sigma_down_next / sigma) * x
+            - std::expm1(t - t_next_down) * denoised_d;
+        if (eta > 0.0f && sigma_up_next > 0.0f) {
+            x += noise_sampler(t, t_next) * (s_noise * sigma_up_next);
+        }
+    }
+    return x;
+}
+
 // DPM-Solver++(2M) SDE, midpoint variant, with step-count-stable Brownian-tree
 // noise. Same trajectory shape at any step count for a given seed. Aliased in
 // k-diffusion / ComfyUI as sample_dpmpp_2m_sde_gpu.
@@ -2882,6 +2985,8 @@ static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
             return sample_res_2s(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
         case ER_SDE_SAMPLE_METHOD:
             return sample_er_sde(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
+        case DPMPP_SDE_SAMPLE_METHOD:
+            return sample_dpmpp_sde(model, std::move(x), sigmas, rng, eta);
         case DPMPP2M_SDE_SAMPLE_METHOD:
             return sample_dpmpp_2m_sde(model, std::move(x), sigmas, rng, eta);
         case DPMPP2M_SDE_BT_SAMPLE_METHOD:

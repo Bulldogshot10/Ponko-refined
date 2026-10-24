@@ -556,9 +556,10 @@ class DrawPage(
         )
         samplerSpinner.setSelection(loadInt(KEY_SAMPLER, defOfInt("t2i", "sampler", 0)).coerceIn(0, samplerSpinner.adapter.count - 1), false)
         schedulerSpinner.setSelection(loadInt(KEY_SCHEDULER, defOfInt("t2i", "scheduler", 0)).coerceIn(0, schedulerSpinner.adapter.count - 1), false)
-        // 先恢复再挂监听，免得 setSelection 把默认值又写回去
-        samplerSpinner.onItemSelectedListener = persistSpinner(KEY_SAMPLER)
-        schedulerSpinner.onItemSelectedListener = persistSpinner(KEY_SCHEDULER)
+        syncKarrasPresetOnRestore(samplerSpinner, schedulerSpinner, KEY_SCHEDULER)
+        // Restore first, then attach listeners so initial values aren't persisted as user changes.
+        samplerSpinner.onItemSelectedListener = samplerPresetListener(KEY_SAMPLER, samplerSpinner, schedulerSpinner)
+        schedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_SCHEDULER, samplerSpinner)
         paramCard.addView(paramRow(c.getString(R.string.s_191), samplerSpinner, c.getString(R.string.s_015)))
         paramCard.addView(paramRow(c.getString(R.string.s_176), schedulerSpinner, c.getString(R.string.s_014)))
 
@@ -897,8 +898,9 @@ class DrawPage(
         )
         i2iSamplerSpinner.setSelection(loadInt(KEY_I2I_SAMPLER, defOfInt("i2i", "sampler", 0)).coerceIn(0, i2iSamplerSpinner.adapter.count - 1), false)
         i2iSchedulerSpinner.setSelection(loadInt(KEY_I2I_SCHEDULER, defOfInt("i2i", "scheduler", 0)).coerceIn(0, i2iSchedulerSpinner.adapter.count - 1), false)
-        i2iSamplerSpinner.onItemSelectedListener = persistSpinner(KEY_I2I_SAMPLER)
-        i2iSchedulerSpinner.onItemSelectedListener = persistSpinner(KEY_I2I_SCHEDULER)
+        syncKarrasPresetOnRestore(i2iSamplerSpinner, i2iSchedulerSpinner, KEY_I2I_SCHEDULER)
+        i2iSamplerSpinner.onItemSelectedListener = samplerPresetListener(KEY_I2I_SAMPLER, i2iSamplerSpinner, i2iSchedulerSpinner)
+        i2iSchedulerSpinner.onItemSelectedListener = schedulerPresetListener(KEY_I2I_SCHEDULER, i2iSamplerSpinner)
         paramCard.addView(paramRow(c.getString(R.string.s_191), i2iSamplerSpinner, c.getString(R.string.s_015)))
         paramCard.addView(paramRow(c.getString(R.string.s_176), i2iSchedulerSpinner, c.getString(R.string.s_014)))
 
@@ -2880,6 +2882,63 @@ class DrawPage(
         }
         e.apply()
         syncDrawCore()   // 参数一改就同步给 API 侧（下一次请求即生效）
+    }
+
+    private fun samplerAt(spinner: android.widget.Spinner): SdCppEngine.Sampler? {
+        val position = spinner.selectedItemPosition
+        return if (position <= 0) null else SdCppEngine.Sampler.entries.getOrNull(position - 1)
+    }
+
+    private fun karrasSchedulerPosition(): Int = SdCppEngine.Scheduler.entries.indexOf(SdCppEngine.Scheduler.KARRAS) + 1
+
+    /** Restore the explicit "DPM++ SDE Karras" preset coherently with its scheduler. */
+    private fun syncKarrasPresetOnRestore(
+        sampler: android.widget.Spinner,
+        scheduler: android.widget.Spinner,
+        schedulerKey: String,
+    ) {
+        if (samplerAt(sampler) == SdCppEngine.Sampler.DPMPP_SDE_KARRAS) {
+            val position = karrasSchedulerPosition()
+            scheduler.setSelection(position, false)
+            prefs().edit().putInt(schedulerKey, position).apply()
+        }
+    }
+
+    private fun samplerPresetListener(
+        key: String,
+        sampler: android.widget.Spinner,
+        scheduler: android.widget.Spinner,
+    ) = object : android.widget.AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+            prefs().edit().putInt(key, pos).apply()
+            if (samplerAt(sampler) == SdCppEngine.Sampler.DPMPP_SDE_KARRAS) {
+                val karrasPosition = karrasSchedulerPosition()
+                if (scheduler.selectedItemPosition != karrasPosition) {
+                    scheduler.setSelection(karrasPosition)
+                }
+            }
+        }
+
+        override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+    }
+
+    private fun schedulerPresetListener(
+        key: String,
+        sampler: android.widget.Spinner,
+    ) = object : android.widget.AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+            prefs().edit().putInt(key, pos).apply()
+            val current = samplerAt(sampler)
+            val isKarrasPosition = pos == karrasSchedulerPosition()
+            if (current == SdCppEngine.Sampler.DPMPP_SDE_KARRAS && !isKarrasPosition) {
+                val standardSdePosition = SdCppEngine.Sampler.entries.indexOf(SdCppEngine.Sampler.DPMPP_SDE) + 1
+                if (standardSdePosition > 0 && sampler.selectedItemPosition != standardSdePosition) {
+                    sampler.setSelection(standardSdePosition)
+                }
+            }
+        }
+
+        override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
     }
 
     /** Spinner 选择落盘 */
