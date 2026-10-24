@@ -82,7 +82,7 @@ jobs:
         run: cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check
 
       - name: Test Rust facade
-        run: cargo test --manifest-path rust/ponko-native/Cargo.toml --locked
+        run: cargo test --manifest-path rust/ponko-native/Cargo.toml
 
       - uses: gradle/actions/setup-gradle@v4
 
