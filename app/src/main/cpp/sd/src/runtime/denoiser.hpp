@@ -2066,7 +2066,7 @@ static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
         if (draw.size() >= 2) {
             std::memcpy(&tree_seed, draw.data(), sizeof(tree_seed));
         } else {
-            tree_seed = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            tree_seed = 0xD1B54A32D192ED03ULL;
         }
     }
 
