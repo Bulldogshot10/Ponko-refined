@@ -385,8 +385,9 @@ impl NativeEngine {
 
         let slot_values = request.slots.as_ref().map(ModelSlots::ordered);
         let slot_storage: Vec<Option<CString>> = if let Some(values) = slot_values.as_ref() {
-            values.iter().map(|value| {
-                value.map(|text| NativeApi::cstring(text, "model slot")).transpose()
+            values.iter().map(|value| match value {
+                Some(text) => NativeApi::cstring(text, "model slot").map(Some),
+                None => Ok(None),
             }).collect::<Result<Vec<_>, PonkoError>>()?
         } else {
             vec![None; 13]
