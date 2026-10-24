@@ -2070,11 +2070,9 @@ static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
         }
     }
 
-    // BrownianTreeNoiseSampler is coordinate-agnostic. Use solver time
-    // t=-log(sigma), not raw sigma, so variance tracks the SDE's time variable.
-    const double t_min = -std::log(sigma_max);
-    const double t_max = -std::log(sigma_min);
-    BrownianTreeNoiseSampler noise_sampler(x, t_min, t_max, tree_seed);
+    // Match k-diffusion's DPM++ SDE: Brownian increments are requested in
+    // sigma coordinates, even though the deterministic solver uses t=-log(sigma).
+    BrownianTreeNoiseSampler noise_sampler(x, sigma_min, sigma_max, tree_seed);
 
     constexpr float r = 0.5f;
     constexpr float s_noise = 1.0f;
@@ -2111,7 +2109,7 @@ static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
         sd::Tensor<float> x_2 = (sigma_down_s / sigma) * x
                                 - std::expm1(t - t_s) * denoised;
         if (eta > 0.0f && sigma_up_s > 0.0f) {
-            x_2 += noise_sampler(t, s) * (s_noise * sigma_up_s);
+            x_2 += noise_sampler(sigma, sigma_s) * (s_noise * sigma_up_s);
         }
 
         auto denoised_2_opt = model(x_2, sigma_s, i + 1);
@@ -2131,7 +2129,7 @@ static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
         x = (sigma_down_next / sigma) * x
             - std::expm1(t - t_next_down) * denoised_d;
         if (eta > 0.0f && sigma_up_next > 0.0f) {
-            x += noise_sampler(t, t_next) * (s_noise * sigma_up_next);
+            x += noise_sampler(sigma, sigma_next) * (s_noise * sigma_up_next);
         }
     }
     return x;
