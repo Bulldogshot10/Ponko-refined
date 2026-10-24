@@ -36,6 +36,15 @@ android {
             // LiteRT-LM 与 llama.cpp 的 native 都只跑 arm64 真机，去掉 x86_64 可减小 APK
             abiFilters += "arm64-v8a"
         }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
+                    "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
+                    "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
+                )
+            }
+        }
     }
 
     compileOptions {
@@ -55,11 +64,6 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"
-            arguments += listOf(
-                "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
-                "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
-                "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
-            )
         }
     }
 
@@ -73,9 +77,9 @@ android {
 
     if (ponkoRustFacadeEnabled) {
         sourceSets.getByName("main").apply {
-            jniLibs.srcDir(ponkoRustJniLibsDir)
-            java.srcDir(ponkoUniffiKotlinDir)
-            java.srcDir("src/rust/java")
+            jniLibs.directories.add(ponkoRustJniLibsDir.get().asFile)
+            java.directories.add(ponkoUniffiKotlinDir.get().asFile)
+            java.directories.add(file("src/rust/java"))
         }
     }
 }
