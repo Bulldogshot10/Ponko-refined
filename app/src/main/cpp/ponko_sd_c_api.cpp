@@ -11,6 +11,7 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +49,7 @@ struct CallbackState {
 };
 
 std::mutex g_generation_mutex;
+std::once_flag g_log_init;
 std::mutex g_last_params_mutex;
 std::mutex g_vulkan_diagnostics_mutex;
 std::string g_last_params;
@@ -202,6 +204,7 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
                                   int32_t wtype, int32_t flash_attn, int32_t vae_conv_direct,
                                   const char* backend, const char* const* slots, size_t slot_count) {
     g_last_error.clear();
+    std::call_once(g_log_init, [] { ggml_log_set(ponkoLogCallback, nullptr); });
     if (model_path == nullptr && (slots == nullptr || slot_count == 0)) {
         setError("model path or slot paths are required");
         return nullptr;
