@@ -23,6 +23,8 @@ project(ponko_sd CXX C)
 # ARM64 builds: -DPONKO_EXYNOS_2400E_CPU_PROFILE=OFF.
 option(PONKO_EXYNOS_2400E_CPU_PROFILE
        "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
+option(PONKO_ENABLE_VULKAN
+       "Build the Vulkan backend and its shader toolchain" ON)
 if (PONKO_EXYNOS_2400E_CPU_PROFILE)
     set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
     message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
@@ -71,7 +73,7 @@ set(SD_USE_SYSTEM_GGML       OFF CACHE BOOL "" FORCE)
 set(SD_WEBP   OFF CACHE BOOL "" FORCE)
 set(SD_WEBM   OFF CACHE BOOL "" FORCE)
 set(SD_CUDA   OFF CACHE BOOL "" FORCE)
-set(SD_VULKAN ON  CACHE BOOL "" FORCE)  # 编入 Vulkan 后端（会自己编 ggml-vulkan + 生成 shader）；设备没有 Vulkan 时运行时回退 CPU
+set(SD_VULKAN ${PONKO_ENABLE_VULKAN} CACHE BOOL "" FORCE)  # OFF builds a CPU-only variant; ON retains Vulkan + shader-toolchain behavior.
 set(SD_OPENCL OFF CACHE BOOL "" FORCE)
 set(SD_METAL  OFF CACHE BOOL "" FORCE)
 set(SD_SYCL   OFF CACHE BOOL "" FORCE)
@@ -86,7 +88,7 @@ set(GGML_CPU_KLEIDIAI   ON  CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE         OFF CACHE BOOL "" FORCE)
-set(GGML_CCACHE         OFF CACHE BOOL "" FORCE)
+set(GGML_CCACHE         ON  CACHE BOOL "" FORCE)  # Use ccache/sccache when installed; gracefully falls back when absent.
 
 # ---------------------------------------------------------------------------
 # 引入 sd.cpp
