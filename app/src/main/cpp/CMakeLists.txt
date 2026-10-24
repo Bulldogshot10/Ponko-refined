@@ -16,8 +16,8 @@ project(ponko_sd CXX C)
 # ---------------------------------------------------------------------------
 # 编译标志
 # ---------------------------------------------------------------------------
-# Earlier benchmark: -O3 + ARMv8.2-A(dotprod+fp16) reduced a 6-step 256x256 run
-# from 116s to 56s. The Exynos 2400e profile enables I8MM for GGML's ARM quant kernels.
+# The Exynos 2400e profile keeps ARMv8.6-A + dotprod + I8MM + FP16 enabled for GGML's
+# ARM quant kernels. Keep this ISA profile unchanged for the Exynos build.
 # Cortex-X4, Cortex-A720 and Cortex-A520 implement I8MM, so this ISA profile is valid
 # across the Exynos 2400e's heterogeneous CPU clusters. Disable the profile for generic
 # ARM64 builds: -DPONKO_EXYNOS_2400E_CPU_PROFILE=OFF.
