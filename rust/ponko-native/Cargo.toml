@@ -1,0 +1,22 @@
+[package]
+name = "ponko-native"
+version = "0.1.0"
+edition = "2021"
+description = "Ponko's staged Rust/UniFFI Android native facade"
+license = "MIT"
+
+[lib]
+name = "ponko_native"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+uniffi = "=0.31.2"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
