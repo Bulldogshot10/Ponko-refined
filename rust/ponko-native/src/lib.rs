@@ -652,7 +652,7 @@ pub fn engine_api_version() -> i32 {
 #[uniffi::export]
 pub fn build_profile() -> BuildProfile {
     BuildProfile {
-        api_version: FACADE_API_VERSION,
+        api_version: FACADE_API_VERSION as i32,
         abi: "arm64-v8a".to_owned(),
         cpu_arch_flags: option_env!("PONKO_CPU_ARCH_FLAGS")
             .unwrap_or("-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4")
