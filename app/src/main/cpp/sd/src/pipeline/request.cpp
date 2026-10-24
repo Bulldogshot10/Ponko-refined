@@ -121,6 +121,7 @@ namespace sd::pipeline {
                 case EULER_A_CFG_PP_SAMPLE_METHOD:
                 case DPMPP2M_SDE_SAMPLE_METHOD:
                 case DPMPP2M_SDE_BT_SAMPLE_METHOD:
+                case DPMPP_SDE_SAMPLE_METHOD:
                     return 1.0f;
                 default:;
             }

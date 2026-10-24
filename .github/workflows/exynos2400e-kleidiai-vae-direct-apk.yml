@@ -106,6 +106,9 @@ jobs:
           grep -q 'DPMPP_SDE_SAMPLE_METHOD' app/src/main/cpp/sd/include/stable-diffusion.h
           grep -q '"dpm++sde"' app/src/main/cpp/sd/src/stable-diffusion.cpp
           grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/runtime/denoiser.hpp
+          grep -q '"DPM++ SDE"' app/src/main/cpp/sd/src/pipeline/request.cpp
+          grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
+          grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
           grep -q 'DPMPP_SDE_KARRAS(21, "DPM++ SDE Karras")' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
           echo "Verified DPM++ SDE native dispatch and Karras UI preset"
 
