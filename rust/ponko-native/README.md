@@ -10,7 +10,7 @@ This is the first, compatibility-preserving migration slice for the Android nati
 - Validates the three quantization types currently accepted by the C++ converter: `q4_0`, `q5_0`, and `q8_0`.
 - Does **not** replace or remove the existing JNI engine yet. Generation, previews, cancellation, quantization, ResAdapter, model loading, Vulkan diagnostics, device listing, and native-handle ownership remain on the legacy path until parity tests cover them.
 
-Keeping that path intact is deliberate: this branch must not lose any existing Ponko feature while the Rust boundary is validated.
+Keeping that path intact is deliberate: this branch must not lose any existing Ponko feature while the Rust boundary is validated. See [API_PARITY.md](API_PARITY.md) for the complete native API checklist and cutover gate.
 
 ## Tooling
 
