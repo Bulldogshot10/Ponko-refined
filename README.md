@@ -169,8 +169,7 @@ gradle assembleRelease -PponkoEnableVulkan=OFF
 # 可选：通用 ARM64 profile；默认保留 Exynos 2400e 指令集优化
 gradle assembleRelease -PponkoExynosCpuProfile=OFF
 
-# 可选：构建 Rust + UniFFI facade（需要 Rust stable + cargo-ndk）
-gradle assembleRelease -PponkoRustFacade=true
+# Rust + UniFFI 是默认路径，上面的 assembleRelease 会自动编译
 ```
 
 签名与交付脚本见 `tools/`：
@@ -186,7 +185,7 @@ powershell -File tools/build-release.ps1
 - `minSdk 28` / `targetSdk 36`，**仅 arm64-v8a**（原生库限制，需真机，模拟器跑不了）
 - 未命中编译缓存的首次全量编译 sd.cpp + ggml 约 8~9 分钟；C++ 未改动时增量约 10 秒。安装并保留 ccache 缓存可减少之后的重编耗时
 - 主要依赖：`com.google.ai.edge.litertlm:litertlm-android:0.17.0`、`net.ladenthin:llama-android:5.1.0`、`com.microsoft.onnxruntime:onnxruntime-android:1.22.0`、`com.tom-roush:pdfbox-android:2.0.27.0`、`io.noties.markwon:*:4.6.2`
-- CMake 现场产出：`libstable-diffusion.so`（sd.cpp 本体）与 `libponko_sd.so`（plain C ABI bridge）。Rust/Cargo 产出 `libponko_native.so` 和 UniFFI Kotlin bindings；Kotlin 不再直接调用手写 JNI，Rust 负责 native API、句柄生命周期和回调，推理仍由 stable-diffusion.cpp + GGML 执行
+- CMake 现场产出：`libstable-diffusion.so`（sd.cpp 本体）与 `libponko_sd.so`（plain C ABI bridge）。Rust/Cargo 产出 `libponko_native.so` 和 UniFFI Kotlin bindings；Kotlin 不再直接调用手写 drawing JNI，Rust 负责 native API、句柄生命周期和回调，推理仍由 stable-diffusion.cpp + GGML 执行
 - Vulkan 后端（可选 GPU 绘图）不需要安装 Vulkan SDK：`glslc` 与 SPIRV 头文件都用 NDK 自带的；交叉编译时还需要一个**宿主编译器**来构建着色器生成工具（Windows 上是 MSVC，`tools/build-release.ps1` 会自动载入 `vcvars64` 环境）
 
 ## 模型从哪来
