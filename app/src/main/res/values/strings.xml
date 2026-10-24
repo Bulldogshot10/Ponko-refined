@@ -514,7 +514,7 @@
     <string name="draw_resadapter_bad_lora">Choose the ResAdapter LoRA .safetensors file.</string>
     <string name="draw_resadapter_bad_norm">Choose the normalization weights .safetensors file.</string>
     <string name="draw_resadapter_busy">Wait until image generation finishes before applying ResAdapter.</string>
-    <string name="draw_resadapter_copy_failed">Couldn't read the selected file. Please pick it again.</string>
-    <string name="draw_resadapter_create_failed">Couldn't create the output model-set directory.</string>
-    <string name="draw_resadapter_register_failed">The GGUF was created but the new model set couldn't be registered.</string>
+    <string name="draw_resadapter_copy_failed">Unable to read the selected file. Please select it again.</string>
+    <string name="draw_resadapter_create_failed">Unable to create the output model-set directory.</string>
+    <string name="draw_resadapter_register_failed">The GGUF was created but the new model set could not be registered.</string>
 </resources>
