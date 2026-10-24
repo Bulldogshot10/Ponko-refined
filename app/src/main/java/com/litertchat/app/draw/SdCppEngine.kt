@@ -183,15 +183,6 @@ object SdCppEngine {
 
     data class Lora(val path: String, val scale: Float)
 
-    fun interface StepCallback {
-        fun onStep(step: Int, steps: Int)
-    }
-
-    /** Generation preview callback in row-major RGB888. */
-    fun interface PreviewCallback {
-        fun onPreview(step: Int, width: Int, height: Int, rgb: ByteArray)
-    }
-
     /**
      * Kotlin keeps the existing API shape while UniFFI carries a typed request through Rust.
      * RGB888 is converted back to the legacy width/height-prefixed ARGB array so DrawPage and
