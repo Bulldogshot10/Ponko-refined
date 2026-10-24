@@ -185,7 +185,7 @@ pub enum PonkoError {
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BuildProfile {
-    pub api_version: u32,
+    pub api_version: i32,
     pub abi: String,
     pub cpu_arch_flags: String,
     pub vulkan_build_default: bool,
@@ -233,7 +233,7 @@ impl ModelSlots {
 pub struct ModelLoadRequest {
     pub model_path: String,
     pub vae_path: Option<String>,
-    pub n_threads: u32,
+    pub n_threads: i32,
     /// -1 preserves the checkpoint's original type.
     pub wtype: i32,
     pub flash_attn: bool,
@@ -248,9 +248,9 @@ pub struct GenerationRequest {
     pub negative_prompt: String,
     pub lora_paths: Vec<String>,
     pub lora_scales: Vec<f32>,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
+    pub width: i32,
+    pub height: i32,
+    pub steps: i32,
     pub cfg: f32,
     pub seed: i64,
     pub sample_method: i32,
@@ -261,22 +261,22 @@ pub struct GenerationRequest {
     pub hires_upscaler: i32,
     pub hires_model_path: Option<String>,
     pub hires_scale: f32,
-    pub hires_target_width: u32,
-    pub hires_target_height: u32,
-    pub hires_steps: u32,
+    pub hires_target_width: i32,
+    pub hires_target_height: i32,
+    pub hires_steps: i32,
     pub hires_denoising_strength: f32,
-    pub hires_tile_size: u32,
-    pub clip_skip: u32,
+    pub hires_tile_size: i32,
+    pub clip_skip: i32,
     pub init_image_rgb888: Option<Vec<u8>>,
-    pub init_image_width: u32,
-    pub init_image_height: u32,
+    pub init_image_width: i32,
+    pub init_image_height: i32,
     pub strength: f32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct GeneratedImage {
-    pub width: u32,
-    pub height: u32,
+    pub width: i32,
+    pub height: i32,
     /// Output is row-major RGB888, three bytes per pixel.
     pub rgb888: Vec<u8>,
 }
@@ -308,12 +308,12 @@ pub struct ResAdapterRequest {
 
 #[uniffi::export(callback_interface)]
 pub trait StepCallback: Send + Sync {
-    fn on_step(&self, step: u32, steps: u32);
+    fn on_step(&self, step: i32, steps: i32);
 }
 
 #[uniffi::export(callback_interface)]
 pub trait PreviewCallback: Send + Sync {
-    fn on_preview(&self, step: u32, width: u32, height: u32, rgb888: Vec<u8>);
+    fn on_preview(&self, step: i32, width: i32, height: i32, rgb888: Vec<u8>);
 }
 
 struct CallbackState {
@@ -325,7 +325,7 @@ unsafe extern "C" fn step_trampoline(user_data: *mut c_void, step: i32, steps: i
     if user_data.is_null() { return; }
     let state = unsafe { &*(user_data.cast::<CallbackState>()) };
     if let Some(callback) = &state.step {
-        let _ = catch_unwind(AssertUnwindSafe(|| callback.on_step(step.max(0) as u32, steps.max(0) as u32)));
+        let _ = catch_unwind(AssertUnwindSafe(|| callback.on_step(step.max(0), steps.max(0))));
     }
 }
 
@@ -343,7 +343,7 @@ unsafe extern "C" fn preview_trampoline(
         // The C++ callback owns this preview buffer only for the duration of this call.
         let bytes = unsafe { slice::from_raw_parts(rgb, length) }.to_vec();
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            callback.on_preview(step.max(0) as u32, width as u32, height as u32, bytes)
+            callback.on_preview(step.max(0), width, height, bytes)
         }));
     }
 }
@@ -357,7 +357,7 @@ struct NativeHandle {
 #[derive(uniffi::Object)]
 pub struct NativeEngine {
     api: Arc<NativeApi>,
-    handles: Mutex<HashMap<u64, Arc<NativeHandle>>>,
+    handles: Mutex<HashMap<i64, Arc<NativeHandle>>>,
 }
 
 #[uniffi::export]
@@ -370,7 +370,7 @@ impl NativeEngine {
         }))
     }
 
-    pub fn create_context(&self, request: ModelLoadRequest) -> Result<u64, PonkoError> {
+    pub fn create_context(&self, request: ModelLoadRequest) -> Result<i64, PonkoError> {
         let report = validate_model_load_request(request.clone());
         if !report.valid {
             return Err(PonkoError::InvalidArgument { message: report.message });
@@ -401,7 +401,7 @@ impl NativeEngine {
             (self.api.create)(
                 model.as_ptr(),
                 vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                request.n_threads.min(i32::MAX as u32) as i32,
+                request.n_threads,
                 request.wtype,
                 request.flash_attn as i32,
                 request.vae_conv_direct as i32,
@@ -415,7 +415,7 @@ impl NativeEngine {
                 message: format!("model context creation failed: {}", self.api.last_error_message()),
             });
         }
-        let id = pointer as usize as u64;
+        let id = pointer as usize as i64;
         let handle = Arc::new(NativeHandle { state: RwLock::new(pointer as usize) });
         let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
             message: "native handle registry lock poisoned".to_owned(),
@@ -427,7 +427,7 @@ impl NativeEngine {
         Ok(id)
     }
 
-    pub fn cancel(&self, handle_id: u64) -> Result<(), PonkoError> {
+    pub fn cancel(&self, handle_id: i64) -> Result<(), PonkoError> {
         let handle = self.lookup_handle(handle_id)?;
         let pointer = handle.state.read().map_err(|_| PonkoError::Native {
             message: "native handle state lock poisoned".to_owned(),
@@ -546,9 +546,9 @@ impl NativeEngine {
             lora_paths: if lora_pointers.is_empty() { ptr::null() } else { lora_pointers.as_ptr() },
             lora_scales: if request.lora_scales.is_empty() { ptr::null() } else { request.lora_scales.as_ptr() },
             lora_count: request.lora_paths.len().min(request.lora_scales.len()),
-            width: request.width.min(i32::MAX as u32) as i32,
-            height: request.height.min(i32::MAX as u32) as i32,
-            steps: request.steps.min(i32::MAX as u32) as i32,
+            width: request.width,
+            height: request.height,
+            steps: request.steps,
             cfg: request.cfg,
             seed: request.seed,
             sample_method: request.sample_method,
@@ -558,12 +558,12 @@ impl NativeEngine {
             hires_upscaler: request.hires_upscaler,
             hires_model_path: hires_path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
             hires_scale: request.hires_scale,
-            hires_target_width: request.hires_target_width.min(i32::MAX as u32) as i32,
-            hires_target_height: request.hires_target_height.min(i32::MAX as u32) as i32,
-            hires_steps: request.hires_steps.min(i32::MAX as u32) as i32,
+            hires_target_width: request.hires_target_width,
+            hires_target_height: request.hires_target_height,
+            hires_steps: request.hires_steps,
             hires_denoising_strength: request.hires_denoising_strength,
-            hires_tile_size: request.hires_tile_size.min(i32::MAX as u32) as i32,
-            clip_skip: request.clip_skip.min(i32::MAX as u32) as i32,
+            hires_tile_size: request.hires_tile_size,
+            clip_skip: request.clip_skip,
             init_image_rgb888: image.map_or(ptr::null(), |bytes| bytes.as_ptr()),
             init_image_length: image.map_or(0, |bytes| bytes.len()),
             init_image_width: request.init_image_width.min(i32::MAX as u32) as i32,
@@ -603,7 +603,7 @@ impl NativeEngine {
         }
         let rgb888 = unsafe { slice::from_raw_parts(output, output_length) }.to_vec();
         unsafe { (self.api.free_buffer)(output.cast::<c_void>()) };
-        Ok(GeneratedImage { width: width as u32, height: height as u32, rgb888 })
+        Ok(GeneratedImage { width, height, rgb888 })
     }
 
 
@@ -645,8 +645,8 @@ pub fn generate_image(
 }
 
 #[uniffi::export]
-pub fn engine_api_version() -> u32 {
-    FACADE_API_VERSION
+pub fn engine_api_version() -> i32 {
+    FACADE_API_VERSION as i32
 }
 
 #[uniffi::export]
@@ -691,7 +691,7 @@ pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationRepor
 
 #[uniffi::export]
 pub fn validate_generation_request(request: GenerationRequest) -> ValidationReport {
-    if request.width == 0 || request.height == 0 {
+    if request.width <= 0 || request.height <= 0 {
         return invalid("Width and height must be greater than zero.");
     }
     if !(1..=150).contains(&request.steps) {
@@ -723,7 +723,7 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
         return invalid("HiRes and img2img strength parameters must be finite.");
     }
     if let Some(rgb) = request.init_image_rgb888 {
-        if request.init_image_width == 0 || request.init_image_height == 0 {
+        if request.init_image_width <= 0 || request.init_image_height <= 0 {
             return invalid("An img2img input requires non-zero image dimensions.");
         }
         let expected = (request.init_image_width as usize).checked_mul(request.init_image_height as usize)
