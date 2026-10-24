@@ -59,6 +59,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cache/ccache
+            app/.cxx
+            app/build/intermediates/cxx
             app/build/ponko-cargo-target
           key: ${{ runner.os }}-ponko-rust-ndk-${{ hashFiles('rust/ponko-native/Cargo.toml', 'rust/ponko-native/Cargo.lock', 'app/src/main/cpp/CMakeLists.txt') }}
           restore-keys: |
