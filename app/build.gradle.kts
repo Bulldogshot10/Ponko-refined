@@ -64,6 +64,13 @@ android {
             pickFirsts += "**/libc++_shared.so"
         }
     }
+
+    if (ponkoRustFacadeEnabled) {
+        sourceSets.getByName("main").apply {
+            jniLibs.srcDir(ponkoRustJniLibsDir)
+            java.srcDir(ponkoUniffiKotlinDir)
+        }
+    }
 }
 
 dependencies {
@@ -84,6 +91,9 @@ dependencies {
     // PDF 文本抽取（对话发送 PDF）：Tom Roush 的 PDFBox Android 移植
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // 绘图（文生图）：自编的 stable-diffusion.cpp（arm64-v8a），源码在 src/main/cpp，
-    // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（JNI 桥）。
+    // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（现有 JNI 桥）。
     // 相比现成 AAR，这里能直接控制线程数 / 采样器 / 调度器 / LoRA / 量化类型 / 取消。
+    if (ponkoRustFacadeEnabled) {
+        implementation("net.java.dev.jna:jna:5.17.0@aar")
+    }
 }
