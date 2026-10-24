@@ -77,9 +77,9 @@ android {
 
     if (ponkoRustFacadeEnabled) {
         sourceSets.getByName("main").apply {
-            jniLibs.directories.add(ponkoRustJniLibsDir.get().asFile)
-            java.directories.add(ponkoUniffiKotlinDir.get().asFile)
-            java.directories.add(file("src/rust/java"))
+            jniLibs.directories.add(ponkoRustJniLibsDir.get().asFile.absolutePath)
+            java.directories.add(ponkoUniffiKotlinDir.get().asFile.absolutePath)
+            java.directories.add(file("src/rust/java").absolutePath)
         }
     }
 }
