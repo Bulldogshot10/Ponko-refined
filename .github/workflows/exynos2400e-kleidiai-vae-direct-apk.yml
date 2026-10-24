@@ -2,10 +2,9 @@ name: Exynos 2400e KleidiAI VAE direct-conv CPU APK test
 
 on:
   push:
-    branches: [feat/exynos2400e-vae-direct-conv-test, feat/rust-uniffi-native-facade]
+    branches: [feat/exynos2400e-vae-direct-conv-test]
     paths:
       - "app/**"
-      - "rust/**"
       - "gradle/**"
       - "build.gradle*"
       - "settings.gradle*"
@@ -32,19 +31,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-
-      - name: Install compiler cache
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ccache
-          ccache --version
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ${{ runner.os }}-ponko-ccache-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/sd/ggml/CMakeLists.txt', 'app/src/main/cpp/sd/ggml/src/CMakeLists.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-ponko-ccache-
 
       - name: Install Android SDK and native build dependencies
         shell: bash
@@ -95,7 +81,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify KleidiAI and compiler cache are enabled
+      - name: Verify KleidiAI is enabled
         shell: bash
         run: |
           set -euo pipefail
@@ -103,12 +89,7 @@ jobs:
             echo "GGML_CPU_KLEIDIAI=ON was not found in generated CMake cache" >&2
             exit 1
           fi
-          if ! grep -R -Fq 'GGML_CCACHE:BOOL=ON' app/.cxx app/build 2>/dev/null; then
-            echo "GGML_CCACHE=ON was not found in generated CMake cache" >&2
-            exit 1
-          fi
-          ccache -s
-          echo "Verified GGML_CPU_KLEIDIAI=ON and GGML_CCACHE=ON"
+          echo "Verified GGML_CPU_KLEIDIAI=ON"
 
       - name: Verify VAE direct-convolution experiment
         shell: bash
