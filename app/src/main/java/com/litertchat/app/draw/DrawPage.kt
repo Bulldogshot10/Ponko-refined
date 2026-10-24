@@ -2396,7 +2396,7 @@ class DrawPage(
                         if (totalStep > 0) {
                             val progress = (displayStep * 100 / totalStep).coerceIn(0, 100)
                             progressBar.progress = progress
-                            if (::procProgressBar.isInitialized && !previewFrameSeen) {
+                            if (::procProgressBar.isInitialized) {
                                 procProgressBar.progress = progress
                             }
                         }
@@ -2615,7 +2615,7 @@ class DrawPage(
                         if (totalStep > 0) {
                             val progress = (displayStep * 100 / totalStep).coerceIn(0, 100)
                             i2iProgressBar.progress = progress
-                            if (::procProgressBar.isInitialized && !previewFrameSeen) {
+                            if (::procProgressBar.isInitialized) {
                                 procProgressBar.progress = progress
                             }
                         }
@@ -2963,6 +2963,7 @@ class DrawPage(
     /** Render the newest pending preview and update its matching step/progress together. */
     private fun onPreviewFrame(step: Int, w: Int, h: Int, rgb: ByteArray) {
         if (!::previewImg.isInitialized) return
+        denoisingStarted = true
         val bmp = SdCppEngine.rgbToBitmap(w, h, rgb) ?: return
         val frame = ProcessPreviewFrame(kotlin.math.abs(step), bmp)
         var post = false

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -158,6 +159,10 @@ bool validateQuantizedUnetFile(const std::string& path,
     long long unetCount = 0;
     long long quantCount = 0;
     long long outsideQuantCount = 0;
+    bool payloadComplete = true;
+    const uint64_t dataBase = static_cast<uint64_t>(gguf_get_data_offset(gguf));
+    uint64_t requiredFileSize = dataBase;
+    const uint64_t maxSize = std::numeric_limits<uint64_t>::max();
     const int64_t tensorCount = gguf_get_n_tensors(gguf);
     for (int64_t i = 0; i < tensorCount; ++i) {
         const char* name = gguf_get_tensor_name(gguf, i);
@@ -170,14 +175,33 @@ bool validateQuantizedUnetFile(const std::string& path,
         } else if (type == expectedType) {
             ++outsideQuantCount;
         }
+
+        // GGUF tensor offsets are relative to the aligned data section. Reject overflow or a
+        // file whose metadata parses but whose final tensor payload was truncated.
+        const uint64_t tensorOffset = static_cast<uint64_t>(gguf_get_tensor_offset(gguf, i));
+        const uint64_t tensorSize = static_cast<uint64_t>(gguf_get_tensor_size(gguf, i));
+        if (tensorOffset > maxSize - dataBase ||
+            tensorSize > maxSize - dataBase - tensorOffset) {
+            payloadComplete = false;
+            break;
+        }
+        const uint64_t tensorEnd = dataBase + tensorOffset + tensorSize;
+        if (tensorEnd > requiredFileSize) requiredFileSize = tensorEnd;
     }
+
+    std::ifstream sizeCheck(path, std::ios::binary | std::ios::ate);
+    const std::streamoff actualFileSize = sizeCheck
+        ? static_cast<std::streamoff>(sizeCheck.tellg())
+        : static_cast<std::streamoff>(-1);
+    payloadComplete = payloadComplete && actualFileSize >= 0 &&
+        static_cast<uint64_t>(actualFileSize) >= requiredFileSize;
     gguf_free(gguf);
 
     if (unetTensorCount) *unetTensorCount = unetCount;
     if (quantizedTensorCount) *quantizedTensorCount = quantCount;
-    if (unetCount == 0 || quantCount == 0 || outsideQuantCount != 0) {
-        LOGE("UNet quantizer: validation failed (unet=%lld, requested_type=%lld, outside_unet=%lld)",
-             unetCount, quantCount, outsideQuantCount);
+    if (unetCount == 0 || quantCount == 0 || outsideQuantCount != 0 || !payloadComplete) {
+        LOGE("UNet quantizer: validation failed (unet=%lld, requested_type=%lld, outside_unet=%lld, payload_complete=%d)",
+             unetCount, quantCount, outsideQuantCount, payloadComplete ? 1 : 0);
         return false;
     }
     return true;
