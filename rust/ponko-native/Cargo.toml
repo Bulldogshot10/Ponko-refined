@@ -2,8 +2,9 @@
 name = "ponko-native"
 version = "0.1.0"
 edition = "2021"
-description = "Ponko's staged Rust/UniFFI Android native facade"
+description = "Ponko's Rust/UniFFI Android native facade for stable-diffusion.cpp"
 license = "MIT"
+build = "build.rs"
 
 [lib]
 name = "ponko_native"
@@ -14,6 +15,8 @@ default = []
 bindgen = ["uniffi/cli"]
 
 [dependencies]
+libloading = "0.8"
+thiserror = "2"
 uniffi = "=0.32.2"
 
 [[bin]]
