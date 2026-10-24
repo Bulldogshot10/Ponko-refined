@@ -1,8 +1,6 @@
 name: Ponko Rust-UniFFI Android APK
 
 on:
-  push:
-    branches: [feat/rust-uniffi-native-facade]
   pull_request:
     branches: [feat/exynos2400e-vae-direct-conv-test]
     paths:
@@ -142,6 +140,7 @@ jobs:
             app/build/outputs/apk/debug/*.apk
             app/build/ponko-gradle-build.log
             app/build/generated/source/uniffi/main/java/**/*.kt
+            rust/ponko-native/Cargo.lock
           if-no-files-found: warn
           retention-days: 14
 
