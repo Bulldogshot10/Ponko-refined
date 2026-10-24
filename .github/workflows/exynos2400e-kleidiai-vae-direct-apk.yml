@@ -1,7 +1,10 @@
-name: Exynos 2400e KleidiAI VAE direct-conv CPU APK test
+name: Exynos 2400e SVE2 KleidiAI VAE direct-conv APK
 
-# Manual only to keep experimental native builds from consuming Actions minutes on every edit.
+# Build on pushes to this experiment branch and allow manual rebuilds.
 on:
+  push:
+    branches:
+      - feat/exynos2400e-vae-direct-conv-test
   workflow_dispatch:
 
 permissions:
@@ -13,7 +16,7 @@ concurrency:
 
 jobs:
   android-arm64-apk:
-    name: Build optimized Android APK
+    name: Build Exynos 2400e SVE2 APK
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -44,12 +47,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK with optimized native code
+      - name: Build debug APK with Exynos SVE2 profile
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleDebug \
+            -PponkoExynosSve2=true \
             -PCMAKE_C_FLAGS_DEBUG="-O3 -DNDEBUG" \
             -PCMAKE_CXX_FLAGS_DEBUG="-O3 -DNDEBUG"
 
@@ -59,17 +63,22 @@ jobs:
           set -euo pipefail
           found=0
           while IFS= read -r file; do
-            if grep -q -- '-march=armv8.6-a+dotprod+i8mm+fp16' "$file" &&
+            if grep -Eq -- '-march=armv8\.6-a\+sve2\+dotprod\+i8mm\+fp16' "$file" &&
                grep -q -- '-mtune=cortex-x4' "$file" &&
                grep -q -- '-O3' "$file" &&
                grep -q -- '-DNDEBUG' "$file"; then
-              echo "Verified optimized Exynos flags in $file"
+              echo "Verified Exynos SVE2 + I8MM + DOTPROD + FP16 + -O3 native flags in $file"
               found=1
               break
             fi
           done < <(find app/.cxx app/build -type f \( -name CMakeCache.txt -o -name build.ninja -o -name flags.make -o -name '*.json' \) 2>/dev/null || true)
           if [ "$found" -ne 1 ]; then
-            echo "Could not verify Exynos I8MM + -O3 -DNDEBUG flags in generated build files" >&2
+            echo "Could not verify Exynos SVE2 + I8MM + -O3 flags in generated build files" >&2
+            exit 1
+          fi
+
+          if ! grep -R -Fq 'PONKO_EXYNOS_2400E_SVE2:BOOL=ON' app/.cxx app/build 2>/dev/null; then
+            echo "PONKO_EXYNOS_2400E_SVE2=ON was not found in generated CMake cache" >&2
             exit 1
           fi
 
@@ -100,7 +109,6 @@ jobs:
           grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/runtime/denoiser.hpp
           grep -q '"DPM++ SDE"' app/src/main/cpp/sd/src/pipeline/request.cpp
           grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
-          grep -q 'case DPMPP_SDE_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
           grep -q 'DPMPP_SDE_KARRAS(21, "DPM++ SDE Karras")' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
           echo "Verified DPM++ SDE native dispatch and Karras UI preset"
 
@@ -118,7 +126,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ponko-exynos2400e-kleidiai-vae-direct-debug-apk
+          name: ponko-exynos2400e-sve2-kleidiai-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
