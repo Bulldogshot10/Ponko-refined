@@ -39,7 +39,10 @@ struct PonkoHandle {
     sd_ctx_t* ctx = nullptr;
     std::atomic<bool> cancelled{false};
     bool vae_conv_direct = true;
+    int n_threads = 4;
     std::string backend_name = "auto";
+    adetailer_ctx_t* adetailer = nullptr;
+    std::string adetailer_detector_path;
 };
 
 struct CallbackState {
@@ -278,6 +281,7 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
     }
     handle->ctx = context;
     handle->vae_conv_direct = params.vae_conv_direct;
+    handle->n_threads = params.n_threads;
     handle->backend_name = stringIsNonempty(backend) ? backend : "auto";
     PONKO_LOGI("context created; VAE direct-conv=%d backend=%s",
                handle->vae_conv_direct ? 1 : 0, handle->backend_name.c_str());
@@ -383,6 +387,76 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     int image_count = 0;
     const auto start = std::chrono::steady_clock::now();
     bool ok = generate_image(handle->ctx, &generation, &images, &image_count);
+    // Post-generation ADetailer. Cache the detector on this loaded model handle.
+    if (image_count > 0 && images != nullptr && images[0].data != nullptr) ok = true;
+    if (ok && params->adetailer_enabled != 0) {
+        const char* detector_path = params->adetailer_detector_path;
+        bool detector_ready = false;
+        if (!stringIsNonempty(detector_path)) {
+            setError("ADetailer is enabled but no YOLOv8 detector file was selected");
+        } else {
+            detector_ready = handle->adetailer != nullptr &&
+                             handle->adetailer_detector_path == detector_path;
+            if (!detector_ready) {
+                // Use CPU for detection so this does not depend on detector Vulkan kernels.
+                adetailer_ctx_t* replacement = new_adetailer_ctx(
+                    detector_path, handle->n_threads, "cpu", "cpu");
+                if (replacement == nullptr) {
+                    setError("could not load the ADetailer YOLOv8 detection .safetensors file");
+                } else {
+                    adetailer_ctx_t* previous = handle->adetailer;
+                    handle->adetailer = replacement;
+                    handle->adetailer_detector_path = detector_path;
+                    detector_ready = true;
+                    if (previous != nullptr) free_adetailer_ctx(previous);
+                }
+            }
+        }
+
+        if (!detector_ready) {
+            free_sd_images(images, image_count);
+            images = nullptr;
+            image_count = 0;
+            ok = false;
+        } else {
+            sd_adetailer_params_t detailer_params{};
+            detailer_params.prompt = stringIsNonempty(params->adetailer_prompt)
+                ? params->adetailer_prompt : nullptr;
+            detailer_params.negative_prompt = stringIsNonempty(params->adetailer_negative_prompt)
+                ? params->adetailer_negative_prompt : nullptr;
+            detailer_params.extra_ad_args = stringIsNonempty(params->adetailer_extra_args)
+                ? params->adetailer_extra_args : nullptr;
+
+            sd_img_gen_params_t detail_generation = generation;
+            // Match upstream's txt2img post-pass defaults; UI args override these values.
+            if (generation.init_image.data == nullptr) {
+                detail_generation.width = 512;
+                detail_generation.height = 512;
+                detail_generation.strength = 0.4f;
+            }
+            sd_image_t* detailed_images = nullptr;
+            int detailed_count = 0;
+            const bool detail_ok = adetail_image(
+                handle->adetailer, handle->ctx, images[0], &detailer_params,
+                &detail_generation, &detailed_images, &detailed_count);
+            if (!detail_ok || detailed_count <= 0 || detailed_images == nullptr ||
+                detailed_images[0].data == nullptr) {
+                if (detailed_images != nullptr) free_sd_images(detailed_images, detailed_count);
+                free_sd_images(images, image_count);
+                images = nullptr;
+                image_count = 0;
+                ok = false;
+                setError("ADetailer failed; check detector compatibility and the selected diffusion model");
+            } else {
+                free_sd_images(images, image_count);
+                images = detailed_images;
+                image_count = detailed_count;
+                ok = true;
+                PONKO_LOGI("ADetailer completed using detector=%s", detector_path);
+            }
+        }
+    }
+
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
     if (image_count > 0 && images != nullptr && images[0].data != nullptr) ok = true;
@@ -418,7 +492,7 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
             }
         }
     } else {
-        setError("stable-diffusion.cpp generation failed");
+        if (g_last_error.empty()) setError("stable-diffusion.cpp generation failed");
     }
     if (images != nullptr) free_sd_images(images, image_count);
     sd_set_progress_callback(nullptr, nullptr);
@@ -440,6 +514,10 @@ extern "C" int32_t ponko_sd_cancel(void* opaque_handle) {
 extern "C" void ponko_sd_free(void* opaque_handle) {
     auto* handle = static_cast<PonkoHandle*>(opaque_handle);
     if (handle == nullptr) return;
+    if (handle->adetailer != nullptr) {
+        free_adetailer_ctx(handle->adetailer);
+        handle->adetailer = nullptr;
+    }
     if (handle->ctx != nullptr) free_sd_ctx(handle->ctx);
     delete handle;
 }
