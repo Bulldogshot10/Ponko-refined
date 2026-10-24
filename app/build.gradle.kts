@@ -110,6 +110,7 @@ if (ponkoRustFacadeEnabled) {
 
     val buildPonkoRustAndroid = tasks.register<Exec>("buildPonkoRustAndroid") {
         group = "build"
+        workingDir(ponkoRustDir)
         description = "Build the opt-in Ponko Rust facade for Android arm64-v8a."
         inputs.files(fileTree(ponkoRustDir) {
             include("Cargo.toml", "uniffi.toml", "src/**")
@@ -131,6 +132,7 @@ if (ponkoRustFacadeEnabled) {
 
     val generatePonkoUniffiKotlin = tasks.register<Exec>("generatePonkoUniffiKotlin") {
         group = "build"
+        workingDir(ponkoRustDir)
         description = "Generate Kotlin bindings from the compiled Ponko UniFFI library."
         dependsOn(buildPonkoRustAndroid)
         inputs.file(rustNativeLibrary)
