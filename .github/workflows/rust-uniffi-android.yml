@@ -1,6 +1,16 @@
 name: Ponko Rust-UniFFI Android APK
 
 on:
+  push:
+    branches: [feat/rust-uniffi-native-facade]
+    paths:
+      - "app/**"
+      - "rust/**"
+      - "gradle/**"
+      - "build.gradle*"
+      - "settings.gradle*"
+      - "gradle.properties"
+      - ".github/workflows/rust-uniffi-android.yml"
   pull_request:
     branches: [feat/exynos2400e-vae-direct-conv-test]
     paths:
