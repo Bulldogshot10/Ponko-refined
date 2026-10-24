@@ -1,45 +1,37 @@
-# Ponko Rust / UniFFI facade
+# Ponko Rust / UniFFI native facade
 
-This is the first, compatibility-preserving migration slice for the Android native boundary.
+Kotlin now calls the drawing engine through generated UniFFI bindings into Rust. Rust owns the app-facing API, validation, callback routing, model-handle registry, and lifecycle synchronization. The inference implementation remains stable-diffusion.cpp + GGML, exposed by the plain C ABI in `app/src/main/cpp/ponko_sd_c_api.h` and `ponko_sd_c_api.cpp`.
 
-## Current status
+## Native API coverage
 
-- Defines typed UniFFI records matching the current model-slot and image-generation fields.
-- Exposes API-version/build-profile introspection and request preflight validation.
-- Keeps CFG = 0 valid for TCD-style workflows and does not introduce a LoRA count limit.
-- Validates the three quantization types currently accepted by the C++ converter: `q4_0`, `q5_0`, and `q8_0`.
-- Does **not** replace or remove the existing JNI engine yet. Generation, previews, cancellation, quantization, ResAdapter, model loading, Vulkan diagnostics, device listing, and native-handle ownership remain on the legacy path until parity tests cover them.
+The facade covers model context creation and release, text-to-image and img2img, all existing sampler/scheduler/ETA controls, caller-provided LoRA sets, HiRes settings, CLIP skip, progress/preview callbacks, cancellation, Vulkan diagnostics, last-parameter logging, backend device enumeration, UNet quantization, and ResAdapter conversion. Existing Kotlin call sites keep their `SdCppEngine` wrapper names, but those wrappers now call the generated UniFFI API rather than hand-written JNI methods.
 
-Keeping that path intact is deliberate: this branch must not lose any existing Ponko feature while the Rust boundary is validated. See [API_PARITY.md](API_PARITY.md) for the complete native API checklist and cutover gate.
+The native handle registry blocks context destruction while generate/cancel calls are using a context. Generation remains single-flight because stable-diffusion.cpp's progress and preview callbacks are registered globally.
+
+See [API_PARITY.md](API_PARITY.md) for the explicit mapping between the old API and the new Rust/C ABI implementation.
 
 ## Tooling
 
-Install Rust stable and cargo-ndk:
+Install Rust stable and the Android ARM64 target, plus cargo-ndk:
 
 ```sh
 rustup update stable
 rustup target add aarch64-linux-android
-cargo install cargo-ndk
+cargo install cargo-ndk --locked
 ```
 
-The Android SDK/NDK must be installed and discoverable from the environment. The app's current build uses NDK `27.3.13750724`.
+The Android SDK/NDK must be installed and discoverable. Ponko currently uses NDK `27.3.13750724`, CMake `3.31.6`, and builds only `arm64-v8a`.
 
-## Android build with the opt-in facade
+## Build and test
 
 From the repository root:
 
 ```sh
-./gradlew :app:assembleDebug -PponkoRustFacade=true
-```
-
-On Windows, use `gradlew.bat` or the existing PowerShell build workflow. This opt-in builds `libponko_native.so`, generates Kotlin bindings with UniFFI, packages the native library, and adds JNA for the stable Kotlin binding backend. The default build is unchanged until parity testing is complete.
-
-## Unit tests
-
-```sh
+cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check
 cargo test --manifest-path rust/ponko-native/Cargo.toml
+./gradlew :app:assembleDebug
 ```
 
-## Cutover rule
+On Windows, use `gradlew.bat`. Gradle builds `libponko_native.so` for Android, generates UniFFI Kotlin bindings, and packages them with `libponko_sd.so` and `libstable-diffusion.so`. Install cargo-ndk before building.
 
-Do not delete `sdcpp_jni.cpp` or alter `SdCppEngine`'s existing native calls until each current API has a Rust counterpart and parity coverage: create/free, text-to-image, img2img, upscaling, sampler/scheduler/ETA, multiple LoRAs, progress/preview callbacks, cancellation, model slots, quantization validation/conversion, ResAdapter, diagnostics, and device enumeration.
+The app-facing JNI bridge has been removed from the CMake target. `libponko_sd.so` is a C ABI adapter loaded by Rust, not a library of Java native methods.
