@@ -130,7 +130,7 @@ set(GGML_CPU_KLEIDIAI   ON  CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE         OFF CACHE BOOL "" FORCE)
-set(GGML_CCACHE         ON  CACHE BOOL "" FORCE)  # Use ccache/sccache when installed; gracefully falls back when absent.
+set(GGML_CCACHE         ${PONKO_ENABLE_COMPILER_CACHE} CACHE BOOL "" FORCE)  # Use ccache/sccache when installed; gracefully falls back when absent.
 
 # ---------------------------------------------------------------------------
 # 引入 sd.cpp
