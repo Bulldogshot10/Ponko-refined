@@ -135,7 +135,11 @@ jobs:
           grep -q 'case TCD_SAMPLE_METHOD:' app/src/main/cpp/sd/src/pipeline/request.cpp
           grep -q 'TCD(16, "TCD")' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
           grep -q 'syncTcdPresetOnRestore' app/src/main/java/com/litertchat/app/draw/DrawPage.kt
-          echo "Verified TCD scheduler timestep schedule and native TCD update rule"
+          grep -q 'eta: Float = -1.0f' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
+          grep -q 'jfloat eta' app/src/main/cpp/sdcpp_jni.cpp
+          grep -q 'g.sample_params.eta' app/src/main/cpp/sdcpp_jni.cpp
+          grep -q 'draw_eta_label' app/src/main/res/values/strings.xml
+          echo "Verified TCD scheduler and configurable ETA end-to-end wiring"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

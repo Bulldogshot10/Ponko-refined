@@ -206,6 +206,7 @@ class DrawPage(
         private const val KEY_H = "drawH"
         private const val KEY_STEPS = "drawSteps"
         private const val KEY_CFG = "drawCfg"
+        private const val KEY_ETA = "drawEta"
         private const val KEY_CLIP_SKIP = "drawClipSkip"
         private const val KEY_SEED = "drawSeed"
         private const val KEY_LORA_SCALE = "drawLoraScale"
@@ -217,6 +218,7 @@ class DrawPage(
         private const val KEY_I2I_H = "i2iH"
         private const val KEY_I2I_STEPS = "i2iSteps"
         private const val KEY_I2I_CFG = "i2iCfg"
+        private const val KEY_I2I_ETA = "i2iEta"
         private const val KEY_I2I_CLIP_SKIP = "i2iClipSkip"
         private const val KEY_I2I_SEED = "i2iSeed"
         private const val KEY_I2I_STRENGTH = "i2iStrength"
@@ -325,6 +327,7 @@ class DrawPage(
     private lateinit var negEdit: EditText
     private lateinit var stepsEdit: EditText
     private lateinit var cfgEdit: EditText
+    private lateinit var etaEdit: EditText
     private lateinit var clipSkipSeekBar: android.widget.SeekBar
     private lateinit var seedEdit: EditText
     private lateinit var loraCheck: CheckBox
@@ -400,6 +403,7 @@ class DrawPage(
     private lateinit var i2iHeightEdit: EditText
     private lateinit var i2iStepsEdit: EditText
     private lateinit var i2iCfgEdit: EditText
+    private lateinit var i2iEtaEdit: EditText
     private lateinit var i2iClipSkipSeekBar: android.widget.SeekBar
     private lateinit var i2iSeedEdit: EditText
     private lateinit var i2iStrengthEdit: EditText
@@ -592,6 +596,7 @@ class DrawPage(
 
         stepsEdit = smallNumber(loadParam(KEY_STEPS, defOf("t2i", "steps", builtinSteps())))
         cfgEdit = smallNumber(loadParam(KEY_CFG, defOf("t2i", "cfg", builtinCfg())))
+        etaEdit = smallNumber(loadParam(KEY_ETA, defOf("t2i", "eta", "-1")))
         val (clipSkipView, clipSkipBar) = buildClipSkipControl(
             KEY_CLIP_SKIP,
             loadInt(KEY_CLIP_SKIP, defOfInt("t2i", "clipSkip", 1))
@@ -602,9 +607,11 @@ class DrawPage(
         bindParam(heightEdit, KEY_H)
         bindParam(stepsEdit, KEY_STEPS)
         bindParam(cfgEdit, KEY_CFG)
+        bindParam(etaEdit, KEY_ETA)
         bindParam(seedEdit, KEY_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), stepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), cfgEdit, c.getString(R.string.s_178)))
+        paramCard.addView(paramRow(c.getString(R.string.draw_eta_label), etaEdit, c.getString(R.string.draw_eta_hint)))
         paramCard.addView(clipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), seedEdit, c.getString(R.string.s_008)))
 
@@ -940,6 +947,7 @@ class DrawPage(
 
         i2iStepsEdit = smallNumber(loadParam(KEY_I2I_STEPS, defOf("i2i", "steps", builtinSteps())))
         i2iCfgEdit = smallNumber(loadParam(KEY_I2I_CFG, defOf("i2i", "cfg", builtinCfg())))
+        i2iEtaEdit = smallNumber(loadParam(KEY_I2I_ETA, defOf("i2i", "eta", "-1")))
         val (i2iClipSkipView, i2iClipSkipBar) = buildClipSkipControl(
             KEY_I2I_CLIP_SKIP,
             loadInt(KEY_I2I_CLIP_SKIP, defOfInt("i2i", "clipSkip", 1))
@@ -948,9 +956,11 @@ class DrawPage(
         i2iSeedEdit = smallNumber(loadParam(KEY_I2I_SEED, defOf("i2i", "seed", "-1")))
         bindParam(i2iStepsEdit, KEY_I2I_STEPS)
         bindParam(i2iCfgEdit, KEY_I2I_CFG)
+        bindParam(i2iEtaEdit, KEY_I2I_ETA)
         bindParam(i2iSeedEdit, KEY_I2I_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), i2iStepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), i2iCfgEdit, c.getString(R.string.s_178)))
+        paramCard.addView(paramRow(c.getString(R.string.draw_eta_label), i2iEtaEdit, c.getString(R.string.draw_eta_hint)))
         paramCard.addView(i2iClipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), i2iSeedEdit, c.getString(R.string.s_008)))
 
@@ -2746,6 +2756,7 @@ class DrawPage(
         if (DrawCore.busy) throw IllegalStateException(c.getString(R.string.s_428))
         val steps = stepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
         val cfg = cfgEdit.text.toString().toFloatOrNull()?.coerceIn(1f, 30f) ?: 7.0f
+        val eta = parseEta(etaEdit)
         val clipSkip = clipSkipSeekBar.progress + 1
         val seed = seedEdit.text.toString().toLongOrNull() ?: -1L
         val useSeed = if (seed < 0) System.currentTimeMillis() else seed
@@ -2788,6 +2799,7 @@ class DrawPage(
                     seed = useSeed,
                     sampler = sampler,
                     scheduler = scheduler,
+                    eta = eta,
                     cb = { cur, total -> onProgress(cur, total) },
                     onPreview = onPreview?.let { f ->
                         SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -2806,6 +2818,12 @@ class DrawPage(
         val idx = samplerSpinner.selectedItemPosition
         if (idx <= 0) return if (hasLora) SdCppEngine.Sampler.LCM else SdCppEngine.Sampler.EULER_A
         return SdCppEngine.Sampler.entries.getOrElse(idx - 1) { SdCppEngine.Sampler.EULER_A }
+    }
+
+    /** -1 keeps the sampler-specific native ETA default; explicit values are clamped to 0..1. */
+    private fun parseEta(edit: EditText): Float {
+        val value = edit.text.toString().trim().toFloatOrNull() ?: return -1.0f
+        return if (value < 0.0f) -1.0f else value.coerceIn(0.0f, 1.0f)
     }
 
     /** 调度器选择：索引 0 = 自动 */
@@ -2953,6 +2971,7 @@ class DrawPage(
     ): ImageData {
         val steps = i2iStepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
         val cfg = i2iCfgEdit.text.toString().toFloatOrNull()?.coerceIn(1f, 30f) ?: 7.0f
+        val eta = parseEta(i2iEtaEdit)
         val clipSkip = i2iClipSkipSeekBar.progress + 1
         val seed = i2iSeedEdit.text.toString().toLongOrNull() ?: -1L
         val useSeed = if (seed < 0) System.currentTimeMillis() else seed
@@ -2987,6 +3006,7 @@ class DrawPage(
                 seed = useSeed,
                 sampler = sampler,
                 scheduler = scheduler,
+                eta = eta,
                 cb = { cur, total -> onProgress(cur, total) },
                 onPreview = onPreview?.let { f ->
                     SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -3378,6 +3398,7 @@ class DrawPage(
         put(KEY_H, heightEdit)
         put(KEY_STEPS, stepsEdit)
         put(KEY_CFG, cfgEdit)
+        put(KEY_ETA, etaEdit)
         e.putInt(KEY_CLIP_SKIP, clipSkipSeekBar.progress + 1)
         put(KEY_SEED, seedEdit)
         t2iLoraWeights.forEachIndexed { slot, edit ->
@@ -3395,6 +3416,7 @@ class DrawPage(
             put(KEY_I2I_H, i2iHeightEdit)
             put(KEY_I2I_STEPS, i2iStepsEdit)
             put(KEY_I2I_CFG, i2iCfgEdit)
+            put(KEY_I2I_ETA, i2iEtaEdit)
             e.putInt(KEY_I2I_CLIP_SKIP, i2iClipSkipSeekBar.progress + 1)
             put(KEY_I2I_SEED, i2iSeedEdit)
             put(KEY_I2I_STRENGTH, i2iStrengthEdit)
@@ -3532,7 +3554,7 @@ class DrawPage(
         when (page) {
             "t2i" -> {
                 put("w", widthEdit); put("h", heightEdit); put("steps", stepsEdit)
-                put("cfg", cfgEdit); put("seed", seedEdit)
+                put("cfg", cfgEdit); put("eta", etaEdit); put("seed", seedEdit)
                 e.putInt("def_t2i_clipSkip_$lg", clipSkipSeekBar.progress + 1)
                 t2iLoraWeights.forEachIndexed { slot, edit ->
                     put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
@@ -3543,7 +3565,7 @@ class DrawPage(
             "i2i" -> {
                 put("strength", i2iStrengthEdit)
                 put("w", i2iWidthEdit); put("h", i2iHeightEdit); put("steps", i2iStepsEdit)
-                put("cfg", i2iCfgEdit); put("seed", i2iSeedEdit)
+                put("cfg", i2iCfgEdit); put("eta", i2iEtaEdit); put("seed", i2iSeedEdit)
                 e.putInt("def_i2i_clipSkip_$lg", i2iClipSkipSeekBar.progress + 1)
                 i2iLoraWeights.forEachIndexed { slot, edit ->
                     put(if (slot == 0) "loraScale" else "loraScale" + (slot + 1), edit)
@@ -3569,6 +3591,7 @@ class DrawPage(
                 heightEdit.setText(defOf("t2i", "h", "512"))
                 stepsEdit.setText(defOf("t2i", "steps", builtinSteps()))
                 cfgEdit.setText(defOf("t2i", "cfg", builtinCfg()))
+                etaEdit.setText(defOf("t2i", "eta", "-1"))
                 clipSkipSeekBar.progress = defOfInt("t2i", "clipSkip", 1).coerceIn(1, 12) - 1
                 seedEdit.setText(defOf("t2i", "seed", "-1"))
                 t2iLoraWeights.forEachIndexed { slot, edit ->
@@ -3583,6 +3606,7 @@ class DrawPage(
                 i2iHeightEdit.setText(defOf("i2i", "h", "512"))
                 i2iStepsEdit.setText(defOf("i2i", "steps", builtinSteps()))
                 i2iCfgEdit.setText(defOf("i2i", "cfg", builtinCfg()))
+                i2iEtaEdit.setText(defOf("i2i", "eta", "-1"))
                 i2iClipSkipSeekBar.progress = defOfInt("i2i", "clipSkip", 1).coerceIn(1, 12) - 1
                 i2iSeedEdit.setText(defOf("i2i", "seed", "-1"))
                 i2iLoraWeights.forEachIndexed { slot, edit ->

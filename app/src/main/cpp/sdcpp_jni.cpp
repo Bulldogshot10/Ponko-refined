@@ -383,7 +383,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         jstring prompt, jstring negative,
         jobjectArray loraPaths, jfloatArray loraScales,
         jint width, jint height, jint steps, jfloat cfg, jlong seed,
-        jint sampleMethod, jint scheduler, jint clipSkip,
+        jint sampleMethod, jint scheduler, jfloat eta, jint clipSkip,
         jobject cb, jobject pcb,
         jbyteArray initData, jint initWidth, jint initHeight, jfloat strength) {
     SdHandle* h = reinterpret_cast<SdHandle*>(handle);
@@ -481,6 +481,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     g.loras = nativeLoras.empty() ? nullptr : nativeLoras.data();
     g.lora_count = static_cast<uint32_t>(nativeLoras.size());
     g.sample_params.sample_steps  = steps;
+    g.sample_params.eta = eta < 0.0f ? std::numeric_limits<float>::infinity() : eta;
     g.sample_params.guidance.txt_cfg = cfg;
     g.sample_params.sample_method = static_cast<enum sample_method_t>(sampleMethod);
     g.sample_params.scheduler     = static_cast<enum scheduler_t>(scheduler);
