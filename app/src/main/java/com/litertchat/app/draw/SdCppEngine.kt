@@ -11,7 +11,8 @@ import android.graphics.Bitmap
 object SdCppEngine {
 
     init {
-        // 依赖 libc++_shared.so（jniLibs 提供）与 libponko_sd.so（含 sd.cpp + ggml）
+        // Rust/UniFFI owns the Kotlin-facing API; ponko_sd.so exports a plain C ABI.
+        // Load the C++ bridge first so Rust can resolve it through libloading.
         System.loadLibrary("c++_shared")
         System.loadLibrary("ponko_sd")
     }
