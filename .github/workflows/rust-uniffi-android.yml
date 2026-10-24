@@ -1,0 +1,118 @@
+name: Ponko Rust-UniFFI Android APK
+
+on:
+  push:
+    branches: [feat/rust-uniffi-native-facade]
+    paths:
+      - "app/**"
+      - "rust/**"
+      - "gradle/**"
+      - "build.gradle*"
+      - "settings.gradle*"
+      - "gradle.properties"
+      - ".github/workflows/rust-uniffi-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ponko-rust-uniffi-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-arm64:
+    name: Rust-UniFFI + C ABI + APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install native build tools and compiler cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ccache clang libclang-dev
+          cargo install cargo-ndk --locked
+          rustc --version
+          cargo --version
+          cargo ndk --version
+          ccache --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/ccache
+            app/build/ponko-cargo-target
+          key: ${{ runner.os }}-ponko-rust-ndk-${{ hashFiles('rust/ponko-native/Cargo.toml', 'rust/ponko-native/Cargo.lock', 'app/src/main/cpp/CMakeLists.txt', 'app/src/main/cpp/sd/ggml/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-ponko-rust-ndk-
+
+      - name: Install Android SDK and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          printf 'y\n%.0s' {1..50} | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.3.13750724" \
+            "cmake;3.31.6"
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check
+
+      - name: Test Rust facade
+        run: cargo test --manifest-path rust/ponko-native/Cargo.toml --locked
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK using Rust-UniFFI facade
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug \
+            -PponkoRustFacade=true \
+            --stacktrace
+
+      - name: Verify the APK includes Rust and C ABI libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libponko_native.so'
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libponko_sd.so'
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libstable-diffusion.so'
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libc\+\+_shared.so'
+          ccache -s
+
+      - name: Upload debug APK and native build reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponko-rust-uniffi-debug-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/ponko-cargo-target/aarch64-linux-android/release/libponko_native.so
+          if-no-files-found: error
+          retention-days: 14
