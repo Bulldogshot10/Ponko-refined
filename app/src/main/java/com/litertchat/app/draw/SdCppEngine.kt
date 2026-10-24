@@ -121,7 +121,7 @@ object SdCppEngine {
         sampleMethod: Int,
         scheduler: Int,
         clipSkip: Int,
-        cb: StepCallback?
+        cb: StepCallback?,
         pcb: PreviewCallback?,
         initData: ByteArray?,
         initWidth: Int,
