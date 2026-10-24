@@ -3,6 +3,23 @@ plugins {
     id("com.android.application")
 }
 
+// Set -PponkoEnableVulkan=OFF for a CPU-only variant; default stays ON.
+// Keep the requested Exynos ISA profile enabled unless explicitly overridden.
+val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("ON").get()
+val ponkoExynosCpuProfile = providers.gradleProperty("ponkoExynosCpuProfile").orElse("ON").get()
+val ponkoCpuArchFlags = if (ponkoExynosCpuProfile.equals("ON", ignoreCase = true)) {
+    "-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4"
+} else {
+    "-march=armv8.2-a+dotprod+fp16"
+}
+val ponkoEnableCompilerCache = providers.gradleProperty("ponkoEnableCompilerCache").orElse("ON").get()
+// Rust/UniFFI is the required Kotlin-facing native API.
+val ponkoRustFacadeEnabled = true
+val ponkoRustDir = rootProject.file("rust/ponko-native")
+val ponkoRustJniLibsDir = layout.buildDirectory.dir("generated/ponkoRustJniLibs")
+val ponkoUniffiKotlinDir = layout.buildDirectory.dir("generated/source/uniffi/main/java")
+val ponkoCargoTargetDir = layout.buildDirectory.dir("ponko-cargo-target")
+
 android {
     namespace = "com.litertchat.app"
     compileSdk = 36
@@ -18,6 +35,15 @@ android {
         ndk {
             // LiteRT-LM 与 llama.cpp 的 native 都只跑 arm64 真机，去掉 x86_64 可减小 APK
             abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
+                    "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
+                    "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
+                )
+            }
         }
     }
 
@@ -48,6 +74,14 @@ android {
             pickFirsts += "**/libc++_shared.so"
         }
     }
+
+    if (ponkoRustFacadeEnabled) {
+        sourceSets.getByName("main").apply {
+            jniLibs.directories.add(ponkoRustJniLibsDir.get().asFile.absolutePath)
+            kotlin.directories.add(ponkoUniffiKotlinDir.get().asFile.absolutePath)
+            kotlin.directories.add(file("src/rust/java").absolutePath)
+        }
+    }
 }
 
 dependencies {
@@ -68,6 +102,83 @@ dependencies {
     // PDF 文本抽取（对话发送 PDF）：Tom Roush 的 PDFBox Android 移植
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // 绘图（文生图）：自编的 stable-diffusion.cpp（arm64-v8a），源码在 src/main/cpp，
-    // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（JNI 桥）。
+    // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（C ABI bridge，由 Rust 调用）。
     // 相比现成 AAR，这里能直接控制线程数 / 采样器 / 调度器 / LoRA / 量化类型 / 取消。
+    if (ponkoRustFacadeEnabled) {
+        implementation("net.java.dev.jna:jna:5.17.0@aar")
+    }
+}
+
+
+// Generate UniFFI Kotlin bindings and build Rust for Android arm64-v8a as part of the app build.
+// Generated artifacts stay under app/build so no machine-specific .so is committed.
+if (ponkoRustFacadeEnabled) {
+    val rustNativeLibrary = ponkoRustJniLibsDir.map { it.file("arm64-v8a/libponko_native.so") }
+    val rustManifest = ponkoRustDir.resolve("Cargo.toml").absolutePath
+
+    val buildPonkoRustAndroid = tasks.register<Exec>("buildPonkoRustAndroid") {
+        group = "build"
+        workingDir(ponkoRustDir)
+        description = "Build the Ponko Rust facade for Android arm64-v8a."
+        inputs.files(fileTree(ponkoRustDir) {
+            include("Cargo.toml", "build.rs", "uniffi.toml", "src/**")
+        })
+        outputs.file(rustNativeLibrary)
+        environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
+        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
+        doFirst {
+            ponkoRustJniLibsDir.get().asFile.mkdirs()
+            check(ponkoRustDir.resolve("Cargo.toml").isFile) {
+                "Missing Rust facade manifest: $rustManifest"
+            }
+        }
+        commandLine(
+            "cargo", "ndk", "-t", "arm64-v8a",
+            "-o", ponkoRustJniLibsDir.get().asFile.absolutePath,
+            "build", "--release", "--manifest-path", rustManifest
+        )
+    }
+
+    val generatePonkoUniffiKotlin = tasks.register<Exec>("generatePonkoUniffiKotlin") {
+        group = "build"
+        workingDir(ponkoRustDir)
+        description = "Generate Kotlin bindings from the compiled Ponko UniFFI library."
+        dependsOn(buildPonkoRustAndroid)
+        inputs.file(rustNativeLibrary)
+        inputs.file(ponkoRustDir.resolve("uniffi.toml"))
+        outputs.dir(ponkoUniffiKotlinDir)
+        environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
+        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
+        doFirst {
+            val library = rustNativeLibrary.get().asFile
+            check(library.isFile) { "Rust library was not produced: $library" }
+            ponkoUniffiKotlinDir.get().asFile.mkdirs()
+        }
+        commandLine(
+            "cargo", "run", "--manifest-path", rustManifest,
+            "--features", "bindgen", "--bin", "uniffi-bindgen", "--",
+            "generate", "--library", rustNativeLibrary.get().asFile.absolutePath,
+            "--language", "kotlin", "--out-dir", ponkoUniffiKotlinDir.get().asFile.absolutePath
+        )
+    }
+
+    // The generated jniLibs directory is an output of buildPonkoRustAndroid.
+    // AGP 9 validates mergeDebugJniLibFolders before mergeDebugNativeLibs, so both
+    // folder merging and final native-library merging must depend on the Rust build.
+    tasks.matching {
+        it.name == "mergeDebugJniLibFolders" ||
+        it.name == "mergeReleaseJniLibFolders" ||
+        it.name == "mergeDebugNativeLibs" ||
+        it.name == "mergeReleaseNativeLibs"
+    }.configureEach {
+        dependsOn(buildPonkoRustAndroid)
+    }
+
+    tasks.matching {
+        it.name == "compileDebugKotlin" || it.name == "compileReleaseKotlin"
+    }.configureEach {
+        dependsOn(generatePonkoUniffiKotlin)
+    }
 }

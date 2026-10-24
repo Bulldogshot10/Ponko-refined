@@ -3,8 +3,8 @@
 #
 # 这里做三件事：
 #   1. 以子目录方式引入 sd.cpp（源码在 ./sd，含内联的 ggml，已剔除不用的词表/示例等）
-#   2. 使用实测最优的编译标志（ARMv8.2-A + dotprod + fp16 + -O3）
-#   3. 编译 JNI 桥 → libponko_sd.so
+#   2. 使用目标设备的编译标志（默认 Exynos 2400e: ARMv8.6-A + dotprod + I8MM + FP16 + -O3）
+#   3. 编译 Rust-facing plain C ABI bridge → libponko_sd.so
 #
 # 此前这两个 .so 是手工编译后塞进 jniLibs/ 的，容易出现「改了 C++ 源码但 .so 没重编」
 # 的静默错配（包能构建成功，跑起来却是旧行为）。改成这里现场编译后，
@@ -16,13 +16,15 @@ project(ponko_sd CXX C)
 # ---------------------------------------------------------------------------
 # 编译标志
 # ---------------------------------------------------------------------------
-# Earlier benchmark: -O3 + ARMv8.2-A(dotprod+fp16) reduced a 6-step 256x256 run
-# from 116s to 56s. The Exynos 2400e profile enables I8MM for GGML's ARM quant kernels.
+# The Exynos 2400e profile keeps ARMv8.6-A + dotprod + I8MM + FP16 enabled for GGML's
+# ARM quant kernels. Keep this ISA profile unchanged for the Exynos build.
 # Cortex-X4, Cortex-A720 and Cortex-A520 implement I8MM, so this ISA profile is valid
 # across the Exynos 2400e's heterogeneous CPU clusters. Disable the profile for generic
 # ARM64 builds: -DPONKO_EXYNOS_2400E_CPU_PROFILE=OFF.
 option(PONKO_EXYNOS_2400E_CPU_PROFILE
        "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
+option(PONKO_ENABLE_VULKAN
+       "Build the Vulkan backend and its shader toolchain" ON)
 if (PONKO_EXYNOS_2400E_CPU_PROFILE)
     set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
     message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
@@ -49,6 +51,48 @@ add_compile_options(
     "$<$<CONFIG:Debug>:-DNDEBUG>"
 )
 
+# Apply the compiler cache to the whole native project, not just GGML, when
+# ccache/sccache is installed. Cache misses or absent tools fall back normally.
+option(PONKO_ENABLE_COMPILER_CACHE "Use ccache/sccache for native compilation when available" ON)
+if (PONKO_ENABLE_COMPILER_CACHE)
+    if (NOT CMAKE_C_COMPILER_LAUNCHER AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+        find_program(PONKO_CCACHE_EXECUTABLE NAMES ccache)
+        find_program(PONKO_SCCACHE_EXECUTABLE NAMES sccache)
+        if (PONKO_CCACHE_EXECUTABLE)
+            set(_ponko_cache_launcher "${PONKO_CCACHE_EXECUTABLE}")
+        elseif (PONKO_SCCACHE_EXECUTABLE)
+            set(_ponko_cache_launcher "${PONKO_SCCACHE_EXECUTABLE}")
+        else ()
+            set(_ponko_cache_launcher "")
+        endif ()
+
+        if (_ponko_cache_launcher)
+            set(CMAKE_C_COMPILER_LAUNCHER "${_ponko_cache_launcher}")
+            set(CMAKE_CXX_COMPILER_LAUNCHER "${_ponko_cache_launcher}")
+            set(CMAKE_C_COMPILER_LAUNCHER "${_ponko_cache_launcher}" CACHE STRING "" FORCE)
+            set(CMAKE_CXX_COMPILER_LAUNCHER "${_ponko_cache_launcher}" CACHE STRING "" FORCE)
+            set(PONKO_DETECTED_COMPILER_CACHE "${_ponko_cache_launcher}" CACHE INTERNAL "Ponko-selected compiler cache" FORCE)
+            message(STATUS "Ponko compiler cache: ${_ponko_cache_launcher}")
+        else ()
+            message(STATUS "Ponko compiler cache not found; native compilation will proceed uncached.")
+        endif ()
+    else ()
+        message(STATUS "Ponko compiler cache: honoring existing CMake compiler launcher.")
+    endif ()
+elseif (DEFINED PONKO_DETECTED_COMPILER_CACHE)
+    # Remove only the launcher previously selected by Ponko, never a user-supplied tool.
+    if ("${CMAKE_C_COMPILER_LAUNCHER}" STREQUAL "${PONKO_DETECTED_COMPILER_CACHE}")
+        unset(CMAKE_C_COMPILER_LAUNCHER CACHE)
+        set(CMAKE_C_COMPILER_LAUNCHER "")
+    endif ()
+    if ("${CMAKE_CXX_COMPILER_LAUNCHER}" STREQUAL "${PONKO_DETECTED_COMPILER_CACHE}")
+        unset(CMAKE_CXX_COMPILER_LAUNCHER CACHE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "")
+    endif ()
+    unset(PONKO_DETECTED_COMPILER_CACHE CACHE)
+    message(STATUS "Ponko compiler cache disabled.")
+endif ()
+
 # 强制各 Release 变体都是 -O3 且不带调试符号。
 # （AGP 给 release 变体传的可能是 RelWithDebInfo = -O2 -g，性能与体积都不理想）
 foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
@@ -71,7 +115,7 @@ set(SD_USE_SYSTEM_GGML       OFF CACHE BOOL "" FORCE)
 set(SD_WEBP   OFF CACHE BOOL "" FORCE)
 set(SD_WEBM   OFF CACHE BOOL "" FORCE)
 set(SD_CUDA   OFF CACHE BOOL "" FORCE)
-set(SD_VULKAN ON  CACHE BOOL "" FORCE)  # 编入 Vulkan 后端（会自己编 ggml-vulkan + 生成 shader）；设备没有 Vulkan 时运行时回退 CPU
+set(SD_VULKAN ${PONKO_ENABLE_VULKAN} CACHE BOOL "" FORCE)  # OFF builds a CPU-only variant; ON retains Vulkan + shader-toolchain behavior.
 set(SD_OPENCL OFF CACHE BOOL "" FORCE)
 set(SD_METAL  OFF CACHE BOOL "" FORCE)
 set(SD_SYCL   OFF CACHE BOOL "" FORCE)
@@ -86,7 +130,7 @@ set(GGML_CPU_KLEIDIAI   ON  CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE         OFF CACHE BOOL "" FORCE)
-set(GGML_CCACHE         OFF CACHE BOOL "" FORCE)
+set(GGML_CCACHE         ${PONKO_ENABLE_COMPILER_CACHE} CACHE BOOL "" FORCE)  # Use ccache/sccache when installed; gracefully falls back when absent.
 
 # ---------------------------------------------------------------------------
 # 引入 sd.cpp
@@ -201,8 +245,17 @@ if(PONKO_SO_OUT)
 endif()
 
 # ---------------------------------------------------------------------------
-# JNI 桥 → libponko_sd.so
+# C ABI bridge → libponko_sd.so
 # ---------------------------------------------------------------------------
-add_library(ponko_sd SHARED sdcpp_jni.cpp)
-target_include_directories(ponko_sd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include")
+# Plain C ABI consumed by the Rust/UniFFI facade. The app-facing JNI entry points
+# are no longer part of this target; Kotlin reaches this bridge through Rust.
+add_library(ponko_sd SHARED ponko_sd_c_api.cpp)
+target_include_directories(ponko_sd PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/sd/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include"
+)
+if (SD_VULKAN)
+    target_compile_definitions(ponko_sd PRIVATE PONKO_HAS_VULKAN=1)
+endif()
 target_link_libraries(ponko_sd PRIVATE stable-diffusion android log)

@@ -157,11 +157,19 @@
 
 ## 构建
 
-需要 JDK 17 + Android SDK（compileSdk 36）+ **NDK 27.3** + **CMake 3.31.6**。
+基础构建需要 JDK 17+、Android SDK（compileSdk 36）、**NDK 27.3**、**CMake 3.31.6**，以及 Rust stable + `cargo-ndk`（目标 ABI：`aarch64-linux-android`）。Rust/UniFFI 现在是 Kotlin 侧默认 native API。安装 `ccache` 或 `sccache` 后，GGML 会自动使用编译缓存；未安装时仍可正常构建。
 
 ```bash
 gradle assembleRelease
 # 产物：app/build/outputs/apk/release/app-release-unsigned.apk（未签名）
+
+# 可选：CPU-only variant，不编译 Vulkan backend / shader toolchain
+gradle assembleRelease -PponkoEnableVulkan=OFF
+
+# 可选：通用 ARM64 profile；默认保留 Exynos 2400e 指令集优化
+gradle assembleRelease -PponkoExynosCpuProfile=OFF
+
+# Rust + UniFFI 是默认路径，上面的 assembleRelease 会自动编译
 ```
 
 签名与交付脚本见 `tools/`：
@@ -175,9 +183,9 @@ powershell -File tools/build-release.ps1
 ```
 
 - `minSdk 28` / `targetSdk 36`，**仅 arm64-v8a**（原生库限制，需真机，模拟器跑不了）
-- 首次全量编译 sd.cpp + ggml 约 8~9 分钟，C++ 未改动时增量仅约 10 秒
+- 未命中编译缓存的首次全量编译 sd.cpp + ggml 约 8~9 分钟；C++ 未改动时增量约 10 秒。安装并保留 ccache 缓存可减少之后的重编耗时
 - 主要依赖：`com.google.ai.edge.litertlm:litertlm-android:0.17.0`、`net.ladenthin:llama-android:5.1.0`、`com.microsoft.onnxruntime:onnxruntime-android:1.22.0`、`com.tom-roush:pdfbox-android:2.0.27.0`、`io.noties.markwon:*:4.6.2`
-- CMake 现场产出：`libstable-diffusion.so`（sd.cpp 本体）、`libponko_sd.so`（JNI 桥）
+- CMake 现场产出：`libstable-diffusion.so`（sd.cpp 本体）与 `libponko_sd.so`（plain C ABI bridge）。Rust/Cargo 产出 `libponko_native.so` 和 UniFFI Kotlin bindings；Kotlin 不再直接调用手写 drawing JNI，Rust 负责 native API、句柄生命周期和回调，推理仍由 stable-diffusion.cpp + GGML 执行
 - Vulkan 后端（可选 GPU 绘图）不需要安装 Vulkan SDK：`glslc` 与 SPIRV 头文件都用 NDK 自带的；交叉编译时还需要一个**宿主编译器**来构建着色器生成工具（Windows 上是 MSVC，`tools/build-release.ps1` 会自动载入 `vcvars64` 环境）
 
 ## 模型从哪来
@@ -196,7 +204,7 @@ powershell -File tools/build-release.ps1
 - 绘图默认是纯 CPU 推理：256×256 + LCM-LoRA 6 步约 1 分钟，512×512 明显更慢；把运行方式切到 GPU 可尝试 Vulkan 加速，设备不支持会自动回退 CPU（实际后端显示在绘图页状态行）
 - **GPU 支持目前只是「理论上可用」，未经真机验证**：只有绘图（Vulkan）、打标（NNAPI）、对话 `.litertlm` 这三条路径带 GPU 代码，三者都只在构建侧验证过，**未在任何手机上实测**；机型驱动不稳 / 显存不足时自动回退 CPU（绘图页状态行会显示实际后端）；对话 GGUF 没有任何 GPU 后端，只能 CPU
 - 绘图量化等级写死在模型文件里，App 只读取并显示，不会转换
-- 绘图原生库用 `-march=armv8.2-a+dotprod+fp16` 编译，需要 2019 年后的 64 位 ARM 设备
+- 绘图原生库用 `-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4`（Exynos profile 默认开启；可通过 Gradle property 关闭该 profile）编译，需要 2019 年后的 64 位 ARM 设备
 - 打标支持 Danbooru 系的 ONNX 打标模型（WD14 及其衍生版本等；标签表需为 `tag_id,name,category,count` 格式）；`.onnx` 与标签表 CSV 必须配套导入
 - 打标结果离谱（例如发色 / 颜色认错）时先试切换「通道顺序」（BGR / RGB）：BGR 是 WD 系官方预处理，个别重导出模型已把 BGR 烘进权重、需要切 RGB；阈值与标签数也会明显影响结果
 - 打标首次运行时才加载模型（常驻数百 MB 内存），可在「模型/API」页手动卸载

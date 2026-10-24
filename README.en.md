@@ -161,11 +161,21 @@ The fourth tab is an **About** page with two collapsible sections: **Settings** 
 
 ## Building
 
-Requires JDK 17 + Android SDK (compileSdk 36) + **NDK 27.3** + **CMake 3.31.6**.
+The standard build requires JDK 17+, Android SDK (compileSdk 36), **NDK 27.3**, **CMake 3.31.6**, Rust stable, and `cargo-ndk` for `aarch64-linux-android`. Install `ccache` or `sccache` to enable GGML's compiler cache; the build still works without either tool.
 
 ```bash
+rustup target add aarch64-linux-android
+cargo install cargo-ndk --locked
 gradle assembleRelease
 # Output: app/build/outputs/apk/release/app-release-unsigned.apk (unsigned)
+
+# Optional: CPU-only variant, excluding the Vulkan backend and shader toolchain
+gradle assembleRelease -PponkoEnableVulkan=OFF
+
+# Optional: generic ARM64 profile; the Exynos 2400e profile stays enabled by default
+gradle assembleRelease -PponkoExynosCpuProfile=OFF
+
+# The Rust + UniFFI facade is the default; no extra Gradle property is needed.
 ```
 
 Signing and delivery scripts are in `tools/`:
@@ -179,9 +189,9 @@ powershell -File tools/build-release.ps1
 ```
 
 - `minSdk 28` / `targetSdk 36`, **arm64-v8a only** (native library constraint; a real device is required, emulators won't run it)
-- The first full compile of sd.cpp + ggml takes about 8-9 minutes; with C++ unchanged, incremental builds take ~10 seconds
+- A full sd.cpp + ggml compile takes about 8-9 minutes when the compiler cache is cold; with C++ unchanged, incremental builds take ~10 seconds. Keeping ccache warm can reduce the cost of later rebuilds
 - Main dependencies: `com.google.ai.edge.litertlm:litertlm-android:0.17.0`, `net.ladenthin:llama-android:5.1.0`, `com.microsoft.onnxruntime:onnxruntime-android:1.22.0`, `com.tom-roush:pdfbox-android:2.0.27.0`, `io.noties.markwon:*:4.6.2`
-- Built by CMake: `libstable-diffusion.so` (sd.cpp itself), `libponko_sd.so` (JNI bridge)
+- Built by CMake: `libstable-diffusion.so` (sd.cpp itself) and `libponko_sd.so` (a plain C ABI bridge). Cargo builds `libponko_native.so` and generates UniFFI Kotlin bindings; Kotlin no longer calls a hand-written JNI surface. Rust owns the app-facing native API, handle lifecycle and callbacks, while inference remains in stable-diffusion.cpp + GGML
 - The Vulkan backend (optional GPU drawing) needs **no Vulkan SDK**: `glslc` and the SPIRV headers come from the NDK, plus a **host compiler** to build the shader generator (MSVC on Windows - `tools/build-release.ps1` loads the `vcvars64` environment for you)
 
 ## Where to get models
@@ -200,7 +210,7 @@ powershell -File tools/build-release.ps1
 - Drawing is CPU-only by default: 256×256 with LCM-LoRA at 6 steps takes about a minute; 512×512 is noticeably slower. Switch the run mode to GPU to try Vulkan acceleration; devices without it fall back to CPU (the backend in use is shown in the drawing status line)
 - **GPU support is "theoretical" for now and NOT verified on a real device**: only drawing (Vulkan), tagging (NNAPI) and `.litertlm` chat carry GPU code, and all three have only been verified at build time - none of them has been tested on an actual phone. When the driver is unstable or the VRAM is too small the app falls back to CPU automatically (the drawing status line shows the backend in use); GGUF chat has no GPU backend at all and is CPU-only
 - The quantization level is baked into the model file; the app only reads and displays it, never converts
-- The drawing native library is built with `-march=armv8.2-a+dotprod+fp16`, requiring a 64-bit ARM device from 2019 or later
+- The drawing native library is built with `-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4` (the Exynos profile is on by default and can be disabled through a Gradle property), requiring a 64-bit ARM device from 2019 or later
 - Tagging supports Danbooru-style ONNX taggers (WD14 and its derivatives; the tag list must be in `tag_id,name,category,count` format); the `.onnx` and the tag-list CSV must be imported as a matching pair
 - If tagging looks wrong (e.g. wrong colours or hair colour), try switching the **channel order** (BGR / RGB): BGR is the official WD-family preprocessing, but a few re-exported models already baked BGR into their weights and need RGB; threshold and tag count also change the output a lot
 - The tagger model is loaded lazily on first use (it holds hundreds of MB of memory) and can be unloaded manually from the Models/API page

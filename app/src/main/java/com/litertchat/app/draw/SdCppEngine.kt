@@ -11,7 +11,8 @@ import android.graphics.Bitmap
 object SdCppEngine {
 
     init {
-        // 依赖 libc++_shared.so（jniLibs 提供）与 libponko_sd.so（含 sd.cpp + ggml）
+        // Rust/UniFFI owns the Kotlin-facing API; ponko_sd.so exports a plain C ABI.
+        // Load the C++ bridge first so Rust can resolve it through libloading.
         System.loadLibrary("c++_shared")
         System.loadLibrary("ponko_sd")
     }
@@ -102,38 +103,68 @@ object SdCppEngine {
         fun onPreview(step: Int, width: Int, height: Int, rgb: ByteArray)
     }
 
-    external fun nativeInfo(): String
+    private val nativeEngine: com.litertchat.app.ponko.NativeEngine by lazy {
+        // JNA loads libponko_native.so from UniFFI. Load the C ABI bridge first so
+        // Rust can resolve its stable-diffusion.cpp symbols through libloading.
+        com.litertchat.app.ponko.NativeEngine()
+    }
+
+    fun nativeInfo(): String = runCatching { nativeEngine.info() }.getOrDefault("(n/a)")
 
     /** Runtime Vulkan capabilities detected by ggml-vulkan for the active GPU. */
-    external fun nativeVulkanDiagnostics(): String
+    fun nativeVulkanDiagnostics(): String =
+        runCatching { nativeEngine.vulkanDiagnostics() }.getOrDefault("")
 
-    /** Safely convert a checkpoint to mixed-precision GGUF, quantizing only model.diffusion_model.* tensors. */
-    external fun nativeQuantizeUnet(
+    /** Quantize only model.diffusion_model.* tensors; retain source validation and atomic output. */
+    fun nativeQuantizeUnet(
         inputPath: String,
         outputPath: String,
         quantType: String,
         diffusionSlot: Boolean,
         nThreads: Int,
-    ): Boolean
+    ): Boolean = runCatching {
+        nativeEngine.quantizeUnet(
+            com.litertchat.app.ponko.QuantizeUnetRequest(
+                inputPath, outputPath, quantType, diffusionSlot, nThreads
+            )
+        )
+        true
+    }.getOrDefault(false)
 
-    /** Bake ResAdapter normalization tensors into a new GGUF and quantize only the UNet. */
-    external fun nativeApplyResAdapter(
+    /** Merge ResAdapter normalization tensors and quantize the UNet into a new GGUF. */
+    fun nativeApplyResAdapter(
         inputModelPath: String,
         vaePath: String?,
         normalizationPath: String,
         outputPath: String,
         quantType: String,
         nThreads: Int,
-    ): Boolean
+    ): Boolean = runCatching {
+        nativeEngine.applyResadapter(
+            com.litertchat.app.ponko.ResAdapterRequest(
+                inputModelPath, vaePath, normalizationPath, outputPath, quantType, nThreads
+            )
+        )
+        true
+    }.getOrDefault(false)
 
     fun vulkanDiagnostics(): String =
         runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
 
-    /** 最近一次 new_sd_ctx 的完整参数（诊断加载失败用） */
-    external fun nativeLastParams(): String
+    /** Last new_sd_ctx parameter dump, useful when diagnosing model-load failures. */
+    fun nativeLastParams(): String = runCatching { nativeEngine.lastParams() }.getOrDefault("")
 
-    /** slots 长度 = SLOT_KEYS.size，元素可为 null（该槽位不填）。 */
-    external fun nativeCreate(
+    private fun modelSlots(slots: Array<String?>?): com.litertchat.app.ponko.ModelSlots? {
+        if (slots == null) return null
+        fun slot(index: Int): String? = slots.getOrNull(index)?.takeIf { it.isNotBlank() }
+        return com.litertchat.app.ponko.ModelSlots(
+            slot(0), slot(1), slot(2), slot(3), slot(4), slot(5), slot(6),
+            slot(7), slot(8), slot(9), slot(10), slot(11), slot(12)
+        )
+    }
+
+    /** Model loading is exposed through a typed UniFFI request, not a positional JNI signature. */
+    fun nativeCreate(
         modelPath: String,
         vaePath: String?,
         nThreads: Int,
@@ -142,11 +173,22 @@ object SdCppEngine {
         vaeConvDirect: Boolean,
         backend: String?,
         slots: Array<String?>?,
-    ): Long
+    ): Long = runCatching {
+        nativeEngine.createContext(
+            com.litertchat.app.ponko.ModelLoadRequest(
+                modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, modelSlots(slots)
+            )
+        )
+    }.getOrDefault(0L)
 
     data class Lora(val path: String, val scale: Float)
 
-    external fun nativeGenerate(
+    /**
+     * Kotlin keeps the existing API shape while UniFFI carries a typed request through Rust.
+     * RGB888 is converted back to the legacy width/height-prefixed ARGB array so DrawPage and
+     * the API server continue to use the same Bitmap conversion path.
+     */
+    fun nativeGenerate(
         handle: Long,
         prompt: String,
         negative: String,
@@ -176,14 +218,75 @@ object SdCppEngine {
         initWidth: Int,
         initHeight: Int,
         strength: Float,
-    ): IntArray?
+    ): IntArray? = runCatching {
+        val loraCount = minOf(loraPaths.size, loraScales.size)
+        val request = com.litertchat.app.ponko.GenerationRequest(
+            prompt,
+            negative,
+            loraPaths.take(loraCount),
+            loraScales.take(loraCount).toList(),
+            width,
+            height,
+            steps,
+            cfg,
+            seed,
+            sampleMethod,
+            scheduler,
+            eta,
+            hiresEnabled,
+            hiresUpscaler,
+            hiresModelPath.takeIf { it.isNotEmpty() },
+            hiresScale,
+            hiresTargetWidth,
+            hiresTargetHeight,
+            hiresSteps,
+            hiresDenoisingStrength,
+            hiresTileSize,
+            clipSkip,
+            initData,
+            initWidth,
+            initHeight,
+            strength,
+        )
+        val stepProxy = cb?.let { callback ->
+            object : com.litertchat.app.ponko.StepCallback {
+                override fun onStep(step: Int, steps: Int) = callback.onStep(step, steps)
+            }
+        }
+        val previewProxy = pcb?.let { callback ->
+            object : com.litertchat.app.ponko.PreviewCallback {
+                override fun onPreview(step: Int, width: Int, height: Int, rgb888: ByteArray) {
+                    callback.onPreview(step, width, height, rgb888)
+                }
+            }
+        }
+        val image = com.litertchat.app.ponko.generateImage(nativeEngine, handle, request, stepProxy, previewProxy)
+        val pixelCount = image.width.toLong() * image.height.toLong()
+        require(image.width > 0 && image.height > 0 && pixelCount <= Int.MAX_VALUE - 2)
+        require(image.rgb888.size.toLong() == pixelCount * 3L)
+        val pixels = IntArray(pixelCount.toInt() + 2)
+        pixels[0] = image.width
+        pixels[1] = image.height
+        for (i in 0 until pixelCount.toInt()) {
+            val j = i * 3
+            val r = image.rgb888[j].toInt() and 0xFF
+            val g = image.rgb888[j + 1].toInt() and 0xFF
+            val b = image.rgb888[j + 2].toInt() and 0xFF
+            pixels[i + 2] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        pixels
+    }.getOrNull()
 
-    external fun nativeCancel(handle: Long)
+    fun nativeCancel(handle: Long) {
+        runCatching { nativeEngine.cancel(handle) }
+    }
 
-    /** ggml 后端设备清单：每行 "name\tdescription"（如 "Vulkan0\tAdreno (TM) 650"）。 */
-    external fun nativeListDevices(): String
+    /** Backend devices in "name<TAB>description" format, preserving the old UI contract. */
+    fun nativeListDevices(): String = runCatching { nativeEngine.listDevices() }.getOrDefault("")
 
-    external fun nativeFree(handle: Long)
+    fun nativeFree(handle: Long) {
+        if (handle != 0L) runCatching { nativeEngine.freeContext(handle) }
+    }
 
     fun info(): String = runCatching { nativeInfo() }.getOrDefault("(n/a)")
 
