@@ -55,7 +55,6 @@ import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.litertchat.app.draw.DrawPage
 import com.litertchat.app.draw.GgufProbe
-import com.litertchat.app.draw.TaggerEngine
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
@@ -101,8 +100,6 @@ class MainActivity : Activity() {
         private const val REQ_PICK_MODEL = 1001
     private const val REQ_PICK_DRAW_MODEL = 1002
     private const val REQ_PICK_LORA = 1003
-    private const val REQ_TAGGER_ONNX = 1004
-    private const val REQ_TAGGER_CSV = 1005
         private const val REQ_TAKE_PHOTO = 1006
         private const val REQ_PICK_CHAT_IMAGE = 1007
         private const val MAX_ATTACH = 4
@@ -207,7 +204,6 @@ class MainActivity : Activity() {
     /** 当前加载的 .litertlm 模型是否支持图像输入（读模型自带 Capabilities，失败按不支持处理）。 */
     private var visionOk = false
     /** 「借打标看图」时工具结果用哪个角色候选回传（0=首选，试错后记住可用的那个） */
-    private var tagReturnIdx = 0
     /** 输入栏「＋」附件按钮；待发送图片的预览条与缩略图 */
     private lateinit var attachButton: TextView
     private lateinit var attachPreviewStrip: HorizontalScrollView
@@ -274,119 +270,8 @@ class MainActivity : Activity() {
         return null
     }
 
-    /** 让语言模型「看图」用的打标命令，例如 <tag threshold="0.35" topk="40"></tag> */
-    private val tagCmdRegex =
-        Regex("<tag\\b([^>]*)>(.*?)(?:</tag>|$)", RegexOption.DOT_MATCHES_ALL)
-
-    /** 打标命令的参数（阈值 / 最多标签数），由语言模型自己给，可省略 */
-    private class TagReq(val threshold: Float, val topK: Int)
-
-    /** 语言模型看不见图、但打标模型已加载 → 可以用 <tag> 命令让系统去识别图片。 */
-    private val canTagFromChat: Boolean
-        get() = drawPage?.taggerLoaded() == true && (engine != null || llamaModel != null) && !visionOk
-
-    /** 这一轮带图、模型自己看不见、且还没识别过 → 本轮就把打标命令说明给模型 */
-    private fun canTagTurn(t: QaTurn?): Boolean =
-        canTagFromChat && t?.userImage != null
-
-    /** 看不见图的模型：告诉它可以用 <tag> 命令让打标模型去看用户发的图。 */
-    private val tagToolPrompt = """
-        【图片工具】你自己看不到图片内容，但可以调用本机的打标模型，把用户刚发来的图片转成英文标签。
-        用户消息里说明了「带了图片」时就是真的有图：此时必须调用下面的图片工具，
-        绝对不要回复「请提供图片」或「我看不到图片」之类的推辞。
-        需要知道图里有什么时：不要向用户解释这个工具，不要复述这条规则，不要猜图。
-        这一轮你的输出里只写下面这一行命令，不要有任何解释、计划或别的话（参数可省；threshold 是阈值 0.05~0.99，topk 是最多几个标签 1~80）：
-        <tag threshold="0.35" topk="40"></tag>
-        命令写在正文的最后一行，不要写进思考过程。系统随后会把识别结果发给你，你再根据这些标签回答用户的问题。
-    """.trimIndent()
-
-    /** 看不见图的模型：本轮带图时给它的提示（先告知「带了图」，再给工具命令格式） */
-    private fun tagHint(t: QaTurn?): String {
-        val n = t?.userImage?.split("|")?.count { it.isNotEmpty() } ?: 0
-        return getString(R.string.s_329, n) + "\n" + tagToolPrompt
-    }
-
-    /** 回复里像在推辞「我看不到图、请提供图片」的判定（小模型经常无视图片工具） */
-    private fun looksLikeBlindRefusal(s: String): Boolean {
-        if (s.isEmpty()) return false
-        val keys = listOf(
-            "提供图片", "提供一张图", "发送图片", "发一张图", "发个图", "发张图", "上传图", "看不到图", "无法查看",
-            "无法看到", "没有图片", "没收到图", "图片吗", "请提供", "重新发送图",
-            "provide an image", "send an image", "send me the image", "no image", "attach", "can't see",
-            "cannot see", "unable to see", "please upload", "please provide", "i don't see",
-        )
-        return keys.any { s.contains(it, ignoreCase = true) }
-    }
-
-    /** 模型把工具返回当成新输入、反过来问用户「请提出您的问题」的判定 */
-    private fun looksLikeQuestionAsk(s: String): Boolean {
-        if (s.isEmpty()) return false
-        val keys = listOf(
-            "请提出您的问题", "请您提出", "请提出你的问题", "请向我提问", "请告诉我您想问", "请告诉我你的问题",
-            "您想问什么", "你想问什么", "您的问题是什么", "你的问题是什么", "等待您的提问", "等待你的提问",
-            "请提供您的问题", "请提供你的问题", "有什么可以帮",
-            "ask your question", "what would you like to ask", "what is your question", "please ask",
-            "let me know your question", "how can i help", "what can i help",
-        )
-        return keys.any { s.contains(it, ignoreCase = true) }
-    }
-
-    /** 不做工具调用时，把回答里可能残留的 <tag …></tag> 命令抹掉（别把命令原文当正文显示给用户） */
-    private val tagStripRegex = Regex("<tag\\b[^>]*>(?:.*?</tag>)?", RegexOption.DOT_MATCHES_ALL)
-
-    private fun stripTagCommand(text: String): String =
-        text.replace(tagStripRegex, "").trim()
-
-    /** <tag …></tag> 命令的命中结果：参数 + 命中位置 */
-    private class TagHit(val req: TagReq, val inAnswer: Boolean, val start: Int, val end: Int)
-
-    /** 从回答里取出 <tag …></tag> 命令：返回参数与命中位置（不改内容，由调用方替换） */
-    private fun scanTagCommand(answer: String, thought: String): TagHit? {
-        if (!canTagFromChat) return null
-
-        fun parse(text: String, inAnswer: Boolean): TagHit? {
-            val m = tagCmdRegex.find(text) ?: return null
-            // 参数可能写在标签属性里，也可能写在标签内容里，两处都找一下
-            val attrs = m.groupValues[1] + " " + m.groupValues[2]
-            val th = Regex("threshold\\s*=\\s*[\"']?([0-9]*\\.?[0-9]+)")
-                .find(attrs)?.groupValues?.get(1)?.toFloatOrNull()
-            val tk = Regex("(topk|top_k|topK|max)\\s*=\\s*[\"']?([0-9]+)", RegexOption.IGNORE_CASE)
-                .find(attrs)?.groupValues?.get(2)?.toIntOrNull()
-            return TagHit(
-                TagReq((th ?: 0.35f).coerceIn(0.05f, 0.99f), (tk ?: 40).coerceIn(1, 80)),
-                inAnswer, m.range.first, m.range.last + 1,
-            )
-        }
-        return parse(answer, true) ?: parse(thought, false)
-    }
-
-    /** 把这一轮用户发的图交给打标模型识别：返回标签文本（多张图各一行），失败抛异常 */
-    private fun runTaggerOnImages(names: List<String>, req: TagReq): String {
-        val rgbOrder = drawPage?.taggerRgbOrder() == true
-        val sb = StringBuilder()
-        for ((i, n) in names.withIndex()) {
-            val bmp = readChatImage(n) ?: continue
-            val tags = TaggerEngine.run(bmp, req.threshold, req.topK, rgbOrder = rgbOrder)
-            if (tags.isEmpty()) continue
-            if (sb.isNotEmpty()) sb.append("\n")
-            if (names.size > 1) sb.append("#${i + 1} ")
-            sb.append(tags.joinToString(", ") { it.first })
-        }
-        return sb.toString()
-    }
-
     /** 一轮生成的产物（正文 / 思考） */
     private class RoundOut(val answer: String, val thought: String)
-
-    /**
-     * 「工具返回」轮要回传给对话模型的东西：
-     *  - modelText：模型这一轮的原始输出（作为 assistant 消息回填，让它看到自己的调用意图）
-     *  - text：打标模型的结果（按 system / tool 角色回传，不伪装成用户消息）
-     */
-    private class ToolReturn(val modelText: String, val text: String)
-
-    /** gguf 回传工具结果的角色候选：模板不认哪个就换下一个，user 只是兜底 */
-    private val tagRolesGguf = listOf("system", "tool", "user")
 
     /**
      * 跑一轮生成（gguf / litertlm 两条路径），把输出流式渲染进 ai。
@@ -401,7 +286,6 @@ class MainActivity : Activity() {
         overText: String,
         displayPrefix: String,
         thoughtPrefix: String,
-        toolReturn: ToolReturn?,
         dropLastForBudget: Boolean,
         hideStream: Boolean,
     ): RoundOut {
@@ -434,23 +318,13 @@ class MainActivity : Activity() {
             if (hadFocus && !inputEdit.hasFocus()) inputEdit.requestFocus()
         }
 
-        // 「工具返回」轮：模板/引擎可能不认 system、tool 角色（会直接抛错），
-        // 那就换个候选角色重发一次；一但试出能用的就记住，后面不再试错。
-        var attempt = if (toolReturn == null) 0 else tagReturnIdx.coerceIn(0, 2)
         while (true) {
             answerBuf.setLength(0)
             thoughtBuf.setLength(0)
             try {
                 if (gguf) {
                     val lm = llamaModel ?: return RoundOut("", "")
-                    val extra: List<kotlin.Pair<String, String>> = if (toolReturn == null) {
-                        emptyList()
-                    } else {
-                        listOf(
-                            "assistant" to toolReturn.modelText,
-                            tagRolesGguf[attempt] to toolReturn.text,
-                        )
-                    }
+                    val extra: List<kotlin.Pair<String, String>> = emptyList()
                     // generateChat 会套用模型自带的对话模板；cache_prompt=true + 固定 slot
                     // 让 llama.cpp 复用上一轮已算好的 KV 前缀，长对话不再重复 prefill。
                     // 本回合带图且模型能看图 → 走多模态消息（ContentPart）；否则沿用纯文字路径
@@ -538,27 +412,12 @@ class MainActivity : Activity() {
                         enableThinking = thinkCheck.isChecked,
                         thinkingTokenBudget = thinkBudgetOrUnlimited(),
                     )
-                    val flow = when {
-                        toolReturn == null -> {
-                            val ask: Contents = if (items.size == 1 && items[0] is Content.Text) {
-                                Contents.of(overText)
-                            } else {
-                                Contents.of(items)
-                            }
-                            conv.sendMessageAsync(ask, thinkingConfig = tc)
-                        }
-                        // 工具结果优先按「工具返回」回传（LiteRT-LM 原生帧），
-                        // 模板不认再退回 system 消息，最后才退回普通文本消息。
-                        attempt == 0 -> conv.sendMessageAsync(
-                            Message.tool(Contents.of(Content.ToolResponse("tagger", toolReturn.text))),
-                            thinkingConfig = tc,
-                        )
-                        attempt == 1 -> conv.sendMessageAsync(
-                            Message.system(toolReturn.text),
-                            thinkingConfig = tc,
-                        )
-                        else -> conv.sendMessageAsync(Message.user(toolReturn.text), thinkingConfig = tc)
+                    val ask: Contents = if (items.size == 1 && items[0] is Content.Text) {
+                        Contents.of(overText)
+                    } else {
+                        Contents.of(items)
                     }
+                    val flow = conv.sendMessageAsync(ask, thinkingConfig = tc)
                     flow.collect { msg ->
                         val delta = extractText(msg)
                         val thoughtDelta = msg.channels["thought"]
@@ -592,13 +451,7 @@ class MainActivity : Activity() {
                 throw e
             } catch (e: Throwable) {
                 // 只在「一个字都还没吐出来」时换角色重试，避免把半截输出丢了
-                val retry = toolReturn != null && !stopRequested && attempt < 2 &&
-                    answerBuf.isEmpty() && thoughtBuf.isEmpty() && !isContextOverflow(e)
-                if (!retry) throw e
-                attempt++
-                tagReturnIdx = attempt
-                // 这一条消息可能已经被引擎吃进会话，重建一次把这轮的脏状态丢掉
-                if (!gguf) runCatching { rebuildConversation(silent = true) }
+                throw e
             }
         }
 
@@ -693,7 +546,6 @@ class MainActivity : Activity() {
     private lateinit var modelsPager: ViewPager
     private lateinit var modelsTabChat: TextView
     private lateinit var modelsTabDraw: TextView
-    private lateinit var modelsTabTag: TextView
     private lateinit var tabSettings: View
 
     // ---- API 设置区块：对话 / 绘图各一套，由 buildApiBlock() 生成，结构完全一致 ----
@@ -741,15 +593,6 @@ class MainActivity : Activity() {
     private var drawImportBtn: TextView? = null
     /** 绘图模型导入进度条（本地复制时显示） */
     private var drawProgress: ProgressBar? = null
-    /** 打标（Tagger）状态文本（模型页） */
-    private var taggerStatusTv: TextView? = null
-    /** 打标模型 / 标签表导入按钮 */
-    private var taggerOnnxBtn: TextView? = null
-    private var taggerCsvBtn: TextView? = null
-    /** 已导入的打标模型 / 标签表列表容器 */
-    private var taggerBox: LinearLayout? = null
-    /** 打标模型 加载/卸载 按钮 */
-    private var taggerLoadBtn: TextView? = null
     /** 当前选定的绘图主模型（绝对路径） */
     /** 当前选用的模型集 id（多文件模型 = 一组文件） */
     private var drawSetId: String? = null
@@ -1517,35 +1360,6 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         refreshDrawApiUi()
 
-        // ================= 打标模型（Tagger）：独立成页 =================
-        val taggerCard = sectionCard()
-        taggerCard.addView(pageTitle(getString(R.string.s_241)))
-        taggerCard.addView(
-            hintText(getString(R.string.s_242)),
-            matchWrap().apply { topMargin = dp(4) }
-        )
-        val tStatus = TextView(this).apply {
-            text = getString(R.string.s_245)
-            textSize = 12f
-            setTextColor(C_SUBTEXT)
-        }
-        taggerStatusTv = tStatus
-        taggerCard.addView(tStatus, matchWrap().apply { topMargin = dp(6) })
-
-        taggerOnnxBtn = actionButton(getString(R.string.s_243)) { pickTaggerOnnx() }
-        taggerCard.addView(taggerOnnxBtn, matchWrap().apply { topMargin = dp(8) })
-        taggerCsvBtn = actionButton(getString(R.string.s_244)) { pickTaggerCsv() }
-        taggerCard.addView(taggerCsvBtn, matchWrap().apply { topMargin = dp(8) })
-
-        taggerBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        taggerCard.addView(taggerBox, matchWrap().apply { topMargin = dp(6) })
-
-        taggerLoadBtn = actionButton(getString(R.string.s_254)) { onTaggerToggleClick() }
-        taggerCard.addView(taggerLoadBtn, matchWrap().apply { topMargin = dp(8) })
-
         // ---- 顶部常驻「运行方式」+ 页签 + 左右翻页 ----
         header.addView(card)
         root.addView(header)
@@ -1557,18 +1371,16 @@ class MainActivity : Activity() {
         }
         modelsTabChat = tabItem(getString(R.string.s_076))
         modelsTabDraw = tabItem(getString(R.string.s_155))
-        modelsTabTag = tabItem(getString(R.string.s_241))
         modelsTabChat.setOnClickListener { switchModelsTab(0) }
         modelsTabDraw.setOnClickListener { switchModelsTab(1) }
-        modelsTabTag.setOnClickListener { switchModelsTab(2) }
-        for (t in listOf(modelsTabChat, modelsTabDraw, modelsTabTag)) {
+        for (t in listOf(modelsTabChat, modelsTabDraw)) {
             tabBar.addView(t, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
         root.addView(tabBar)
 
         modelsPager = ViewPager(this).apply {
             adapter = ModelsPaneAdapter(
-                listOf(chatPane, drawPane, modelsPane(taggerCard))
+                listOf(chatPane, drawPane)
             )
             addOnPageChangeListener(object : ViewPager.SimpleOnPageChangeListener() {
                 override fun onPageSelected(position: Int) {
@@ -1581,7 +1393,6 @@ class MainActivity : Activity() {
 
         refreshLoraUi()
         refreshDrawModels()
-        refreshTaggerUi()
         switchChatSubPage(0)
         switchDrawSubPage(0)
         switchModelsTab(0)
@@ -1876,19 +1687,19 @@ class MainActivity : Activity() {
 
     /** 切换模型页的「对话模型 / 绘图模型 / 打标模型」 */
     private fun switchModelsTab(index: Int) {
-        if (::modelsPager.isInitialized) modelsPager.setCurrentItem(index, true)
-        highlightModelsTabs(index)
-        when (index) {
+        val selected = index.coerceIn(0, 1)
+        if (::modelsPager.isInitialized) modelsPager.setCurrentItem(selected, true)
+        highlightModelsTabs(selected)
+        when (selected) {
             0 -> { refreshSavedModels(); refreshMmprojUi(); refreshApiUi() }
             1 -> { refreshDrawModels(); refreshLoraUi(); refreshDrawApiUi() }
-            2 -> refreshTaggerUi()
         }
     }
 
     /** 同步模型页页签高亮；手势翻页时也由它更新 */
     private fun highlightModelsTabs(selected: Int) {
         if (!::modelsTabChat.isInitialized) return
-        for ((i, tv) in listOf(modelsTabChat, modelsTabDraw, modelsTabTag).withIndex()) {
+        for ((i, tv) in listOf(modelsTabChat, modelsTabDraw).withIndex()) {
             val sel = i == selected
             tv.setTextColor(if (sel) C_PRIMARY else C_SUBTEXT)
             tv.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
@@ -1896,7 +1707,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 模型页的翻页适配器：直接复用已建好的三个面板，不重建 */
+    /** 模型页的翻页适配器：直接复用已建好的面板，不重建 */
     private class ModelsPaneAdapter(private val panes: List<View>) : PagerAdapter() {
         override fun getCount() = panes.size
         override fun isViewFromObject(view: View, obj: Any) = view === obj
@@ -2205,7 +2016,7 @@ class MainActivity : Activity() {
         tabDraw.visibility = if (index == 2) View.VISIBLE else View.GONE
         tabSettings.visibility = if (index == 3) View.VISIBLE else View.GONE
         // 切到「模型」页时刷新绘图模型 / LoRA 列表，避免导入后状态滞后
-        if (index == 1) { refreshDrawModels(); refreshLoraUi(); refreshTaggerUi(); refreshApiUi(); refreshDrawApiUi() }
+        if (index == 1) { refreshDrawModels(); refreshLoraUi(); ; refreshApiUi(); refreshDrawApiUi() }
         inputBar.visibility = if (index == 0) View.VISIBLE else View.GONE
         val isChat = index == 0
         appBarMenu.visibility = if (isChat) View.VISIBLE else View.INVISIBLE
@@ -3292,24 +3103,6 @@ class MainActivity : Activity() {
         startActivityForResult(i, REQ_PICK_LORA)
     }
 
-    /** 打标模型：选一个 .onnx 文件 */
-    private fun pickTaggerOnnx() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        startActivityForResult(i, REQ_TAGGER_ONNX)
-    }
-
-    /** 标签表：选一个 .csv 文件 */
-    private fun pickTaggerCsv() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        startActivityForResult(i, REQ_TAGGER_CSV)
-    }
-
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (drawPage?.onActivityResult(requestCode, resultCode, data) == true) return
         super.onActivityResult(requestCode, resultCode, data)
@@ -3436,58 +3229,6 @@ class MainActivity : Activity() {
                     toast(err)
                 }
                 refreshLoraUi()
-            }
-        }
-        if (requestCode == REQ_TAGGER_ONNX && resultCode == RESULT_OK) {
-            val uri = data?.data ?: return
-            val dpg = drawPage ?: return
-            setBusy(true)
-            setDrawBusy(true)
-            showDrawProgress(true)
-            setStatus(getString(R.string.s_131), C_WARN)
-            scope.launch {
-                val err = dpg.importTaggerModel(
-                    uri,
-                    onStage = { stage -> taggerStatusTv?.text = stage },
-                    onProgress = { done, total -> updateDrawProgress(done, total) }
-                )
-                setBusy(false)
-                setDrawBusy(false)
-                showDrawProgress(false)
-                if (err == null) {
-                    setStatus(getString(R.string.s_267), C_OK)
-                    toast(getString(R.string.s_269))
-                } else {
-                    setStatus(getString(R.string.s_158), C_ERR)
-                    toast(err)
-                }
-                refreshTaggerUi()
-            }
-        }
-        if (requestCode == REQ_TAGGER_CSV && resultCode == RESULT_OK) {
-            val uri = data?.data ?: return
-            val dpg = drawPage ?: return
-            setBusy(true)
-            setDrawBusy(true)
-            showDrawProgress(true)
-            setStatus(getString(R.string.s_131), C_WARN)
-            scope.launch {
-                val err = dpg.importTaggerCsv(
-                    uri,
-                    onStage = { stage -> taggerStatusTv?.text = stage },
-                    onProgress = { done, total -> updateDrawProgress(done, total) }
-                )
-                setBusy(false)
-                setDrawBusy(false)
-                showDrawProgress(false)
-                if (err == null) {
-                    setStatus(getString(R.string.s_268), C_OK)
-                    toast(getString(R.string.s_269))
-                } else {
-                    setStatus(getString(R.string.s_158), C_ERR)
-                    toast(err)
-                }
-                refreshTaggerUi()
             }
         }
     }
@@ -4026,7 +3767,6 @@ class MainActivity : Activity() {
                         // 登记到进程级单例：对话 API 服务要复用同一个模型
                         ChatCore.attachGguf(m, path.substringAfterLast('/'), vok)
                         loadedModelPath = path
-        tagReturnIdx = 0
                         engine = null
                         conversation = null
                         convThinking = null
@@ -4070,7 +3810,6 @@ class MainActivity : Activity() {
                         llamaModel = null
                         ChatCore.attachLiteRt(eng, path.substringAfterLast('/'), vok)
                         loadedModelPath = path
-        tagReturnIdx = 0
                         conversation = conv
                         convThinking = thinking
                         visionOk = vok
@@ -4110,7 +3849,6 @@ class MainActivity : Activity() {
         engine = null
         llamaModel = null
         loadedModelPath = null
-        tagReturnIdx = 0
         conversation = null
         convThinking = null
         visionOk = false
@@ -4243,7 +3981,6 @@ class MainActivity : Activity() {
             if (ti == turns.size - 1) {
                 // 本轮发送的文件正文只在这一轮出现（不进历史，免得撑爆 4096 上下文）
                 t.fileText?.let { if (it.isNotEmpty()) userText += "\n\n" + it }
-                if (canTagTurn(t)) userText += "\n\n" + tagHint(t)
                 if (canDrawFromChat) userText += "\n\n" + drawToolPrompt
             }
             msgs += Pair("user", userText)
@@ -4292,7 +4029,6 @@ class MainActivity : Activity() {
                 val parts = ArrayList<ContentPart>()
                 var body = t.user
                 t.fileText?.let { if (it.isNotEmpty()) body += "\n\n" + it }
-                if (canTagTurn(t)) body += "\n\n" + tagHint(t)
                 if (canDrawFromChat) body += "\n\n" + drawToolPrompt
                 if (body.isNotEmpty()) parts.add(ContentPart.text(body))
                 images.forEach { parts.add(ContentPart.imageBytes(it, "image/jpeg")) }
@@ -4690,14 +4426,9 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
-    /** 图片长按菜单：保存到相册 / 引用 / 发送至图生图 / 发送至 Tagger。 */
+    /** 图片长按菜单：保存到相册 / 引用 / 发送至图生图。 */
     private fun showImageMenu(bmp: Bitmap, name: String) {
-        val items = arrayOf(
-            getString(R.string.s_045),
-            getString(R.string.s_291),
-            getString(R.string.s_225),
-            getString(R.string.s_238)
-        )
+        val items = arrayOf(getString(R.string.s_045), getString(R.string.s_291), getString(R.string.s_225))
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.s_293))
             .setItems(items) { _, which ->
@@ -4705,7 +4436,6 @@ class MainActivity : Activity() {
                     0 -> saveImageToGallery(bmp, name)
                     1 -> quoteImage(bmp)
                     2 -> { drawPage?.sendImageToI2i(bmp); switchTab(2) }
-                    else -> { drawPage?.sendImageToTagger(bmp); switchTab(2) }
                 }
             }
             .setNegativeButton(getString(R.string.s_066), null)
@@ -4948,7 +4678,6 @@ class MainActivity : Activity() {
         }
         // 模型看不见图：本轮带图时先告诉它「这条消息带了图片」，再给打标工具说明，
         // 否则它会直接反问「请提供图片」（这段只用于本轮，不进历史）
-        if (canTagTurn(turn)) sendText += "\n\n" + tagHint(turn)
         clearPendingFiles()
 
         inputEdit.setText("")
@@ -4971,14 +4700,9 @@ class MainActivity : Activity() {
                 // ===== agent 循环：生成 → 模型要调工具就执行 → 把结果补回上下文再生成 =====
                 var overText = sendText   // 本轮要发的文本（第一轮＝输入＋文件正文＋工具说明）
                 // 打标结果按「工具返回」回传（system / tool 角色，不冒充用户消息）
-                var toolReturn: ToolReturn? = null
                 var round = 0
-                var autoTagged = false
-                var tagRan = false      // 这一轮真的跑过打标（用于兜底纠偏）
-                var nudgeUsed = false
                 // 带图、模型又看不见图：第一轮先显示一句占位（这一轮的内容不显示，免得命令命中后整段消失重来）
-                if (canTagTurn(turn)) markwonStream.setMarkdown(ai.answer, getString(R.string.s_323))
-                while (true) {
+                        while (true) {
                     val out = runRound(
                         turn = turn,
                         ai = ai,
@@ -4987,11 +4711,8 @@ class MainActivity : Activity() {
                         overText = overText,
                         displayPrefix = shown,
                         thoughtPrefix = thoughtShown,
-                        toolReturn = toolReturn,
                         dropLastForBudget = round == 0,
-                        // 带图、模型又看不见图时，第一轮先不显示：它可能先啰嗦一段再吐 <tag>，
-                        // 直接显示的话命令命中后这段会消失重来
-                        hideStream = round == 0 && canTagTurn(turn),
+                        hideStream = false,
                     )
                     var roundText = out.answer
 
@@ -5013,105 +4734,10 @@ class MainActivity : Activity() {
                         break
                     }
 
-                    // ② 打标命令：模型自己看不见图时，让它借打标模型看图，拿到标签再回答
-                    val tagHit = if (round < MAX_TAG_ROUNDS) scanTagCommand(roundText, out.thought) else null
-                    // 兜底：小模型经常无视图片工具、直接反问「请提供图片」。这一轮带图、它又像在推辞时，
-                    // App 替它调用一次打标模型（阈值/标签数用默认 0.35 / 40），结果照样按「工具返回」发回去。
-                    val autoTagRes: String? = if (tagHit == null && round == 0 && !autoTagged && canTagFromChat &&
-                        attachJpegs.isNotEmpty() && looksLikeBlindRefusal(roundText)
-                    ) {
-                        autoTagged = true
-                        val autoNames = turn.userImage?.split("|")?.filter { it.isNotEmpty() } ?: emptyList()
-                        val r = if (autoNames.isEmpty()) "" else {
-                            // 打标结果不展示：先把这一轮的推辞内容清掉
-                            shown = ""
-                            turn.answer = ""
-                            markwonFull.setMarkdown(ai.answer, "")
-                            withContext(Dispatchers.IO) {
-                                runCatching { runTaggerOnImages(autoNames, TagReq(0.35f, 40)) }.getOrDefault("")
-                            }
-                        }
-                        r.ifEmpty { null }
-                    } else null
-                    if (tagHit == null && autoTagRes == null) {
-                        val clean = stripTagCommand(roundText)
-                        // 模型把工具结果当成新的输入、反过来问用户「请提出您的问题」：明确提示后重来一轮（只一次）
-                        if (tagRan && !nudgeUsed && looksLikeQuestionAsk(clean)) {
-                            nudgeUsed = true
-                            shown = ""
-                            turn.answer = ""
-                            markwonFull.setMarkdown(ai.answer, "")
-                            thoughtShown += out.thought
-                            overText = getString(R.string.s_331, turn.user.take(200))
-                            round++
-                            continue
-                        }
-                        // 没有可用的工具调用：把可能残留的 <tag> 命令抹掉（模型有读图能力、打标路径已关闭时）
-                        shown += clean
-                        thoughtShown += out.thought
-                        break
-                    }
-                    if (tagHit == null) {
-                        // 兜底路径：模型没调用工具，但打标结果已经有了，直接当工具返回发回去（不展示标签）
-                        thoughtShown += out.thought
-                        val autoBlock = getString(R.string.s_328, autoTagRes, turn.user.take(200))
-                        overText = autoBlock
-                        // gguf：用「模型只输出了 <tag> 命令」的干净形态回填，别把上一轮的推辞带进上下文
-                        val autoCmd = "<tag threshold=\"0.35\" topk=\"40\"></tag>"
-                        toolReturn = ToolReturn(if (isGgufRun) autoCmd else out.answer, autoBlock)
-                        tagRan = true
-                        round++
-                        scrollToBottom()
-                        continue
-                    }
-                    // 把命令换成一行说明：正文里的换在正文，思考里的换在思考区、正文补一行
-                    fun swapLine(replacement: String): String = if (tagHit.inAnswer) {
-                        thoughtShown += out.thought
-                        roundText.replaceRange(tagHit.start, tagHit.end, replacement)
-                    } else {
-                        thoughtShown += out.thought.replaceRange(
-                            tagHit.start, tagHit.end, getString(R.string.s_323)
-                        )
-                        (roundText + "\n\n" + replacement).trim()
-                    }
-
-                    val names = turn.userImage?.split("|")?.filter { it.isNotEmpty() } ?: emptyList()
-                    // 打标结果不展示：先把气泡里这一轮的调用过程清掉，识别完由模型直接给最终回答
-                    shown = ""
-                    turn.answer = ""
-                    markwonFull.setMarkdown(ai.answer, "")
-                    val res = if (names.isEmpty()) {
-                        "\u0000" + getString(R.string.s_326)
-                    } else {
-                        withContext(Dispatchers.IO) {
-                            runCatching { runTaggerOnImages(names, tagHit.req) }.getOrElse { e ->
-                                "\u0000" + (e.message ?: "")
-                            }
-                        }
-                    }
-                    if (res.startsWith("\u0000")) {
-                        // 这轮没有图片、或打标失败：把命令换成原因，本轮就此结束
-                        shown += swapLine(getString(R.string.s_325, res.removePrefix("\u0000")))
-                        break
-                    }
-                    if (res.isEmpty()) {
-                        shown += swapLine(getString(R.string.s_327))
-                        break
-                    }
-                    // 成功：不展示标签，气泡留空，等模型基于标签给出最终回答
-                    thoughtShown += if (tagHit.inAnswer) out.thought else {
-                        out.thought.replaceRange(tagHit.start, tagHit.end, getString(R.string.s_323))
-                    }
-                    val block = getString(R.string.s_328, res, turn.user.take(200))
-                    overText = block
-                    // gguf：用「模型只输出了 <tag> 命令」的干净形态回填，别把它上一轮的碎碎念带进上下文
-                    val cmdEcho = "<tag threshold=\"${tagHit.req.threshold}\" topk=\"${tagHit.req.topK}\"></tag>"
-                    toolReturn = ToolReturn(if (isGgufRun) cmdEcho else out.answer, block)
-                    tagRan = true
-                    round++
-                    scrollToBottom()
-                }
-                turn.answer = shown.trimEnd()
+                                        shown += roundText
+                    thoughtShown += out.thought
+                    break
+                    turn.answer = shown.trimEnd()
                 if (turn.answer.isNotEmpty()) {
                     markwonFull.setMarkdown(ai.answer, turn.answer)
                 } else if (turn.thought.isEmpty()) {
@@ -5430,94 +5056,9 @@ class MainActivity : Activity() {
         drawToggleBtn?.alpha = if (b) 0.5f else 1f
         drawImportBtn?.isEnabled = !b
         drawImportBtn?.alpha = if (b) 0.5f else 1f
-        taggerOnnxBtn?.isEnabled = !b
-        taggerOnnxBtn?.alpha = if (b) 0.5f else 1f
-        taggerCsvBtn?.isEnabled = !b
-        taggerCsvBtn?.alpha = if (b) 0.5f else 1f
-        taggerLoadBtn?.isEnabled = !b
-        taggerLoadBtn?.alpha = if (b) 0.5f else 1f
     }
 
     /** 刷新模型页的打标（Tagger）状态：状态行 + 可选列表（模型 / 标签表） */
-    private fun refreshTaggerUi() {
-        val dpg = drawPage
-        taggerStatusTv?.text = dpg?.taggerSummary() ?: getString(R.string.s_245)
-        dpg?.refreshStatus()
-        refreshTaggerToggle()
-        val box = taggerBox ?: return
-        box.removeAllViews()
-        val models = dpg?.listTaggerModels().orEmpty()
-        val csvs = dpg?.listTaggerCsvs().orEmpty()
-        if (models.isEmpty() && csvs.isEmpty()) {
-            box.visibility = View.GONE
-            return
-        }
-        box.visibility = View.VISIBLE
-        val curM = dpg?.currentTaggerModelName()
-        val curC = dpg?.currentTaggerCsvName()
-        if (models.isNotEmpty()) {
-            box.addView(listHeader(getString(R.string.s_252)))
-            for (f in models) {
-                box.addView(
-                    selectableChip(f, f.name == curM) { dpg?.selectTaggerModel(f); refreshTaggerUi() },
-                    matchWrap().apply { topMargin = dp(4) }
-                )
-            }
-        }
-        if (csvs.isNotEmpty()) {
-            box.addView(listHeader(getString(R.string.s_253)))
-            for (f in csvs) {
-                box.addView(
-                    selectableChip(f, f.name == curC) { dpg?.selectTaggerCsv(f); refreshTaggerUi() },
-                    matchWrap().apply { topMargin = dp(4) }
-                )
-            }
-        }
-    }
-
-    /** 按当前是否已加载切换按钮文案与配色（与「对话/绘图」一致：未加载=蓝底，已加载=浅底） */
-    private fun refreshTaggerToggle() {
-        val b = taggerLoadBtn ?: return
-        if (drawPage?.taggerLoaded() == true) {
-            b.text = getString(R.string.s_255)
-            b.background = rounded(C_SOFT_BTN2, 12,
-                strokeDp = 1, strokeColor = C_BORDER)
-            b.setTextColor(C_TEXT)
-        } else {
-            b.text = getString(R.string.s_254)
-            b.background = rounded(C_PRIMARY, 12)
-            b.setTextColor(Color.WHITE)
-        }
-    }
-
-    /** 加载 / 卸载打标模型（多个打标模型之间切换用） */
-    private fun onTaggerToggleClick() {
-        val dpg = drawPage ?: return
-        if (dpg.taggerLoaded()) {
-            dpg.unloadTagger()
-            refreshTaggerUi()
-            return
-        }
-        setBusy(true)
-        setDrawBusy(true)
-        showDrawProgress(true)
-        setStatus(getString(R.string.s_131), C_WARN)
-        scope.launch {
-            val err = dpg.loadTaggerFromUi { stage -> taggerStatusTv?.text = stage }
-            setBusy(false)
-            setDrawBusy(false)
-            showDrawProgress(false)
-            if (err == null) {
-                setStatus(getString(R.string.s_265), C_OK)
-                toast(getString(R.string.s_266))
-            } else {
-                setStatus(getString(R.string.s_158), C_ERR)
-                toast(err)
-            }
-            refreshTaggerUi()
-        }
-    }
-
     /** 列表小标题 */
     private fun listHeader(t: String) = TextView(this).apply {
         text = t
