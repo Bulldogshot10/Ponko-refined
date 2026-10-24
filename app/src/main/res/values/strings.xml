@@ -496,4 +496,25 @@
     <string name="draw_unet_quantize_busy">Wait until image generation finishes before quantizing.</string>
     <string name="draw_unet_quantize_create_failed">Could not create an output model-set directory.</string>
     <string name="draw_unet_quantize_register_failed">Conversion succeeded, but the new model set could not be registered.</string>
+
+    <string name="draw_resadapter_button">Prepare SDXL ResAdapter</string>
+    <string name="draw_resadapter_title">Prepare SDXL ResAdapter</string>
+    <string name="draw_resadapter_intro">Use the selected single-file SDXL model (%1$s). Choose the target UNet precision, then select the ResAdapter LoRA and normalization weights.</string>
+    <string name="draw_resadapter_pick_lora">Choose ResAdapter LoRA (.safetensors)</string>
+    <string name="draw_resadapter_pick_norm">Choose normalization weights (.safetensors)</string>
+    <string name="draw_resadapter_confirm_title">Apply ResAdapter</string>
+    <string name="draw_resadapter_confirm">Base: %1$s\nLoRA: %2$s\nNormalization: %3$s\nOutput UNet: %4$s\n\nThis writes a new GGUF with the normalization tensors merged into the matching UNet weights. The original model and both source files stay untouched. The LoRA is installed as a normal adapter and selected automatically at strength 1.0.</string>
+    <string name="draw_resadapter_apply">Apply</string>
+    <string name="draw_resadapter_working">Merging normalization tensors and building the %1$s UNet. Keep Ponko open until validation finishes.</string>
+    <string name="draw_resadapter_success">ResAdapter prepared. Normalization weights are baked into the new GGUF; the LoRA is installed and selected at strength 1.0. Load the selected model to use it.</string>
+    <string name="draw_resadapter_failed">ResAdapter preparation failed. Source files were left untouched. %1$s</string>
+    <string name="draw_resadapter_failed_detail">The converter failed or the generated GGUF failed validation.</string>
+    <string name="draw_resadapter_no_model">Select an SDXL single-file model set first.</string>
+    <string name="draw_resadapter_supported_models">ResAdapter currently supports a single-file SDXL checkpoint or full-model GGUF. Split Diffusers model sets are not supported by this tool yet.</string>
+    <string name="draw_resadapter_bad_lora">Choose the ResAdapter LoRA .safetensors file.</string>
+    <string name="draw_resadapter_bad_norm">Choose the normalization weights .safetensors file.</string>
+    <string name="draw_resadapter_busy">Wait until image generation finishes before applying ResAdapter.</string>
+    <string name="draw_resadapter_copy_failed">Couldn't read the selected file. Please pick it again.</string>
+    <string name="draw_resadapter_create_failed">Couldn't create the output model-set directory.</string>
+    <string name="draw_resadapter_register_failed">The GGUF was created but the new model set couldn't be registered.</string>
 </resources>

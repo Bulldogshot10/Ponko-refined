@@ -496,4 +496,25 @@
     <string name="draw_unet_quantize_busy">请等待图像生成完成后再进行量化。</string>
     <string name="draw_unet_quantize_create_failed">无法创建输出模型集目录。</string>
     <string name="draw_unet_quantize_register_failed">转换已完成，但无法注册新模型集。</string>
+
+    <string name="draw_resadapter_button">准备 SDXL ResAdapter</string>
+    <string name="draw_resadapter_title">准备 SDXL ResAdapter</string>
+    <string name="draw_resadapter_intro">将使用当前选中的单文件 SDXL 模型（%1$s）。先选择 UNet 输出精度，再选择 ResAdapter LoRA 和 normalization weights。</string>
+    <string name="draw_resadapter_pick_lora">选择 ResAdapter LoRA（.safetensors）</string>
+    <string name="draw_resadapter_pick_norm">选择 normalization weights（.safetensors）</string>
+    <string name="draw_resadapter_confirm_title">应用 ResAdapter</string>
+    <string name="draw_resadapter_confirm">基础模型：%1$s\nLoRA：%2$s\nNormalization：%3$s\nUNet 输出：%4$s\n\n这会生成新的 GGUF，并将 normalization tensors 合并到匹配的 UNet 权重中。原模型和两个源文件都不会被修改。LoRA 会作为普通 adapter 安装，并自动选择，强度为 1.0。</string>
+    <string name="draw_resadapter_apply">应用</string>
+    <string name="draw_resadapter_working">正在合并 normalization tensors 并构建 %1$s UNet。请保持 Ponko 运行，直到验证完成。</string>
+    <string name="draw_resadapter_success">ResAdapter 已准备完成。Normalization weights 已写入新 GGUF；LoRA 已安装并自动选择，强度为 1.0。加载当前模型即可使用。</string>
+    <string name="draw_resadapter_failed">准备 ResAdapter 失败，源文件未修改。%1$s</string>
+    <string name="draw_resadapter_failed_detail">转换失败，或生成的 GGUF 未通过验证。</string>
+    <string name="draw_resadapter_no_model">请先选择 SDXL 单文件模型集。</string>
+    <string name="draw_resadapter_supported_models">目前仅支持单文件 SDXL checkpoint 或完整模型 GGUF。暂不支持拆分的 Diffusers 模型集。</string>
+    <string name="draw_resadapter_bad_lora">请选择 ResAdapter LoRA .safetensors 文件。</string>
+    <string name="draw_resadapter_bad_norm">请选择 normalization weights .safetensors 文件。</string>
+    <string name="draw_resadapter_busy">请等待图像生成完成后再应用 ResAdapter。</string>
+    <string name="draw_resadapter_copy_failed">无法读取所选文件，请重新选择。</string>
+    <string name="draw_resadapter_create_failed">无法创建输出模型集目录。</string>
+    <string name="draw_resadapter_register_failed">GGUF 已生成，但无法注册新的模型集。</string>
 </resources>

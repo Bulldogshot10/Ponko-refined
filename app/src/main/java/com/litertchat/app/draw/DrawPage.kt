@@ -106,6 +106,8 @@ class DrawPage(
         const val TAGGER_DIR = "tagger"
         private const val REQ_IMAGE = 0x5D02
         private const val REQ_TAGGER_IMAGE = 0x5D03
+        private const val REQ_RESADAPTER_LORA = 0x5D04
+        private const val REQ_RESADAPTER_NORM = 0x5D05
 
         /** LCM-LoRA：HuggingFace 官方仓库路径（文件实名为 pytorch_lora_weights.safetensors） */
         private const val LORA_HF_PATH =
@@ -314,6 +316,10 @@ class DrawPage(
     private lateinit var statusText: TextView
     private lateinit var quantText: TextView
     private lateinit var quantizeUnetButton: Button
+    private lateinit var resAdapterButton: Button
+    private var pendingResAdapterSet: ModelSet? = null
+    private var pendingResAdapterLoraUri: Uri? = null
+    private var pendingResAdapterQuantType: String = "q5_0"
     private lateinit var modelCardTitle: TextView
     private lateinit var promptEdit: EditText
     private lateinit var negEdit: EditText
@@ -498,6 +504,11 @@ class DrawPage(
             setOnClickListener { showUnetQuantizer() }
         }
         modelCard.addView(quantizeUnetButton, matchWrap(top = 8))
+        resAdapterButton = Button(c).apply {
+            text = c.getString(R.string.draw_resadapter_button)
+            setOnClickListener { showResAdapterWizard() }
+        }
+        modelCard.addView(resAdapterButton, matchWrap(top = 4))
         paramPane.addView(modelCard)
 
         // ---- 模式子标签：文生图 / 图生图 ----
@@ -2188,6 +2199,7 @@ class DrawPage(
         if (!::modelCardTitle.isInitialized) return
         if (mode == 2) {
             if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.GONE
+            if (::resAdapterButton.isInitialized) resAdapterButton.visibility = View.GONE
             modelCardTitle.text = c.getString(R.string.s_262)
             statusText.text = taggerSummary()
             quantText.text = if (taggerLoaded()) {
@@ -2197,6 +2209,10 @@ class DrawPage(
             }
         } else {
             if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
+            if (::resAdapterButton.isInitialized) {
+                resAdapterButton.visibility =
+                    if (activeSetOrSelected()?.family == FAM_SDXL) View.VISIBLE else View.GONE
+            }
             modelCardTitle.text = c.getString(R.string.s_164)
             try { statusText.text = modelSummary() } catch (_: Throwable) {}
             refreshQuantText()
@@ -2337,6 +2353,258 @@ class DrawPage(
                 ).show()
             } finally {
                 progressDialog.dismiss()
+            }
+        }
+    }
+
+
+    // ================= ResAdapter (LoRA + normalization weights) =================
+
+    private fun showResAdapterWizard() {
+        if (generating || DrawCore.busy) {
+            Toast.makeText(c, c.getString(R.string.draw_resadapter_busy), Toast.LENGTH_LONG).show()
+            return
+        }
+        val set = activeSetOrSelected()
+        if (set == null) {
+            toast(c.getString(R.string.draw_resadapter_no_model))
+            return
+        }
+        if (set.family != FAM_SDXL || set.kind != KIND_SINGLE) {
+            toast(c.getString(R.string.draw_resadapter_supported_models))
+            return
+        }
+        val source = set.files["model"] ?: set.mainFile()
+        if (source == null || !source.isFile ||
+            source.extension.lowercase() !in setOf("safetensors", "gguf", "ckpt", "pt")) {
+            toast(c.getString(R.string.draw_resadapter_supported_models))
+            return
+        }
+
+        val types = arrayOf("q4_0", "q5_0", "q8_0")
+        val labels = arrayOf("Q4_0 · 4-bit UNet", "Q5_0 · 5-bit UNet", "Q8_0 · 8-bit UNet")
+        android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_resadapter_title))
+            .setMessage(c.getString(R.string.draw_resadapter_intro, source.name))
+            .setItems(labels) { dialog, which ->
+                dialog.dismiss()
+                pendingResAdapterSet = set
+                pendingResAdapterQuantType = types[which]
+                pendingResAdapterLoraUri = null
+                pickResAdapterFile(REQ_RESADAPTER_LORA, R.string.draw_resadapter_pick_lora)
+            }
+            .setNegativeButton(c.getString(R.string.s_066), null)
+            .show()
+    }
+
+    private fun pickResAdapterFile(requestCode: Int, titleRes: Int) {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(android.content.Intent.EXTRA_TITLE, c.getString(titleRes))
+        }
+        act.startActivityForResult(intent, requestCode)
+    }
+
+    private fun resetPendingResAdapter() {
+        pendingResAdapterSet = null
+        pendingResAdapterLoraUri = null
+        pendingResAdapterQuantType = "q5_0"
+    }
+
+    private fun copyContentUri(uri: Uri, destination: File) {
+        destination.parentFile?.mkdirs()
+        val input = c.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException(c.getString(R.string.draw_resadapter_copy_failed))
+        input.use { source ->
+            destination.outputStream().buffered().use { output ->
+                source.copyTo(output, 1 shl 20)
+            }
+        }
+        if (!destination.isFile || destination.length() <= 0L) {
+            throw IllegalStateException(c.getString(R.string.draw_resadapter_copy_failed))
+        }
+    }
+
+    private fun handleResAdapterPickedFile(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (requestCode != REQ_RESADAPTER_LORA && requestCode != REQ_RESADAPTER_NORM) return false
+        if (resultCode != Activity.RESULT_OK) {
+            resetPendingResAdapter()
+            return true
+        }
+        val uri = data?.data
+        if (uri == null) {
+            resetPendingResAdapter()
+            toast(c.getString(R.string.draw_resadapter_copy_failed))
+            return true
+        }
+        val fileName = queryDisplayName(uri).orEmpty()
+        if (!fileName.endsWith(".safetensors", ignoreCase = true)) {
+            resetPendingResAdapter()
+            toast(c.getString(if (requestCode == REQ_RESADAPTER_LORA)
+                R.string.draw_resadapter_bad_lora else R.string.draw_resadapter_bad_norm))
+            return true
+        }
+
+        if (requestCode == REQ_RESADAPTER_LORA) {
+            pendingResAdapterLoraUri = uri
+            pickResAdapterFile(REQ_RESADAPTER_NORM, R.string.draw_resadapter_pick_norm)
+            return true
+        }
+
+        val set = pendingResAdapterSet
+        val loraUri = pendingResAdapterLoraUri
+        val quantType = pendingResAdapterQuantType
+        if (set == null || loraUri == null) {
+            resetPendingResAdapter()
+            toast(c.getString(R.string.draw_resadapter_no_model))
+            return true
+        }
+        val loraName = queryDisplayName(loraUri) ?: "resadapter_lora.safetensors"
+        val normName = fileName
+        resetPendingResAdapter()
+
+        android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_resadapter_confirm_title))
+            .setMessage(c.getString(
+                R.string.draw_resadapter_confirm,
+                set.name,
+                loraName,
+                normName,
+                quantType.uppercase(),
+            ))
+            .setPositiveButton(c.getString(R.string.draw_resadapter_apply)) { _, _ ->
+                runResAdapterApply(set, loraUri, loraName, uri, normName, quantType)
+            }
+            .setNegativeButton(c.getString(R.string.s_066), null)
+            .show()
+        return true
+    }
+
+    private fun runResAdapterApply(
+        baseSet: ModelSet,
+        loraUri: Uri,
+        loraName: String,
+        normUri: Uri,
+        normName: String,
+        quantType: String,
+    ) {
+        val source = baseSet.files["model"] ?: baseSet.mainFile()
+        if (source == null || !source.isFile) {
+            toast(c.getString(R.string.draw_resadapter_no_model))
+            return
+        }
+        val setId = newSetId(baseSet.name + "-resadapter-" + quantType)
+        val outputDir = File(setsDir(), setId)
+        if (!outputDir.mkdirs()) {
+            toast(c.getString(R.string.draw_resadapter_create_failed))
+            return
+        }
+
+        val progressView = LinearLayout(c).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(24), dp(18), dp(24), dp(18))
+            addView(ProgressBar(c).apply { isIndeterminate = true },
+                LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(TextView(c).apply {
+                text = c.getString(R.string.draw_resadapter_working, quantType.uppercase())
+                textSize = 14f
+                setTextColor(pal.text)
+                setPadding(dp(16), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val dialog = android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_resadapter_title))
+            .setView(progressView)
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        scope.launch {
+            val workDir = File(c.cacheDir, "resadapter-" + System.currentTimeMillis())
+            var installedLora: File? = null
+            try {
+                val stagedLora = File(workDir, "resadapter_lora.safetensors")
+                val stagedNorm = File(workDir, "resadapter_normalization.safetensors")
+                val outputFile = File(outputDir, source.nameWithoutExtension + "-resadapter-" + quantType + ".gguf")
+
+                withContext(Dispatchers.IO) {
+                    workDir.mkdirs()
+                    copyContentUri(loraUri, stagedLora)
+                    copyContentUri(normUri, stagedNorm)
+                }
+
+                // Free model mappings before streaming the full SDXL checkpoint through the converter.
+                unloadModel()
+                val ok = withContext(Dispatchers.IO) {
+                    SdCppEngine.nativeApplyResAdapter(
+                        inputModelPath = source.absolutePath,
+                        vaePath = baseSet.files["vae"]?.takeIf { it.isFile }?.absolutePath,
+                        normalizationPath = stagedNorm.absolutePath,
+                        outputPath = outputFile.absolutePath,
+                        quantType = quantType,
+                        nThreads = nThreads.coerceIn(1, 6),
+                    )
+                }
+                if (!ok || !outputFile.isFile || outputFile.length() <= 0L) {
+                    throw IllegalStateException(c.getString(R.string.draw_resadapter_failed_detail))
+                }
+
+                installedLora = withContext(Dispatchers.IO) {
+                    val rawStem = File(loraName).nameWithoutExtension
+                        .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        .take(80).ifBlank { "resadapter" }
+                    var target = File(loraDir(), "$rawStem-resadapter.safetensors")
+                    var suffix = 2
+                    while (target.exists()) {
+                        target = File(loraDir(), "$rawStem-resadapter-$suffix.safetensors")
+                        suffix++
+                    }
+                    stagedLora.copyTo(target, overwrite = false)
+                    target
+                }
+
+                val nextFiles = LinkedHashMap<String, File>()
+                nextFiles["model"] = outputFile
+                baseSet.files["taesd"]?.takeIf { it.isFile }?.let { nextFiles["taesd"] = it }
+                val resultSet = ModelSet(
+                    setId,
+                    baseSet.name + " (ResAdapter " + quantType.uppercase() + ")",
+                    KIND_SINGLE,
+                    FAM_SDXL,
+                    outputDir,
+                    nextFiles,
+                )
+                withContext(Dispatchers.IO) { writeSetJson(resultSet) }
+                if (!File(outputDir, "ponko-set.json").isFile) {
+                    throw IllegalStateException(c.getString(R.string.draw_resadapter_register_failed))
+                }
+
+                selectSet(resultSet)
+                useLora = true
+                prefs().edit()
+                    .putString("selLora", installedLora.name)
+                    .putString(loraSlotKey("t2i", 0), installedLora.name)
+                    .putString(loraSlotKey("i2i", 0), installedLora.name)
+                    .putString(loraWeightKey("t2i", 0), "1.0")
+                    .putString(loraWeightKey("i2i", 0), "1.0")
+                    .apply()
+                refreshLoraSelectors()
+                refreshModelCard()
+                Toast.makeText(c, c.getString(R.string.draw_resadapter_success, quantType.uppercase()), Toast.LENGTH_LONG).show()
+            } catch (e: Throwable) {
+                withContext(Dispatchers.IO) {
+                    runCatching { outputDir.deleteRecursively() }
+                    installedLora?.let { runCatching { it.delete() } }
+                }
+                Toast.makeText(
+                    c,
+                    c.getString(R.string.draw_resadapter_failed, e.message ?: e.javaClass.simpleName),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                withContext(Dispatchers.IO) { runCatching { workDir.deleteRecursively() } }
+                dialog.dismiss()
             }
         }
     }
@@ -2763,6 +3031,7 @@ class DrawPage(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (handleResAdapterPickedFile(requestCode, resultCode, data)) return true
         if (requestCode != REQ_IMAGE && requestCode != REQ_TAGGER_IMAGE) return false
         if (resultCode != Activity.RESULT_OK) return true
         val uri = data?.data ?: return true

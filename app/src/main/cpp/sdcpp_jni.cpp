@@ -585,7 +585,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeQuantizeUnet(
     // The default type is F16. Only model.diffusion_model.* tensors are overridden to
     // the selected low-bit type. For a split model, the converter adds that prefix to the
     // standalone diffusion/UNet file; for a single-file checkpoint it already exists.
-    const std::string typeRules = std::string("^model\\.diffusion_model\\.=") + typeName;
+    const std::string typeRules = std::string("^model\\.diffusion_model\\..*=") + typeName;
     const char* modelPath = diffusionSlot == JNI_TRUE ? nullptr : input.c_str();
     const char* diffusionPath = diffusionSlot == JNI_TRUE ? input.c_str() : nullptr;
     const int threads = nThreads < 1 ? 1 : (nThreads > 6 ? 6 : nThreads);
@@ -623,6 +623,100 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeQuantizeUnet(
 
     LOGI("UNet quantizer: success, UNet tensors=%lld, requested-type tensors=%lld, output=%s",
          unetTensors, quantizedTensors, output.c_str());
+    return JNI_TRUE;
+}
+
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_litertchat_app_draw_SdCppEngine_nativeApplyResAdapter(
+        JNIEnv* env, jobject /*thiz*/,
+        jstring inputPath, jstring vaePath, jstring normalizationPath,
+        jstring outputPath, jstring quantType, jint nThreads) {
+    std::string input, vae, normalization, output, typeName;
+    jstr(env, inputPath, input);
+    if (vaePath != nullptr) jstr(env, vaePath, vae);
+    jstr(env, normalizationPath, normalization);
+    jstr(env, outputPath, output);
+    jstr(env, quantType, typeName);
+
+    if (input.empty() || normalization.empty() || output.empty()) {
+        LOGE("ResAdapter: input, normalization, or output path is empty");
+        return JNI_FALSE;
+    }
+
+    enum sd_type_t quantTypeEnum;
+    if (typeName == "q4_0") {
+        quantTypeEnum = SD_TYPE_Q4_0;
+    } else if (typeName == "q5_0") {
+        quantTypeEnum = SD_TYPE_Q5_0;
+    } else if (typeName == "q8_0") {
+        quantTypeEnum = SD_TYPE_Q8_0;
+    } else {
+        LOGE("ResAdapter: unsupported UNet quant type '%s'", typeName.c_str());
+        return JNI_FALSE;
+    }
+
+    std::ifstream sourceCheck(input, std::ios::binary);
+    if (!sourceCheck.good()) {
+        LOGE("ResAdapter: base model does not exist");
+        return JNI_FALSE;
+    }
+    sourceCheck.close();
+    std::ifstream normCheck(normalization, std::ios::binary);
+    if (!normCheck.good()) {
+        LOGE("ResAdapter: normalization weights do not exist");
+        return JNI_FALSE;
+    }
+    normCheck.close();
+    std::ifstream outputCheck(output, std::ios::binary);
+    if (outputCheck.good()) {
+        LOGE("ResAdapter: refusing to overwrite an existing output file");
+        return JNI_FALSE;
+    }
+    outputCheck.close();
+
+    // Keep the temporary extension as .gguf so stable-diffusion.cpp writes GGUF.
+    const std::string temporary = output + ".partial.gguf";
+    std::remove(temporary.c_str());
+
+    // Official ResAdapter normalization tensors use Diffusers U-Net names. Loading the
+    // normalization file as the diffusion component places them under model.diffusion_model.*;
+    // convert_with_components merges duplicate tensor names so these weights replace the matching
+    // base UNet tensors. A fresh GGUF is written; neither source file is modified.
+    const std::string typeRules = std::string("^model\\.diffusion_model\\..*=") + typeName;
+    const int threads = nThreads < 1 ? 1 : (nThreads > 6 ? 6 : nThreads);
+    LOGI("ResAdapter: base=%s norm=%s vae=%s UNet=%s threads=%d",
+         input.c_str(), normalization.c_str(), vae.empty() ? "(embedded)" : vae.c_str(),
+         typeName.c_str(), threads);
+
+    const bool converted = convert_with_components(
+        input.c_str(), nullptr, nullptr, nullptr, normalization.c_str(),
+        vae.empty() ? nullptr : vae.c_str(), temporary.c_str(),
+        SD_TYPE_F16, typeRules.c_str(), true, threads);
+    if (!converted) {
+        std::remove(temporary.c_str());
+        LOGE("ResAdapter: normalization merge/conversion failed; source files left untouched");
+        return JNI_FALSE;
+    }
+
+    long long unetTensors = 0;
+    long long quantizedTensors = 0;
+    const bool valid = validateQuantizedUnetFile(
+        temporary, static_cast<ggml_type>(quantTypeEnum), &unetTensors, &quantizedTensors);
+    if (!valid) {
+        std::remove(temporary.c_str());
+        LOGE("ResAdapter: output GGUF failed tensor/type validation");
+        return JNI_FALSE;
+    }
+
+    if (std::rename(temporary.c_str(), output.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        LOGE("ResAdapter: failed to publish output GGUF");
+        return JNI_FALSE;
+    }
+
+    LOGI("ResAdapter: created %s, UNet tensors=%lld, selected-type tensors=%lld",
+         output.c_str(), unetTensors, quantizedTensors);
     return JNI_TRUE;
 }
 

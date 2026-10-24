@@ -96,6 +96,16 @@ object SdCppEngine {
         nThreads: Int,
     ): Boolean
 
+    /** Bake ResAdapter normalization tensors into a new GGUF and quantize only the UNet. */
+    external fun nativeApplyResAdapter(
+        inputModelPath: String,
+        vaePath: String?,
+        normalizationPath: String,
+        outputPath: String,
+        quantType: String,
+        nThreads: Int,
+    ): Boolean
+
     fun vulkanDiagnostics(): String =
         runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
 
