@@ -164,8 +164,14 @@ if (ponkoRustFacadeEnabled) {
         )
     }
 
+    // The generated jniLibs directory is an output of buildPonkoRustAndroid.
+    // AGP 9 validates mergeDebugJniLibFolders before mergeDebugNativeLibs, so both
+    // folder merging and final native-library merging must depend on the Rust build.
     tasks.matching {
-        it.name == "mergeDebugNativeLibs" || it.name == "mergeReleaseNativeLibs"
+        it.name == "mergeDebugJniLibFolders" ||
+        it.name == "mergeReleaseJniLibFolders" ||
+        it.name == "mergeDebugNativeLibs" ||
+        it.name == "mergeReleaseNativeLibs"
     }.configureEach {
         dependsOn(buildPonkoRustAndroid)
     }
