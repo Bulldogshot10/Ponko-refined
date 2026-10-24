@@ -1072,12 +1072,14 @@ class DrawPage(
         adetailerPromptEdit = labeledEdit(c.getString(R.string.draw_adetailer_prompt_hint), true)
             .apply { setText(loadParam(KEY_ADETAILER_PROMPT, "")) }
         bindParam(adetailerPromptEdit, KEY_ADETAILER_PROMPT)
+        bindOptionalParam(adetailerPromptEdit, KEY_ADETAILER_PROMPT)
         settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_prompt), adetailerPromptEdit,
             c.getString(R.string.draw_adetailer_prompt_hint)), matchWrap(top = 4))
 
         adetailerNegativePromptEdit = labeledEdit(c.getString(R.string.draw_adetailer_negative_prompt_hint), true)
             .apply { setText(loadParam(KEY_ADETAILER_NEGATIVE_PROMPT, "")) }
         bindParam(adetailerNegativePromptEdit, KEY_ADETAILER_NEGATIVE_PROMPT)
+        bindOptionalParam(adetailerNegativePromptEdit, KEY_ADETAILER_NEGATIVE_PROMPT)
         settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_negative_prompt), adetailerNegativePromptEdit,
             c.getString(R.string.draw_adetailer_negative_prompt_hint)), matchWrap(top = 4))
 
@@ -3277,6 +3279,16 @@ class DrawPage(
             }
             override fun beforeTextChanged(s: CharSequence?, st: Int, b: Int, cnt: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, cnt: Int) {}
+        })
+    }
+
+    private fun bindOptionalParam(edit: EditText, key: String) {
+        edit.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (s.isNullOrEmpty()) prefs().edit().remove(key).apply()
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
     }
 
