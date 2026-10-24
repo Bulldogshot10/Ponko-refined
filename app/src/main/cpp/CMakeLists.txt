@@ -247,6 +247,15 @@ endif()
 # ---------------------------------------------------------------------------
 # JNI 桥 → libponko_sd.so
 # ---------------------------------------------------------------------------
-add_library(ponko_sd SHARED sdcpp_jni.cpp)
-target_include_directories(ponko_sd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include")
+# Plain C ABI consumed by the Rust/UniFFI facade. The app-facing JNI entry points
+# are no longer part of this target; Kotlin reaches this bridge through Rust.
+add_library(ponko_sd SHARED ponko_sd_c_api.cpp)
+target_include_directories(ponko_sd PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/sd/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/sd/ggml/include"
+)
+if (SD_VULKAN)
+    target_compile_definitions(ponko_sd PRIVATE PONKO_HAS_VULKAN=1)
+endif()
 target_link_libraries(ponko_sd PRIVATE stable-diffusion android log)
