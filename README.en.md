@@ -161,9 +161,11 @@ The fourth tab is an **About** page with two collapsible sections: **Settings** 
 
 ## Building
 
-The standard build requires JDK 17 + Android SDK (compileSdk 36) + **NDK 27.3** + **CMake 3.31.6**. Install `ccache` or `sccache` to enable GGML's compiler cache; the build still works without either tool.
+The standard build requires JDK 17+, Android SDK (compileSdk 36), **NDK 27.3**, **CMake 3.31.6**, Rust stable, and `cargo-ndk` for `aarch64-linux-android`. Install `ccache` or `sccache` to enable GGML's compiler cache; the build still works without either tool.
 
 ```bash
+rustup target add aarch64-linux-android
+cargo install cargo-ndk --locked
 gradle assembleRelease
 # Output: app/build/outputs/apk/release/app-release-unsigned.apk (unsigned)
 
@@ -173,8 +175,7 @@ gradle assembleRelease -PponkoEnableVulkan=OFF
 # Optional: generic ARM64 profile; the Exynos 2400e profile stays enabled by default
 gradle assembleRelease -PponkoExynosCpuProfile=OFF
 
-# Optional: build the Rust + UniFFI facade (requires Rust stable + cargo-ndk)
-gradle assembleRelease -PponkoRustFacade=true
+# The Rust + UniFFI facade is the default; no extra Gradle property is needed.
 ```
 
 Signing and delivery scripts are in `tools/`:
