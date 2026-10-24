@@ -183,6 +183,32 @@ object SdCppEngine {
 
     data class Lora(val path: String, val scale: Float)
 
+    data class ADetailerSettings(
+        val enabled: Boolean = false,
+        val detectorPath: String? = null,
+        val prompt: String = "",
+        val negativePrompt: String = "",
+        val confidence: Float = 0.3f,
+        val inpaintSize: Int = 512,
+        val padding: Int = 32,
+        val maskBlur: Int = 4,
+        val denoisingStrength: Float = 0.4f,
+        /** 0 inherits the main generation step count. */
+        val steps: Int = 0,
+    ) {
+        val extraArgs: String
+            get() = listOf(
+                "input_size=640",
+                "confidence=$confidence",
+                "inpaint_padding=$padding",
+                "inpaint_width=$inpaintSize",
+                "inpaint_height=$inpaintSize",
+                "mask_blur=$maskBlur",
+                "denoising_strength=$denoisingStrength",
+                "steps=$steps",
+            ).joinToString(",")
+    }
+
     /**
      * Kotlin keeps the existing API shape while UniFFI carries a typed request through Rust.
      * RGB888 is converted back to the legacy width/height-prefixed ARGB array so DrawPage and
@@ -218,6 +244,7 @@ object SdCppEngine {
         initWidth: Int,
         initHeight: Int,
         strength: Float,
+        adetailer: ADetailerSettings = ADetailerSettings(),
     ): IntArray? = runCatching {
         val loraCount = minOf(loraPaths.size, loraScales.size)
         val request = com.litertchat.app.ponko.GenerationRequest(
@@ -247,6 +274,11 @@ object SdCppEngine {
             initWidth,
             initHeight,
             strength,
+            adetailer.enabled,
+            adetailer.detectorPath,
+            adetailer.prompt,
+            adetailer.negativePrompt,
+            adetailer.extraArgs,
         )
         val stepProxy = cb?.let { callback ->
             object : com.litertchat.app.ponko.StepCallback {
@@ -371,6 +403,7 @@ object SdCppEngine {
         initWidth: Int = 0,
         initHeight: Int = 0,
         strength: Float = 1.0f,
+        adetailer: ADetailerSettings = ADetailerSettings(),
     ): Bitmap? {
         val effectiveSeed = if (seed < 0) (System.currentTimeMillis() % 1_000_000_000L) else seed
         val useInit = initImage != null && initImage.isNotEmpty() && initWidth > 0 && initHeight > 0
@@ -388,6 +421,7 @@ object SdCppEngine {
             if (useInit) initWidth else 0,
             if (useInit) initHeight else 0,
             if (useInit) strength else 1.0f,
+            adetailer,
         ) ?: return null
         if (px.size < 2) return null
         val outWidth = px[0]
