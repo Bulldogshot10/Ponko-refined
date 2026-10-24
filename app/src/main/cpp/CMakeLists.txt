@@ -4,7 +4,7 @@
 # 这里做三件事：
 #   1. 以子目录方式引入 sd.cpp（源码在 ./sd，含内联的 ggml，已剔除不用的词表/示例等）
 #   2. 使用目标设备的编译标志（默认 Exynos 2400e: ARMv8.6-A + dotprod + I8MM + FP16 + -O3）
-#   3. 编译 JNI 桥 → libponko_sd.so
+#   3. 编译 Rust-facing plain C ABI bridge → libponko_sd.so
 #
 # 此前这两个 .so 是手工编译后塞进 jniLibs/ 的，容易出现「改了 C++ 源码但 .so 没重编」
 # 的静默错配（包能构建成功，跑起来却是旧行为）。改成这里现场编译后，
