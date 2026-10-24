@@ -13,9 +13,11 @@ val ponkoCpuArchFlags = if (ponkoExynosCpuProfile.equals("ON", ignoreCase = true
     "-march=armv8.2-a+dotprod+fp16"
 }
 val ponkoEnableCompilerCache = providers.gradleProperty("ponkoEnableCompilerCache").orElse("ON").get()
+// Rust/UniFFI is now the default app-facing native API. Set -PponkoRustFacade=false
+// only for a temporary diagnostic build while comparing against an older checkout.
 val ponkoRustFacadeEnabled = providers.gradleProperty("ponkoRustFacade")
     .map { it.equals("true", ignoreCase = true) }
-    .getOrElse(false)
+    .getOrElse(true)
 val ponkoRustDir = rootProject.file("rust/ponko-native")
 val ponkoRustJniLibsDir = layout.buildDirectory.dir("generated/ponkoRustJniLibs")
 val ponkoUniffiKotlinDir = layout.buildDirectory.dir("generated/source/uniffi/main/java")
