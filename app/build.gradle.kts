@@ -78,8 +78,8 @@ android {
     if (ponkoRustFacadeEnabled) {
         sourceSets.getByName("main").apply {
             jniLibs.directories.add(ponkoRustJniLibsDir.get().asFile.absolutePath)
-            java.directories.add(ponkoUniffiKotlinDir.get().asFile.absolutePath)
-            java.directories.add(file("src/rust/java").absolutePath)
+            kotlin.directories.add(ponkoUniffiKotlinDir.get().asFile.absolutePath)
+            kotlin.directories.add(file("src/rust/java").absolutePath)
         }
     }
 }
