@@ -190,7 +190,7 @@ powershell -File tools/build-release.ps1
 - `minSdk 28` / `targetSdk 36`, **arm64-v8a only** (native library constraint; a real device is required, emulators won't run it)
 - A full sd.cpp + ggml compile takes about 8-9 minutes when the compiler cache is cold; with C++ unchanged, incremental builds take ~10 seconds. Keeping ccache warm can reduce the cost of later rebuilds
 - Main dependencies: `com.google.ai.edge.litertlm:litertlm-android:0.17.0`, `net.ladenthin:llama-android:5.1.0`, `com.microsoft.onnxruntime:onnxruntime-android:1.22.0`, `com.tom-roush:pdfbox-android:2.0.27.0`, `io.noties.markwon:*:4.6.2`
-- Built by CMake: `libstable-diffusion.so` (sd.cpp itself) and `libponko_sd.so` (the current JNI bridge). The Rust facade is opt-in; `-PponkoRustFacade=true` additionally builds `libponko_native.so` and generates UniFFI Kotlin bindings. The old JNI path remains until feature parity has been verified
+- Built by CMake: `libstable-diffusion.so` (sd.cpp itself) and `libponko_sd.so` (a plain C ABI bridge). Cargo builds `libponko_native.so` and generates UniFFI Kotlin bindings; Kotlin no longer calls a hand-written JNI surface. Rust owns the app-facing native API, handle lifecycle and callbacks, while inference remains in stable-diffusion.cpp + GGML
 - The Vulkan backend (optional GPU drawing) needs **no Vulkan SDK**: `glslc` and the SPIRV headers come from the NDK, plus a **host compiler** to build the shader generator (MSVC on Windows - `tools/build-release.ps1` loads the `vcvars64` environment for you)
 
 ## Where to get models
