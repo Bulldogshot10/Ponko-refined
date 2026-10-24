@@ -106,7 +106,7 @@ dependencies {
 }
 
 
-// The facade is opt-in while the C++/JNI API parity suite is being built.
+// Generate UniFFI Kotlin bindings and build Rust for Android arm64-v8a as part of the app build.
 // Generated artifacts stay under app/build so no machine-specific .so is committed.
 if (ponkoRustFacadeEnabled) {
     val rustNativeLibrary = ponkoRustJniLibsDir.map { it.file("arm64-v8a/libponko_native.so") }
@@ -115,7 +115,7 @@ if (ponkoRustFacadeEnabled) {
     val buildPonkoRustAndroid = tasks.register<Exec>("buildPonkoRustAndroid") {
         group = "build"
         workingDir(ponkoRustDir)
-        description = "Build the opt-in Ponko Rust facade for Android arm64-v8a."
+        description = "Build the Ponko Rust facade for Android arm64-v8a."
         inputs.files(fileTree(ponkoRustDir) {
             include("Cargo.toml", "build.rs", "uniffi.toml", "src/**")
         })
