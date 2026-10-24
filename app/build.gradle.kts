@@ -97,3 +97,65 @@ dependencies {
         implementation("net.java.dev.jna:jna:5.17.0@aar")
     }
 }
+
+
+// The facade is opt-in while the C++/JNI API parity suite is being built.
+// Generated artifacts stay under app/build so no machine-specific .so is committed.
+if (ponkoRustFacadeEnabled) {
+    val rustNativeLibrary = ponkoRustJniLibsDir.map { it.file("arm64-v8a/libponko_native.so") }
+    val rustManifest = ponkoRustDir.resolve("Cargo.toml").absolutePath
+
+    val buildPonkoRustAndroid = tasks.register<Exec>("buildPonkoRustAndroid") {
+        group = "build"
+        description = "Build the opt-in Ponko Rust facade for Android arm64-v8a."
+        inputs.files(fileTree(ponkoRustDir) {
+            include("Cargo.toml", "uniffi.toml", "src/**")
+        })
+        outputs.file(rustNativeLibrary)
+        environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        doFirst {
+            ponkoRustJniLibsDir.get().asFile.mkdirs()
+            check(ponkoRustDir.resolve("Cargo.toml").isFile) {
+                "Missing Rust facade manifest: $rustManifest"
+            }
+        }
+        commandLine(
+            "cargo", "ndk", "-t", "arm64-v8a",
+            "-o", ponkoRustJniLibsDir.get().asFile.absolutePath,
+            "build", "--release", "--manifest-path", rustManifest
+        )
+    }
+
+    val generatePonkoUniffiKotlin = tasks.register<Exec>("generatePonkoUniffiKotlin") {
+        group = "build"
+        description = "Generate Kotlin bindings from the compiled Ponko UniFFI library."
+        dependsOn(buildPonkoRustAndroid)
+        inputs.file(rustNativeLibrary)
+        inputs.file(ponkoRustDir.resolve("uniffi.toml"))
+        outputs.dir(ponkoUniffiKotlinDir)
+        environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        doFirst {
+            val library = rustNativeLibrary.get().asFile
+            check(library.isFile) { "Rust library was not produced: $library" }
+            ponkoUniffiKotlinDir.get().asFile.mkdirs()
+        }
+        commandLine(
+            "cargo", "run", "--manifest-path", rustManifest,
+            "--features", "bindgen", "--bin", "uniffi-bindgen", "--",
+            "generate", "--library", rustNativeLibrary.get().asFile.absolutePath,
+            "--language", "kotlin", "--out-dir", ponkoUniffiKotlinDir.get().asFile.absolutePath
+        )
+    }
+
+    tasks.matching {
+        it.name == "mergeDebugNativeLibs" || it.name == "mergeReleaseNativeLibs"
+    }.configureEach {
+        dependsOn(buildPonkoRustAndroid)
+    }
+
+    tasks.matching {
+        it.name == "compileDebugKotlin" || it.name == "compileReleaseKotlin"
+    }.configureEach {
+        dependsOn(generatePonkoUniffiKotlin)
+    }
+}
