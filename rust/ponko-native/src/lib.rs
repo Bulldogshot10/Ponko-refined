@@ -17,7 +17,7 @@ use std::{
 
 uniffi::setup_scaffolding!();
 
-pub const FACADE_API_VERSION: u32 = 2;
+pub const FACADE_API_VERSION: u32 = 3;
 
 type StepFn = unsafe extern "C" fn(*mut c_void, i32, i32);
 type PreviewFn = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *const u8, usize);
@@ -52,6 +52,11 @@ struct CGenerationParams {
     init_image_width: i32,
     init_image_height: i32,
     strength: f32,
+    adetailer_enabled: i32,
+    adetailer_detector_path: *const c_char,
+    adetailer_prompt: *const c_char,
+    adetailer_negative_prompt: *const c_char,
+    adetailer_extra_args: *const c_char,
 }
 
 type LastErrorFn = unsafe extern "C" fn() -> *const c_char;
@@ -271,6 +276,11 @@ pub struct GenerationRequest {
     pub init_image_width: i32,
     pub init_image_height: i32,
     pub strength: f32,
+    pub adetailer_enabled: bool,
+    pub adetailer_detector_path: Option<String>,
+    pub adetailer_prompt: String,
+    pub adetailer_negative_prompt: String,
+    pub adetailer_extra_args: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -536,6 +546,14 @@ impl NativeEngine {
         let hires_path = request.hires_model_path.as_deref()
             .map(|value| NativeApi::cstring(value, "hires_model_path"))
             .transpose()?;
+        let adetailer_detector_path = request.adetailer_detector_path.as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(|value| NativeApi::cstring(value, "adetailer_detector_path"))
+            .transpose()?;
+        let adetailer_prompt = NativeApi::cstring(&request.adetailer_prompt, "adetailer_prompt")?;
+        let adetailer_negative_prompt = NativeApi::cstring(
+            &request.adetailer_negative_prompt, "adetailer_negative_prompt")?;
+        let adetailer_extra_args = NativeApi::cstring(&request.adetailer_extra_args, "adetailer_extra_args")?;
         let lora_paths = request.lora_paths.iter()
             .map(|path| NativeApi::cstring(path, "lora_path"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -570,6 +588,11 @@ impl NativeEngine {
             init_image_width: request.init_image_width,
             init_image_height: request.init_image_height,
             strength: request.strength,
+            adetailer_enabled: i32::from(request.adetailer_enabled),
+            adetailer_detector_path: adetailer_detector_path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            adetailer_prompt: adetailer_prompt.as_ptr(),
+            adetailer_negative_prompt: adetailer_negative_prompt.as_ptr(),
+            adetailer_extra_args: adetailer_extra_args.as_ptr(),
         };
         let mut callbacks = CallbackState { step: step_callback, preview: preview_callback };
         let callbacks_ptr = (&mut callbacks as *mut CallbackState).cast::<c_void>();
@@ -719,6 +742,10 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
     if request.lora_scales.iter().any(|scale| !scale.is_finite()) {
         return invalid("Every LoRA scale must be finite.");
     }
+    if request.adetailer_enabled && !request.adetailer_detector_path.as_deref()
+        .is_some_and(|path| !path.trim().is_empty()) {
+        return invalid("ADetailer requires a YOLOv8 detection .safetensors detector path.");
+    }
     if !request.hires_scale.is_finite() || !request.hires_denoising_strength.is_finite()
         || !request.strength.is_finite() {
         return invalid("HiRes and img2img strength parameters must be finite.");
@@ -788,6 +815,9 @@ mod tests {
             hires_steps: 0, hires_denoising_strength: 0.7, hires_tile_size: 128,
             clip_skip: 1, init_image_rgb888: None, init_image_width: 0,
             init_image_height: 0, strength: 1.0,
+            adetailer_enabled: false, adetailer_detector_path: None,
+            adetailer_prompt: String::new(), adetailer_negative_prompt: String::new(),
+            adetailer_extra_args: String::new(),
         }
     }
 
@@ -801,6 +831,15 @@ mod tests {
 
     #[test]
     fn preserves_zero_cfg_tcd_requests() { assert!(validate_generation_request(request()).valid); }
+
+    #[test]
+    fn adetailer_requires_a_detector_only_when_enabled() {
+        let mut input = request();
+        input.adetailer_enabled = true;
+        assert!(!validate_generation_request(input.clone()).valid);
+        input.adetailer_detector_path = Some("/models/yolov8-face.safetensors".into());
+        assert!(validate_generation_request(input).valid);
+    }
 
     #[test]
     fn rejects_mismatched_lora_arrays() {
