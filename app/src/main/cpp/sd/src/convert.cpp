@@ -447,8 +447,8 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                 }
 
                 size_t tensor_bytes = export_tensor_nbytes(tensors[tensor_index]);
-                if (fusion != nullptr && fusion->targets(tensors[tensor_index].info.storage.name)) {
-                    const int64_t raw_elements = tensors[tensor_index].info.storage.nelements();
+                if (fusion != nullptr && fusion->targets(tensors[tensor_index].storage.name)) {
+                    const int64_t raw_elements = tensors[tensor_index].storage.nelements();
                     const size_t elements = raw_elements > 0 ? static_cast<size_t>(raw_elements) : 0;
                     const size_t float_bytes = elements > SIZE_MAX / sizeof(float)
                         ? SIZE_MAX
