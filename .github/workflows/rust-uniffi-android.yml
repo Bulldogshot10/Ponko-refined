@@ -101,6 +101,20 @@ jobs:
           mkdir -p app/build
           ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee app/build/ponko-gradle-build.log
 
+      - name: Inspect generated UniFFI Kotlin bindings
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Generated UniFFI Kotlin files:"
+          find app/build/generated/source/uniffi/main/java -type f -name '*.kt' -print 2>/dev/null || true
+          echo "Generated Kotlin package declarations:"
+          grep -R -n '^package ' app/build/generated/source/uniffi/main/java 2>/dev/null || true
+          echo "Generated facade declarations:"
+          grep -R -nE 'class NativeEngine|interface StepCallback|fun generateImage' app/build/generated/source/uniffi/main/java 2>/dev/null || true
+          echo "Configured Rust smoke source:"
+          find app/src/rust/java -type f -print 2>/dev/null || true
+
       - name: Verify APK includes all drawing libraries
         shell: bash
         run: |
@@ -125,6 +139,7 @@ jobs:
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/ponko-gradle-build.log
+            app/build/generated/source/uniffi/main/java/**/*.kt
           if-no-files-found: warn
           retention-days: 14
 
