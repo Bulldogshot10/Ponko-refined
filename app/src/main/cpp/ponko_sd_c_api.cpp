@@ -126,7 +126,7 @@ void previewCallback(int step, int frame_count, sd_image_t* frames, bool, void* 
                    static_cast<int32_t>(image.height), rgb.data(), rgb.size());
 }
 
-bool validateQuantizedUnetFile(const std::string& path, ggml_type expected_type,
+bool validateQuantizedUnetFile(const std::string& path, enum ggml_type expected_type,
                                int64_t* unet_tensor_count, int64_t* quantized_tensor_count) {
     if (unet_tensor_count) *unet_tensor_count = 0;
     if (quantized_tensor_count) *quantized_tensor_count = 0;
@@ -152,7 +152,7 @@ bool validateQuantizedUnetFile(const std::string& path, ggml_type expected_type,
         const char* name = gguf_get_tensor_name(context, i);
         if (name == nullptr) continue;
         const bool is_unet = std::strncmp(name, prefix, prefix_length) == 0;
-        const ggml_type type = gguf_get_tensor_type(context, i);
+        const enum ggml_type type = gguf_get_tensor_type(context, i);
         if (is_unet) {
             ++unet_count;
             if (type == expected_type) ++quantized_count;
@@ -184,7 +184,7 @@ bool validateQuantizedUnetFile(const std::string& path, ggml_type expected_type,
     return true;
 }
 
-bool parseQuantType(const std::string& name, sd_type_t* output) {
+bool parseQuantType(const std::string& name, enum sd_type_t* output) {
     if (name == "q4_0") *output = SD_TYPE_Q4_0;
     else if (name == "q5_0") *output = SD_TYPE_Q5_0;
     else if (name == "q8_0") *output = SD_TYPE_Q8_0;
@@ -248,7 +248,7 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
     params.audio_vae_path = slot_paths[SLOT_AUDIO_VAE];
     params.taesd_path = slot_paths[SLOT_TAESD];
     params.n_threads = n_threads > 0 ? n_threads : sd_get_num_physical_cores();
-    if (wtype >= 0) params.wtype = static_cast<sd_type_t>(wtype);
+    if (wtype >= 0) params.wtype = static_cast<enum sd_type_t>(wtype);
     params.enable_mmap = true;
     const bool flash = flash_attn != 0;
     params.flash_attn = flash;
@@ -344,10 +344,10 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     generation.sample_params.sample_steps = params->steps;
     generation.sample_params.eta = params->eta < 0.0f ? std::numeric_limits<float>::infinity() : params->eta;
     generation.sample_params.guidance.txt_cfg = params->cfg;
-    generation.sample_params.sample_method = static_cast<sample_method_t>(params->sample_method);
-    generation.sample_params.scheduler = static_cast<scheduler_t>(params->scheduler);
+    generation.sample_params.sample_method = static_cast<enum sample_method_t>(params->sample_method);
+    generation.sample_params.scheduler = static_cast<enum scheduler_t>(params->scheduler);
     generation.hires.enabled = params->hires_enabled != 0;
-    generation.hires.upscaler = static_cast<sd_hires_upscaler_t>(params->hires_upscaler);
+    generation.hires.upscaler = static_cast<enum sd_hires_upscaler_t>(params->hires_upscaler);
     generation.hires.model_path = stringIsNonempty(params->hires_model_path) ? params->hires_model_path : nullptr;
     generation.hires.scale = params->hires_scale;
     generation.hires.target_width = params->hires_target_width;
@@ -490,7 +490,7 @@ extern "C" int32_t ponko_sd_quantize_unet(const char* input_path, const char* ou
         setError("quantization input, output and type must be provided");
         return 0;
     }
-    sd_type_t quant_type_enum;
+    enum sd_type_t quant_type_enum;
     if (!parseQuantType(quant_type, &quant_type_enum)) return 0;
     std::ifstream source(input_path, std::ios::binary);
     if (!source.good()) {
@@ -517,7 +517,7 @@ extern "C" int32_t ponko_sd_quantize_unet(const char* input_path, const char* ou
     }
     int64_t unet_count = 0;
     int64_t quantized_count = 0;
-    if (!validateQuantizedUnetFile(temporary, static_cast<ggml_type>(quant_type_enum),
+    if (!validateQuantizedUnetFile(temporary, static_cast<enum ggml_type>(quant_type_enum),
                                    &unet_count, &quantized_count)) {
         std::remove(temporary.c_str());
         return 0;
@@ -541,7 +541,7 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
         setError("ResAdapter base model, normalization, output and quantization type are required");
         return 0;
     }
-    sd_type_t quant_type_enum;
+    enum sd_type_t quant_type_enum;
     if (!parseQuantType(quant_type, &quant_type_enum)) return 0;
     std::ifstream source(input_model_path, std::ios::binary);
     std::ifstream normalization(normalization_path, std::ios::binary);
@@ -568,7 +568,7 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
     }
     int64_t unet_count = 0;
     int64_t quantized_count = 0;
-    if (!validateQuantizedUnetFile(temporary, static_cast<ggml_type>(quant_type_enum),
+    if (!validateQuantizedUnetFile(temporary, static_cast<enum ggml_type>(quant_type_enum),
                                    &unet_count, &quantized_count)) {
         std::remove(temporary.c_str());
         return 0;
