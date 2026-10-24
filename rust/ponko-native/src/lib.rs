@@ -332,6 +332,73 @@ mod tests {
         assert!(validate_generation_request(input).valid);
     }
 
+    fn empty_slots() -> ModelSlots {
+        ModelSlots {
+            model: None,
+            diffusion: None,
+            high_noise: None,
+            uncond: None,
+            clip_l: None,
+            clip_g: None,
+            clip_vision: None,
+            t5xxl: None,
+            llm: None,
+            llm_vision: None,
+            vae: None,
+            audio_vae: None,
+            taesd: None,
+        }
+    }
+
+    #[test]
+    fn model_load_requires_a_model_or_diffusion_slot() {
+        let request = ModelLoadRequest {
+            model_path: String::new(),
+            vae_path: None,
+            n_threads: 4,
+            wtype: -1,
+            flash_attn: true,
+            vae_conv_direct: true,
+            backend: None,
+            slots: Some(empty_slots()),
+        };
+        assert!(!validate_model_load_request(request.clone()).valid);
+        let mut valid_request = request;
+        valid_request.slots.as_mut().unwrap().diffusion = Some("unet.gguf".into());
+        assert!(validate_model_load_request(valid_request).valid);
+    }
+
+    #[test]
+    fn quantization_request_validates_paths_and_type() {
+        let request = QuantizeUnetRequest {
+            input_path: "input.gguf".into(),
+            output_path: "output.gguf".into(),
+            quant_type: "q5_0".into(),
+            diffusion_slot: true,
+            n_threads: 4,
+        };
+        assert!(validate_unet_quantization_request(request.clone()).valid);
+        let mut bad_request = request;
+        bad_request.quant_type = "q6_k".into();
+        assert!(!validate_unet_quantization_request(bad_request).valid);
+    }
+
+    #[test]
+    fn res_adapter_requires_normalization_and_output_paths() {
+        let request = ResAdapterRequest {
+            input_model_path: "base.gguf".into(),
+            vae_path: None,
+            normalization_path: "norm.safetensors".into(),
+            output_path: "merged.gguf".into(),
+            quant_type: "q4_0".into(),
+            n_threads: 4,
+        };
+        assert!(validate_res_adapter_request(request.clone()).valid);
+        let mut bad_request = request;
+        bad_request.normalization_path.clear();
+        assert!(!validate_res_adapter_request(bad_request).valid);
+    }
+
     #[test]
     fn supports_only_current_converter_types() {
         assert!(validate_quantization_type("q4_0".into()).valid);
