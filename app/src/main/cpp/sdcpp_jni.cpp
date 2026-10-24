@@ -5,6 +5,8 @@
 #include <android/log.h>
 #include <atomic>
 #include <cstdlib>
+#include <cstdio>
+#include <fstream>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 
 #include "ggml.h"
 #include "ggml-vulkan.h"
+#include "gguf.h"
 #include "stable-diffusion.h"
 
 #define TAG "PonkoSd"
@@ -130,6 +133,54 @@ void previewTrampoline(int step, int frame_count, sd_image_t* frames, bool /*is_
     }
     if (env->ExceptionCheck()) env->ExceptionClear();
     if (attached) g_vm->DetachCurrentThread();
+}
+
+
+// Validate the temporary GGUF before publishing it. This catches truncated/corrupt output,
+// proves that the diffusion tensors really received the requested quant type, and rejects
+// accidental low-bit quantization outside the model.diffusion_model.* namespace.
+bool validateQuantizedUnetFile(const std::string& path,
+                               ggml_type expectedType,
+                               long long* unetTensorCount,
+                               long long* quantizedTensorCount) {
+    if (unetTensorCount) *unetTensorCount = 0;
+    if (quantizedTensorCount) *quantizedTensorCount = 0;
+
+    gguf_init_params params = { true, nullptr };
+    gguf_context* gguf = gguf_init_from_file(path.c_str(), params);
+    if (gguf == nullptr) {
+        LOGE("UNet quantizer: output is not a readable GGUF file");
+        return false;
+    }
+
+    const char* prefix = "model.diffusion_model.";
+    const size_t prefixLength = std::strlen(prefix);
+    long long unetCount = 0;
+    long long quantCount = 0;
+    long long outsideQuantCount = 0;
+    const int64_t tensorCount = gguf_get_n_tensors(gguf);
+    for (int64_t i = 0; i < tensorCount; ++i) {
+        const char* name = gguf_get_tensor_name(gguf, i);
+        if (name == nullptr) continue;
+        const bool isUnet = std::strncmp(name, prefix, prefixLength) == 0;
+        const ggml_type type = gguf_get_tensor_type(gguf, i);
+        if (isUnet) {
+            ++unetCount;
+            if (type == expectedType) ++quantCount;
+        } else if (type == expectedType) {
+            ++outsideQuantCount;
+        }
+    }
+    gguf_free(gguf);
+
+    if (unetTensorCount) *unetTensorCount = unetCount;
+    if (quantizedTensorCount) *quantizedTensorCount = quantCount;
+    if (unetCount == 0 || quantCount == 0 || outsideQuantCount != 0) {
+        LOGE("UNet quantizer: validation failed (unet=%lld, requested_type=%lld, outside_unet=%lld)",
+             unetCount, quantCount, outsideQuantCount);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -461,6 +512,94 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     sd_set_preview_callback(nullptr, PREVIEW_NONE, 1, true, false, nullptr);
     g_active = nullptr;
     return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_litertchat_app_draw_SdCppEngine_nativeQuantizeUnet(
+        JNIEnv* env, jobject /*thiz*/,
+        jstring inputPath, jstring outputPath, jstring quantType,
+        jboolean diffusionSlot, jint nThreads) {
+    std::string input, output, typeName;
+    jstr(env, inputPath, input);
+    jstr(env, outputPath, output);
+    jstr(env, quantType, typeName);
+    if (input.empty() || output.empty()) {
+        LOGE("UNet quantizer: input/output path is empty");
+        return JNI_FALSE;
+    }
+
+    enum sd_type_t quantTypeEnum;
+    if (typeName == "q4_0") {
+        quantTypeEnum = SD_TYPE_Q4_0;
+    } else if (typeName == "q5_0") {
+        quantTypeEnum = SD_TYPE_Q5_0;
+    } else if (typeName == "q8_0") {
+        quantTypeEnum = SD_TYPE_Q8_0;
+    } else {
+        LOGE("UNet quantizer: unsupported quant type '%s'", typeName.c_str());
+        return JNI_FALSE;
+    }
+
+    std::ifstream sourceCheck(input, std::ios::binary);
+    if (!sourceCheck.good()) {
+        LOGE("UNet quantizer: source file does not exist");
+        return JNI_FALSE;
+    }
+    sourceCheck.close();
+
+    std::ifstream outputCheck(output, std::ios::binary);
+    if (outputCheck.good()) {
+        LOGE("UNet quantizer: refusing to overwrite an existing output file");
+        return JNI_FALSE;
+    }
+    outputCheck.close();
+
+    // Keep the temporary extension as .gguf so the converter selects GGUF output.
+    const std::string temporary = output + ".partial.gguf";
+    std::remove(temporary.c_str());
+
+    // The default type is F16. Only model.diffusion_model.* tensors are overridden to
+    // the selected low-bit type. For a split model, the converter adds that prefix to the
+    // standalone diffusion/UNet file; for a single-file checkpoint it already exists.
+    const std::string typeRules = std::string("^model\\.diffusion_model\\.=") + typeName;
+    const char* modelPath = diffusionSlot == JNI_TRUE ? nullptr : input.c_str();
+    const char* diffusionPath = diffusionSlot == JNI_TRUE ? input.c_str() : nullptr;
+    const int threads = nThreads < 1 ? 1 : (nThreads > 6 ? 6 : nThreads);
+
+    LOGI("UNet quantizer: source=%s, slot=%s, type=%s, threads=%d",
+         input.c_str(), diffusionSlot == JNI_TRUE ? "diffusion" : "model",
+         typeName.c_str(), threads);
+
+    const bool converted = convert_with_components(
+        modelPath, nullptr, nullptr, nullptr, diffusionPath, nullptr,
+        temporary.c_str(), SD_TYPE_F16, typeRules.c_str(), false, threads);
+    if (!converted) {
+        std::remove(temporary.c_str());
+        LOGE("UNet quantizer: stable-diffusion.cpp conversion failed; source left untouched");
+        return JNI_FALSE;
+    }
+
+    long long unetTensors = 0;
+    long long quantizedTensors = 0;
+    const bool valid = validateQuantizedUnetFile(
+        temporary, static_cast<ggml_type>(quantTypeEnum), &unetTensors, &quantizedTensors);
+    if (!valid) {
+        std::remove(temporary.c_str());
+        LOGE("UNet quantizer: temporary GGUF rejected; source left untouched");
+        return JNI_FALSE;
+    }
+
+    // Publish only after the converter and the GGUF metadata/type checks have succeeded.
+    // The temporary and final files live in the same directory, so rename is atomic on Android.
+    if (std::rename(temporary.c_str(), output.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        LOGE("UNet quantizer: failed to publish output file");
+        return JNI_FALSE;
+    }
+
+    LOGI("UNet quantizer: success, UNet tensors=%lld, requested-type tensors=%lld, output=%s",
+         unetTensors, quantizedTensors, output.c_str());
+    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL

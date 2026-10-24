@@ -481,4 +481,18 @@
     <string name="draw_clip_skip_label">CLIP skip</string>
     <string name="draw_clip_skip_value">CLIP skip: %1$d</string>
     <string name="draw_clip_skip_hint">1 keeps standard CLIP output; higher values skip more CLIP layers. Support depends on the model.</string>
+    <string name="draw_quantize_unet">Quantize UNet</string>
+    <string name="draw_unet_quantize_title">Quantize UNet only</string>
+    <string name="draw_unet_quantize_confirm">Create a separate model set using %1$s for UNet tensors only. Other tensors are exported at F16 where supported, so CLIP/VAE are not low-bit quantized. The source file stays untouched. The currently loaded drawing context will be unloaded to free RAM; the new set will be selected but must be loaded again.</string>
+    <string name="draw_unet_quantize_start">Quantize</string>
+    <string name="draw_unet_quantize_working">Converting only UNet tensors to %1$s. Keep the app open while the new GGUF is validated.</string>
+    <string name="draw_unet_quantize_success">Created a new set with %1$s UNet. The original source is untouched. Load the newly selected model set to use it.</string>
+    <string name="draw_unet_quantize_failed">UNet quantization failed; source left untouched. %1$s</string>
+    <string name="draw_unet_quantize_failed_detail">Converter failed or the generated GGUF did not pass validation.</string>
+    <string name="draw_unet_quantize_no_model">Select a drawing model set before quantizing.</string>
+    <string name="draw_unet_quantize_no_unet">This model set has no supported model/UNet slot to quantize.</string>
+    <string name="draw_unet_quantize_source_type">Start from a .safetensors, .sft, .ckpt, .pt, or .pth source. Already-quantized GGUF inputs are blocked to avoid cumulative quantization loss.</string>
+    <string name="draw_unet_quantize_busy">Wait until image generation finishes before quantizing.</string>
+    <string name="draw_unet_quantize_create_failed">Could not create an output model-set directory.</string>
+    <string name="draw_unet_quantize_register_failed">Conversion succeeded, but the new model set could not be registered.</string>
 </resources>

@@ -313,6 +313,7 @@ class DrawPage(
     // 控件
     private lateinit var statusText: TextView
     private lateinit var quantText: TextView
+    private lateinit var quantizeUnetButton: Button
     private lateinit var modelCardTitle: TextView
     private lateinit var promptEdit: EditText
     private lateinit var negEdit: EditText
@@ -369,8 +370,13 @@ class DrawPage(
     private lateinit var procProgressBar: ProgressBar
     /** 结果面板当前子页：0=结果 1=过程 */
     private var resultPage = 0
-    /** 预览节流：上一帧还没画完就丢帧 */
-    @Volatile private var previewBusy = false
+    /** Keep the newest preview waiting for the UI, rather than dropping it and letting the progress bar run ahead. */
+    private data class ProcessPreviewFrame(val step: Int, val bitmap: Bitmap)
+    private val processPreviewLock = Any()
+    private var pendingProcessPreview: ProcessPreviewFrame? = null
+    private var processPreviewPostQueued = false
+    @Volatile private var previewFrameSeen = false
+    @Volatile private var previewFrameStep = 0
 
     // ---- 模式：文生图 / 图生图 ----
     private lateinit var tabT2i: TextView
@@ -487,6 +493,11 @@ class DrawPage(
             setPadding(0, dp(6), 0, 0)
         }
         modelCard.addView(quantText)
+        quantizeUnetButton = Button(c).apply {
+            text = c.getString(R.string.draw_quantize_unet)
+            setOnClickListener { showUnetQuantizer() }
+        }
+        modelCard.addView(quantizeUnetButton, matchWrap(top = 8))
         paramPane.addView(modelCard)
 
         // ---- 模式子标签：文生图 / 图生图 ----
@@ -2176,6 +2187,7 @@ class DrawPage(
     private fun refreshModelCard() {
         if (!::modelCardTitle.isInitialized) return
         if (mode == 2) {
+            if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.GONE
             modelCardTitle.text = c.getString(R.string.s_262)
             statusText.text = taggerSummary()
             quantText.text = if (taggerLoaded()) {
@@ -2184,6 +2196,7 @@ class DrawPage(
                 c.getString(R.string.s_264)
             }
         } else {
+            if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
             modelCardTitle.text = c.getString(R.string.s_164)
             try { statusText.text = modelSummary() } catch (_: Throwable) {}
             refreshQuantText()
@@ -2202,6 +2215,125 @@ class DrawPage(
                 c.getString(R.string.v_048, (q), (m.name))
             }
         } catch (_: Throwable) {}
+    }
+
+    // ================= UNet-only quantizer =================
+
+    private fun showUnetQuantizer() {
+        if (generating || DrawCore.busy) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_busy), Toast.LENGTH_LONG).show()
+            return
+        }
+        val set = activeSetOrSelected()
+        if (set == null) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_no_model), Toast.LENGTH_LONG).show()
+            return
+        }
+        val sourceSlot = if (set.kind == KIND_SINGLE) "model" else "diffusion"
+        val source = set.files[sourceSlot]
+        if (source == null || !source.isFile) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_no_unet), Toast.LENGTH_LONG).show()
+            return
+        }
+        val extension = source.extension.lowercase()
+        if (extension !in setOf("safetensors", "sft", "ckpt", "pt", "pth")) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_source_type), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val types = arrayOf("q4_0", "q5_0", "q8_0")
+        val labels = arrayOf("Q4_0 · 4-bit", "Q5_0 · 5-bit", "Q8_0 · 8-bit")
+        android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_unet_quantize_title))
+            .setItems(labels) { chooser, which ->
+                chooser.dismiss()
+                val type = types[which]
+                android.app.AlertDialog.Builder(act)
+                    .setTitle(c.getString(R.string.draw_unet_quantize_title))
+                    .setMessage(c.getString(R.string.draw_unet_quantize_confirm, type.uppercase()))
+                    .setPositiveButton(c.getString(R.string.draw_unet_quantize_start)) { _, _ ->
+                        runUnetQuantization(set, sourceSlot, source, type)
+                    }
+                    .setNegativeButton(c.getString(R.string.s_066), null)
+                    .show()
+            }
+            .setNegativeButton(c.getString(R.string.s_066), null)
+            .show()
+    }
+
+    private fun runUnetQuantization(set: ModelSet, sourceSlot: String, source: File, quantType: String) {
+        val id = newSetId(set.id + "-" + quantType + "-unet")
+        val outputDir = File(setsDir(), id)
+        if (!outputDir.mkdirs()) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_create_failed), Toast.LENGTH_LONG).show()
+            return
+        }
+        val outputFile = File(outputDir, source.nameWithoutExtension + "-unet-" + quantType + ".gguf")
+
+        val progressView = LinearLayout(c).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(24), dp(18), dp(24), dp(18))
+            addView(ProgressBar(c).apply { isIndeterminate = true },
+                LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(TextView(c).apply {
+                text = c.getString(R.string.draw_unet_quantize_working, quantType.uppercase())
+                textSize = 14f
+                setTextColor(pal.text)
+                setPadding(dp(16), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val progressDialog = android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_unet_quantize_title))
+            .setView(progressView)
+            .setCancelable(false)
+            .create()
+        progressDialog.show()
+
+        scope.launch {
+            try {
+                // Release mapped weights first so the converter has more room on low-RAM phones.
+                unloadModel()
+                val success = withContext(Dispatchers.IO) {
+                    SdCppEngine.nativeQuantizeUnet(
+                        source.absolutePath,
+                        outputFile.absolutePath,
+                        quantType,
+                        sourceSlot == "diffusion",
+                        nThreads.coerceIn(1, 6),
+                    )
+                }
+                if (!success || !outputFile.isFile || outputFile.length() <= 0L) {
+                    throw IllegalStateException(c.getString(R.string.draw_unet_quantize_failed_detail))
+                }
+
+                val files = LinkedHashMap(set.files)
+                files[sourceSlot] = outputFile
+                val quantizedSet = ModelSet(
+                    id,
+                    set.name + " (" + quantType.uppercase() + " UNet)",
+                    set.kind,
+                    set.family,
+                    outputDir,
+                    files,
+                )
+                withContext(Dispatchers.IO) { writeSetJson(quantizedSet) }
+                if (!File(outputDir, "ponko-set.json").isFile) {
+                    throw IllegalStateException(c.getString(R.string.draw_unet_quantize_register_failed))
+                }
+                selectSet(quantizedSet)
+                refreshModelCard()
+                Toast.makeText(c, c.getString(R.string.draw_unet_quantize_success, quantType.uppercase()), Toast.LENGTH_LONG).show()
+            } catch (e: Throwable) {
+                withContext(Dispatchers.IO) { runCatching { outputDir.deleteRecursively() } }
+                Toast.makeText(
+                    c,
+                    c.getString(R.string.draw_unet_quantize_failed, e.message ?: e.javaClass.simpleName),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                progressDialog.dismiss()
+            }
+        }
     }
 
     // ================= 生成 =================
@@ -2248,11 +2380,14 @@ class DrawPage(
                         val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
                         progressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
                         if (::procStepText.isInitialized) {
-                            procStepText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
+                            val processStep = if (previewFrameSeen && totalStep > 0) previewFrameStep.coerceIn(0, totalStep) else curStep
+                            val processStepInfo = if (totalStep > 0) c.getString(R.string.v_049, processStep, totalStep) else ""
+                            val processPhase = if (previewFrameSeen) c.getString(R.string.s_129) else phase
+                            procStepText.text = c.getString(R.string.v_050, processPhase, processStepInfo, sec)
                         }
                         if (totalStep > 0) {
                             progressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
-                            if (::procProgressBar.isInitialized) {
+                            if (::procProgressBar.isInitialized && !previewFrameSeen) {
                                 procProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
                             }
                         }
@@ -2314,8 +2449,8 @@ class DrawPage(
         }
     }
 
-    private var curStep = 0
-    private var totalStep = 0
+    @Volatile private var curStep = 0
+    @Volatile private var totalStep = 0
     @Volatile private var denoisingStarted = false
 
     /** 用户是否已请求中断当前生成（用于把“取消”与“真失败”区分开）。 */
@@ -2458,11 +2593,14 @@ class DrawPage(
                         val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
                         i2iProgressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
                         if (::procStepText.isInitialized) {
-                            procStepText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
+                            val processStep = if (previewFrameSeen && totalStep > 0) previewFrameStep.coerceIn(0, totalStep) else curStep
+                            val processStepInfo = if (totalStep > 0) c.getString(R.string.v_049, processStep, totalStep) else ""
+                            val processPhase = if (previewFrameSeen) c.getString(R.string.s_129) else phase
+                            procStepText.text = c.getString(R.string.v_050, processPhase, processStepInfo, sec)
                         }
                         if (totalStep > 0) {
                             i2iProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
-                            if (::procProgressBar.isInitialized) {
+                            if (::procProgressBar.isInitialized && !previewFrameSeen) {
                                 procProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
                             }
                         }
@@ -2791,7 +2929,9 @@ class DrawPage(
     /** 开始生成：清掉上一张预览并切到「过程」页 */
     private fun startPreview() {
         if (!::processContent.isInitialized) return
-        previewBusy = false
+        previewFrameSeen = false
+        previewFrameStep = 0
+        synchronized(processPreviewLock) { pendingProcessPreview = null }
         previewImg.setImageDrawable(null)
         procProgressBar.progress = 0
         procStepText.text = c.getString(R.string.s_126)
@@ -2799,21 +2939,50 @@ class DrawPage(
         switchResultPage(1)
     }
 
-    /** 预览帧（native 推理线程回调）→ 节流后刷到「过程」页 */
+    /** Render the newest pending preview and update its matching step/progress together. */
     private fun onPreviewFrame(step: Int, w: Int, h: Int, rgb: ByteArray) {
         if (!::previewImg.isInitialized) return
-        if (previewBusy) return
         val bmp = SdCppEngine.rgbToBitmap(w, h, rgb) ?: return
-        previewBusy = true
-        previewImg.post {
-            previewImg.setImageBitmap(bmp)
-            val total = totalStep
-            if (total > 0) {
-                procProgressBar.progress = (step * 100 / total).coerceIn(0, 100)
-                procStepText.text = c.getString(R.string.s_129) + c.getString(R.string.v_049, (step), (total))
+        val frame = ProcessPreviewFrame(kotlin.math.abs(step), bmp)
+        var post = false
+        synchronized(processPreviewLock) {
+            pendingProcessPreview = frame
+            if (!processPreviewPostQueued) {
+                processPreviewPostQueued = true
+                post = true
             }
-            previewBusy = false
         }
+        if (post) previewImg.post { drainProcessPreview() }
+    }
+
+    private fun drainProcessPreview() {
+        val frame = synchronized(processPreviewLock) {
+            val next = pendingProcessPreview
+            pendingProcessPreview = null
+            processPreviewPostQueued = false
+            next
+        }
+
+        if (frame != null) {
+            previewImg.setImageBitmap(frame.bitmap)
+            val total = totalStep
+            previewFrameStep = if (total > 0) frame.step.coerceIn(0, total) else frame.step
+            previewFrameSeen = true
+            if (total > 0) {
+                procProgressBar.progress = (previewFrameStep * 100 / total).coerceIn(0, 100)
+                procStepText.text = c.getString(R.string.s_129) +
+                    c.getString(R.string.v_049, previewFrameStep, total)
+            }
+        }
+
+        var post = false
+        synchronized(processPreviewLock) {
+            if (pendingProcessPreview != null && !processPreviewPostQueued) {
+                processPreviewPostQueued = true
+                post = true
+            }
+        }
+        if (post) previewImg.post { drainProcessPreview() }
     }
 
     /** 让某个面板回到最顶处（等布局完成后执行，避免刚切页时高度还是 0） */

@@ -87,6 +87,15 @@ object SdCppEngine {
     /** Runtime Vulkan capabilities detected by ggml-vulkan for the active GPU. */
     external fun nativeVulkanDiagnostics(): String
 
+    /** Safely convert a checkpoint to mixed-precision GGUF, quantizing only model.diffusion_model.* tensors. */
+    external fun nativeQuantizeUnet(
+        inputPath: String,
+        outputPath: String,
+        quantType: String,
+        diffusionSlot: Boolean,
+        nThreads: Int,
+    ): Boolean
+
     fun vulkanDiagnostics(): String =
         runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
 

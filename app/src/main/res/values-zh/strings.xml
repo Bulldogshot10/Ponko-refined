@@ -481,4 +481,18 @@
     <string name="draw_clip_skip_label">CLIP skip</string>
     <string name="draw_clip_skip_value">CLIP skip：%1$d</string>
     <string name="draw_clip_skip_hint">1 为标准 CLIP 输出；数值越高跳过的 CLIP 层越多。是否生效取决于模型。</string>
+    <string name="draw_quantize_unet">量化 UNet</string>
+    <string name="draw_unet_quantize_title">仅量化 UNet</string>
+    <string name="draw_unet_quantize_confirm">创建一个独立模型集，仅将 UNet 张量量化为 %1$s。其他张量在支持的情况下导出为 F16，因此 CLIP/VAE 不会进行低比特量化。原文件不会被覆盖。为释放内存，当前绘图上下文会先卸载；新模型集会被选中，但需要之后手动加载。</string>
+    <string name="draw_unet_quantize_start">开始量化</string>
+    <string name="draw_unet_quantize_working">正在将 UNet 张量转换为 %1$s。请保持应用开启，直到新 GGUF 完成验证。</string>
+    <string name="draw_unet_quantize_success">已创建包含 %1$s UNet 的新模型集。原文件未被修改。请加载当前选中的新模型集以使用它。</string>
+    <string name="draw_unet_quantize_failed">UNet 量化失败，源文件未修改。%1$s</string>
+    <string name="draw_unet_quantize_failed_detail">转换器失败，或生成的 GGUF 未通过验证。</string>
+    <string name="draw_unet_quantize_no_model">请先选择一个绘图模型集。</string>
+    <string name="draw_unet_quantize_no_unet">这个模型集没有可量化的 model/UNet 槽位。</string>
+    <string name="draw_unet_quantize_source_type">请使用 .safetensors、.sft、.ckpt、.pt 或 .pth 原始模型。为避免反复量化造成精度损失，已禁用现有量化 GGUF 输入。</string>
+    <string name="draw_unet_quantize_busy">请等待图像生成完成后再进行量化。</string>
+    <string name="draw_unet_quantize_create_failed">无法创建输出模型集目录。</string>
+    <string name="draw_unet_quantize_register_failed">转换已完成，但无法注册新模型集。</string>
 </resources>
