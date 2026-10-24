@@ -3,6 +3,8 @@ plugins {
     id("com.android.application")
 }
 
+val ponkoExynosSve2 = providers.gradleProperty("ponkoExynosSve2").orNull == "true"
+
 android {
     namespace = "com.litertchat.app"
     compileSdk = 36
@@ -38,6 +40,7 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"
+            arguments += "-DPONKO_EXYNOS_2400E_SVE2=${if (ponkoExynosSve2) "ON" else "OFF"}"
         }
     }
 

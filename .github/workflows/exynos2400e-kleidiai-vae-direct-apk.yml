@@ -1,15 +1,7 @@
 name: Exynos 2400e KleidiAI VAE direct-conv CPU APK test
 
+# Manual only to keep experimental native builds from consuming Actions minutes on every edit.
 on:
-  push:
-    branches: [feat/exynos2400e-vae-direct-conv-test]
-    paths:
-      - "app/**"
-      - "gradle/**"
-      - "build.gradle*"
-      - "settings.gradle*"
-      - "gradle.properties"
-      - ".github/workflows/exynos2400e-kleidiai-vae-direct-apk.yml"
   workflow_dispatch:
 
 permissions:

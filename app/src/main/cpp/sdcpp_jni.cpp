@@ -5,12 +5,23 @@
 #include <android/log.h>
 #include <atomic>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <mutex>
 #include <cstdio>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+#include <sys/auxv.h>
+#include <time.h>
 
 #include "ggml.h"
 #include "ggml-vulkan.h"
@@ -32,6 +43,7 @@ struct SdHandle {
     jmethodID pcb_mid = nullptr; // onPreview(III[B)V
     std::atomic<bool> cancelled{false};
     bool vae_conv_direct = true;
+    int n_threads = 0;
     std::string backend_name = "auto";
 };
 
@@ -78,6 +90,239 @@ std::string copyVulkanDiagnostics() {
     std::lock_guard<std::mutex> lock(g_vulkan_diagnostics_mutex);
     return g_vulkan_diagnostics;
 }
+
+
+#ifndef AT_HWCAP2
+#define AT_HWCAP2 26
+#endif
+#ifndef HWCAP_FPHP
+#define HWCAP_FPHP (1UL << 9)
+#endif
+#ifndef HWCAP_ASIMDHP
+#define HWCAP_ASIMDHP (1UL << 10)
+#endif
+#ifndef HWCAP_ASIMDDP
+#define HWCAP_ASIMDDP (1UL << 20)
+#endif
+#ifndef HWCAP_SVE
+#define HWCAP_SVE (1UL << 22)
+#endif
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1UL << 1)
+#endif
+#ifndef HWCAP2_I8MM
+#define HWCAP2_I8MM (1UL << 13)
+#endif
+
+std::mutex g_affinity_mutex;
+std::string g_affinity_spec;
+
+std::string readLine(const std::string& path) {
+    std::ifstream in(path);
+    std::string value;
+    if (in.good()) std::getline(in, value);
+    return value;
+}
+long long readNumber(const std::string& path, long long fallback = -1) {
+    const auto value = readLine(path);
+    if (value.empty()) return fallback;
+    char* end = nullptr;
+    const auto n = std::strtoll(value.c_str(), &end, 10);
+    return end != value.c_str() && end != nullptr ? n : fallback;
+}
+struct CpuInfo {
+    int id;
+    bool online;
+    bool allowed;
+    long long capacity;
+    long long current_khz;
+    long long max_khz;
+};
+std::vector<CpuInfo> cpuTopology() {
+    cpu_set_t allowed_mask;
+    CPU_ZERO(&allowed_mask);
+    const bool have_mask = sched_getaffinity(0, sizeof(allowed_mask), &allowed_mask) == 0;
+    long n = sysconf(_SC_NPROCESSORS_CONF);
+    if (n < 1) n = 10;
+    n = std::min<long>(n, CPU_SETSIZE);
+    std::vector<CpuInfo> out;
+    for (int id = 0; id < n; ++id) {
+        const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(id);
+        const auto online_text = readLine(base + "/online");
+        const bool allowed = !have_mask || CPU_ISSET(id, &allowed_mask);
+        const bool online = online_text.empty() ? (have_mask ? allowed : id == 0) : online_text != "0";
+        if (!online) continue;
+        long long capacity = readNumber(base + "/cpu_capacity");
+        const long long max_khz = readNumber(base + "/cpufreq/cpuinfo_max_freq");
+        if (capacity <= 0 && max_khz > 0) capacity = max_khz;
+        out.push_back({id, true, allowed, capacity,
+                       readNumber(base + "/cpufreq/scaling_cur_freq"), max_khz});
+    }
+    return out;
+}
+std::string cpuFeatures() {
+    const auto hw = getauxval(AT_HWCAP);
+    const auto hw2 = getauxval(AT_HWCAP2);
+    const bool fp16 = (hw & HWCAP_FPHP) && (hw & HWCAP_ASIMDHP);
+    std::ostringstream out;
+    out << "neon=1,dotprod=" << ((hw & HWCAP_ASIMDDP) ? 1 : 0)
+        << ",i8mm=" << ((hw2 & HWCAP2_I8MM) ? 1 : 0)
+        << ",fp16=" << (fp16 ? 1 : 0)
+        << ",sve=" << ((hw & HWCAP_SVE) ? 1 : 0)
+        << ",sve2=" << ((hw2 & HWCAP2_SVE2) ? 1 : 0);
+    return out.str();
+}
+std::string topologyLog() {
+    std::ostringstream out;
+    out << "BENCHMARK cpu_topology features={" << cpuFeatures() << "} cpus=";
+    bool first = true;
+    for (const auto& c : cpuTopology()) {
+        if (!first) out << ';';
+        first = false;
+        out << c.id << "{allowed=" << (c.allowed ? 1 : 0)
+            << ",capacity=" << c.capacity << ",cur_khz=" << c.current_khz
+            << ",max_khz=" << c.max_khz << '}';
+    }
+    if (first) out << "unavailable";
+    return out.str();
+}
+std::string deviceMetrics() {
+    std::string rss="unavailable", hwm="unavailable", threads="unavailable";
+    std::ifstream in("/proc/self/status");
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("VmRSS:",0)==0) rss=line.substr(6);
+        else if (line.rfind("VmHWM:",0)==0) hwm=line.substr(6);
+        else if (line.rfind("Threads:",0)==0) threads=line.substr(8);
+    }
+    std::ostringstream freq, therm;
+    bool ff=true, ft=true;
+    for (const auto& c:cpuTopology()) {
+        if (!ff) freq << ',';
+        ff=false;
+        freq << c.id << ':' << c.current_khz;
+    }
+    int shown=0;
+    for (int i=0;i<32 && shown<10;++i) {
+        const std::string base="/sys/class/thermal/thermal_zone"+std::to_string(i);
+        const auto type=readLine(base+"/type");
+        const long long raw=readNumber(base+"/temp");
+        if (type.empty() || raw<0) continue;
+        if (!ft) therm << ',';
+        ft=false;
+        auto name=type;
+        std::replace(name.begin(),name.end(),' ','_');
+        therm << name << ':' << ((raw<1000 ? raw*1000 : raw)/1000);
+        ++shown;
+    }
+    std::ostringstream out;
+    out << "rss=" << rss << ",hwm=" << hwm << ",threads=" << threads
+        << ",cpu_freq_khz=" << (ff ? "unavailable" : freq.str())
+        << ",thermal_c=" << (ft ? "unavailable" : therm.str());
+    return out.str();
+}
+long long processCpuMillis() {
+    struct timespec ts {};
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&ts)!=0) return -1;
+    return static_cast<long long>(ts.tv_sec)*1000LL+ts.tv_nsec/1000000LL;
+}
+std::string cleanAffinity(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if (s.empty() || s=="default" || s=="scheduler" || s=="all") return "none";
+    return s;
+}
+bool affinityMask(const std::string& raw, cpu_set_t* mask, std::string* error) {
+    CPU_ZERO(mask);
+    const auto spec=cleanAffinity(raw);
+    if (spec=="none") return true;
+    std::vector<CpuInfo> cpus;
+    for (const auto& c:cpuTopology()) if (c.online && c.allowed) cpus.push_back(c);
+    if (cpus.empty()) { *error="no online CPUs are allowed to this thread"; return false; }
+    if (spec=="performance" || spec=="big" || spec=="little" || spec=="efficiency") {
+        for (const auto& c:cpus) if (c.capacity<=0) {
+            *error="sysfs cpu_capacity/max-frequency is unavailable; refusing to guess cluster order";
+            return false;
+        }
+        std::stable_sort(cpus.begin(),cpus.end(),[](const CpuInfo& a,const CpuInfo& b){
+            if (a.capacity!=b.capacity) return a.capacity<b.capacity;
+            return a.id<b.id;
+        });
+        const bool low=spec=="little" || spec=="efficiency";
+        const size_t take=std::max<size_t>(1,static_cast<size_t>(std::ceil(cpus.size()*(low?0.4:0.6))));
+        if (low) cpus.resize(take);
+        else if (take<cpus.size()) cpus.erase(cpus.begin(),cpus.end()-static_cast<std::ptrdiff_t>(take));
+        for (const auto& c:cpus) CPU_SET(c.id,mask);
+        return true;
+    }
+    size_t pos=0;
+    while (pos<spec.size()) {
+        const size_t comma=spec.find(',',pos);
+        const std::string item=spec.substr(pos,comma==std::string::npos?std::string::npos:comma-pos);
+        const size_t dash=item.find('-');
+        char* end=nullptr;
+        const long first=std::strtol(item.c_str(),&end,10);
+        if (item.empty() || end==item.c_str() || end==nullptr || *end!=(dash==std::string::npos?'\0':'-')) {
+            *error="expected CPU ids like 0,2-5"; return false;
+        }
+        long last=first;
+        if (dash!=std::string::npos) {
+            const char* rhs=item.c_str()+dash+1;
+            last=std::strtol(rhs,&end,10);
+            if (end==rhs || end==nullptr || *end!='\0' || last<first) {
+                *error="invalid CPU range: "+item; return false;
+            }
+        }
+        if (first<0 || last>=CPU_SETSIZE) { *error="CPU id outside cpu_set_t limits"; return false; }
+        for (long id=first;id<=last;++id) {
+            const auto it=std::find_if(cpus.begin(),cpus.end(),[id](const CpuInfo& c){return c.id==id;});
+            if (it==cpus.end()) { *error="CPU "+std::to_string(id)+" is offline or disallowed"; return false; }
+            CPU_SET(static_cast<int>(id),mask);
+        }
+        if (comma==std::string::npos) break;
+        pos=comma+1;
+    }
+    if (CPU_COUNT(mask)==0) { *error="empty affinity mask"; return false; }
+    return true;
+}
+class ScopedAffinity {
+public:
+    ScopedAffinity() {
+        { std::lock_guard<std::mutex> lock(g_affinity_mutex); spec=cleanAffinity(g_affinity_spec); }
+        if (spec=="none") { status="disabled (Android scheduler default)"; return; }
+        if (sched_getaffinity(0,sizeof(previous),&previous)!=0) {
+            status="cannot read current thread affinity"; return;
+        }
+        cpu_set_t wanted;
+        std::string error;
+        if (!affinityMask(spec,&wanted,&error)) { status="not applied: "+error; return; }
+        const int rc=sched_setaffinity(0,sizeof(wanted),&wanted);
+        if (rc!=0) { status="not applied: sched_setaffinity errno="+std::to_string(errno); return; }
+        applied=true;
+        status="applied to generation-calling thread only: "+spec;
+    }
+    ~ScopedAffinity() { if (applied) sched_setaffinity(0,sizeof(previous),&previous); }
+    std::string status;
+private:
+    cpu_set_t previous{};
+    bool applied=false;
+    std::string spec;
+};
+std::string setAffinity(const std::string& raw) {
+    const auto spec=cleanAffinity(raw);
+    if (spec=="none") {
+        std::lock_guard<std::mutex> lock(g_affinity_mutex);
+        g_affinity_spec.clear();
+        return "Affinity disabled; Android scheduler default restored.";
+    }
+    cpu_set_t mask;
+    std::string error;
+    if (!affinityMask(spec,&mask,&error)) return "Affinity rejected: "+error;
+    { std::lock_guard<std::mutex> lock(g_affinity_mutex); g_affinity_spec=spec; }
+    return "Affinity set to '"+spec+"' for the generation-calling thread. OpenMP workers remain scheduler-managed.";
+}
+
 
 const char* jstr(JNIEnv* env, jstring s, std::string& holder) {
     if (s == nullptr) return nullptr;
@@ -132,11 +377,23 @@ void previewTrampoline(int step, int frame_count, sd_image_t* frames, bool /*is_
     if (attached) g_vm->DetachCurrentThread();
 }
 
+void ponkoSdLogCallback(enum sd_log_level_t level, const char* text, void*) {
+    if (text == nullptr || text[0] == '\0') return;
+    const bool is_benchmark = std::strstr(text, "BENCHMARK vae_stage") != nullptr;
+    const bool is_vae_mode =
+        std::strstr(text, "Using Conv2d direct in the vae model") != nullptr ||
+        std::strstr(text, "Using standard VAE convolution path (direct Conv2D disabled)") != nullptr;
+    if (!is_benchmark && !is_vae_mode) return;
+    const int priority = level >= SD_LOG_WARN ? ANDROID_LOG_WARN : ANDROID_LOG_INFO;
+    __android_log_print(priority, TAG, "%s", text);
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
     g_vm = vm;
     ggml_log_set(ponkoGgmlLogCallback, nullptr);
+    sd_set_log_callback(ponkoSdLogCallback, nullptr);
     return JNI_VERSION_1_6;
 }
 
@@ -165,6 +422,22 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_litertchat_app_draw_SdCppEngine_nativeInfo(JNIEnv* env, jobject /*thiz*/) {
     std::string info = std::string("sd.cpp ") + sd_version() + " | " + sd_get_system_info();
     return env->NewStringUTF(info.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_litertchat_app_draw_SdCppEngine_nativeCpuDiagnostics(JNIEnv* env, jobject /*thiz*/) {
+    const std::string value=topologyLog()+"\n"+deviceMetrics();
+    LOGI("%s",topologyLog().c_str());
+    return env->NewStringUTF(value.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_litertchat_app_draw_SdCppEngine_nativeSetCpuAffinity(JNIEnv* env, jobject /*thiz*/, jstring value) {
+    std::string spec;
+    jstr(env,value,spec);
+    const std::string result=setAffinity(spec);
+    LOGI("CPU affinity configuration: %s",result.c_str());
+    return env->NewStringUTF(result.c_str());
 }
 
 // 最近一次 new_sd_ctx 用的完整参数（失败时写进日志文件用）
@@ -287,10 +560,12 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeCreate(
     }
     SdHandle* h = new SdHandle();
     h->ctx = ctx;
+    h->n_threads = p.n_threads;
     h->vae_conv_direct = p.vae_conv_direct;
     h->backend_name = backendStr.empty() ? "auto" : backendStr;
-    LOGI("ctx created: %p | VAE direct-conv=%d | backend=%s",
-         static_cast<void*>(ctx), h->vae_conv_direct ? 1 : 0, h->backend_name.c_str());
+    LOGI("ctx created: %p | VAE direct-conv=%d | backend=%s | threads=%d",
+         static_cast<void*>(ctx), h->vae_conv_direct ? 1 : 0, h->backend_name.c_str(), h->n_threads);
+    LOGI("%s",topologyLog().c_str());
     return reinterpret_cast<jlong>(h);
 }
 
@@ -416,16 +691,29 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
 
     sd_image_t* out = nullptr;
     int n = 0;
-    const auto generationStart = std::chrono::steady_clock::now();
-    bool ok = generate_image(h->ctx, &g, &out, &n);
-    const auto generationElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - generationStart).count();
-    if (n > 0 && out != nullptr && out->data != nullptr) ok = true;
-    LOGI("BENCHMARK generate_image elapsed_ms=%lld mode=%s size=%dx%d steps=%d backend=%s vae_conv_direct=%d ok=%d",
-         static_cast<long long>(generationElapsedMs),
-         initBytes != nullptr ? "img2img" : "txt2img",
-         width, height, steps, h->backend_name.c_str(),
-         h->vae_conv_direct ? 1 : 0, ok ? 1 : 0);
+    bool ok = false;
+    long long generationElapsedMs = 0, processCpuElapsedMs = -1;
+    {
+        ScopedAffinity affinity;
+        LOGI("BENCHMARK affinity status=\"%s\"",affinity.status.c_str());
+        LOGI("BENCHMARK device stage=before %s",deviceMetrics().c_str());
+        const long long cpuStart=processCpuMillis();
+        const auto wallStart=std::chrono::steady_clock::now();
+        ok=generate_image(h->ctx,&g,&out,&n);
+        generationElapsedMs=std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now()-wallStart).count();
+        const long long cpuEnd=processCpuMillis();
+        if(cpuStart>=0 && cpuEnd>=cpuStart) processCpuElapsedMs=cpuEnd-cpuStart;
+        if(n>0 && out!=nullptr && out->data!=nullptr) ok=true;
+        LOGI("BENCHMARK generate_image elapsed_ms=%lld mode=%s size=%dx%d steps=%d backend_request=%s "
+             "threads=%d vae_conv_direct=%d sampler=%d scheduler=%d cfg=%.4f lora_count=%zu seed=%lld "
+             "process_cpu_ms=%lld ok=%d",
+             static_cast<long long>(generationElapsedMs),initBytes!=nullptr?"img2img":"txt2img",
+             width,height,steps,h->backend_name.c_str(),h->n_threads,h->vae_conv_direct?1:0,
+             sampleMethod,scheduler,cfg,nativeLoras.size(),static_cast<long long>(seed),
+             processCpuElapsedMs,ok?1:0);
+        LOGI("BENCHMARK device stage=after %s",deviceMetrics().c_str());
+    }
 
     jintArray result = nullptr;
     if (ok && n > 0 && out != nullptr && out[0].data != nullptr) {

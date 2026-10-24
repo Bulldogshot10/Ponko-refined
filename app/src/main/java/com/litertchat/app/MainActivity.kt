@@ -1319,6 +1319,55 @@ class MainActivity : Activity() {
             matchWrap().apply { topMargin = dp(3) }
         )
 
+        val affinityValues = listOf("none", "performance", "little")
+        val affinityLabels = listOf(
+            getString(R.string.draw_cpu_affinity_scheduler),
+            getString(R.string.draw_cpu_affinity_performance),
+            getString(R.string.draw_cpu_affinity_efficiency),
+        )
+        val affinityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        affinityRow.addView(TextView(this).apply {
+            text = getString(R.string.draw_cpu_affinity)
+            textSize = 13f
+            setTextColor(C_TEXT)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val affinitySpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                affinityLabels,
+            )
+            val current = drawPage?.cpuAffinity() ?: "none"
+            setSelection(affinityValues.indexOf(current).coerceAtLeast(0), false)
+        }
+        affinitySpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val message = drawPage?.setCpuAffinity(affinityValues[position])
+                if (message != null && position != 0) toast(message)
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        affinityRow.addView(affinitySpinner, wrapWrap().apply { leftMargin = dp(8) })
+        drawCard.addView(affinityRow, matchWrap().apply { topMargin = dp(10) })
+        drawCard.addView(
+            hintText(getString(R.string.draw_cpu_affinity_hint)),
+            matchWrap().apply { topMargin = dp(3) }
+        )
+        drawCard.addView(Button(this).apply {
+            text = getString(R.string.draw_cpu_diagnostics)
+            setOnClickListener {
+                val diagnostics = com.litertchat.app.draw.SdCppEngine.performanceDiagnostics()
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle(getString(R.string.draw_cpu_diagnostics))
+                    .setMessage(diagnostics)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
+            }
+        }, matchWrap().apply { topMargin = dp(6) })
+
         val vaeConvDirectCheck = android.widget.CheckBox(this).apply {
             text = getString(R.string.draw_vae_conv_direct_enable)
             textSize = 13f
