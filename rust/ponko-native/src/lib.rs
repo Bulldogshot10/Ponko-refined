@@ -116,9 +116,14 @@ pub fn build_profile() -> BuildProfile {
     BuildProfile {
         api_version: FACADE_API_VERSION,
         abi: "arm64-v8a".to_owned(),
-        // Preserve the project's requested Exynos CPU profile exactly.
-        cpu_arch_flags: "-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4".to_owned(),
-        vulkan_build_default: true,
+        // build.rs injects the Gradle/CMake profile; direct cargo builds use the Exynos default.
+        cpu_arch_flags: option_env!("PONKO_CPU_ARCH_FLAGS")
+            .unwrap_or("-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4")
+            .to_owned(),
+        vulkan_build_default: !matches!(
+            option_env!("PONKO_VULKAN_ENABLED"),
+            Some("OFF") | Some("off") | Some("FALSE") | Some("false") | Some("0")
+        ),
         native_engine: "stable-diffusion.cpp + GGML (legacy JNI retained during parity phase)"
             .to_owned(),
     }
