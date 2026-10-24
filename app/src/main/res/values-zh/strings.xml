@@ -517,4 +517,27 @@
     <string name="draw_resadapter_copy_failed">无法读取所选文件，请重新选择。</string>
     <string name="draw_resadapter_create_failed">无法创建输出模型集目录。</string>
     <string name="draw_resadapter_register_failed">GGUF 已生成，但无法注册新的模型集。</string>
+
+    <string name="draw_adetailer_title">ADetailer · 面部 / 手部修复</string>
+    <string name="draw_adetailer_enable">生成后运行 ADetailer</string>
+    <string name="draw_adetailer_hint">在文生图或图生图后使用 YOLOv8 检测目标，并逐个裁剪区域进行局部重绘。聊天页面触发的出图也会应用。检测器必须是为 stable-diffusion.cpp 转换过的 YOLOv8 detection .safetensors。</string>
+    <string name="draw_adetailer_pick_model">选择 YOLOv8 检测器（.safetensors）</string>
+    <string name="draw_adetailer_model_selected">检测器：%1$s</string>
+    <string name="draw_adetailer_model_none">尚未选择检测器</string>
+    <string name="draw_adetailer_model_missing">启用 ADetailer 前，请先选择兼容的 YOLOv8 detection .safetensors 文件。</string>
+    <string name="draw_adetailer_bad_model">请选择已转换的 YOLOv8 detection .safetensors 文件，不能使用原始 .pt checkpoint。</string>
+    <string name="draw_adetailer_imported">已导入 ADetailer 检测器：%1$s</string>
+    <string name="draw_adetailer_import_failed">无法导入 ADetailer 检测器：%1$s</string>
+    <string name="draw_adetailer_prompt">修复提示词</string>
+    <string name="draw_adetailer_prompt_hint">留空则沿用主提示词。</string>
+    <string name="draw_adetailer_negative_prompt">修复负面提示词</string>
+    <string name="draw_adetailer_negative_prompt_hint">留空则沿用主负面提示词。</string>
+    <string name="draw_adetailer_confidence">检测置信度</string>
+    <string name="draw_adetailer_resolution">局部重绘尺寸</string>
+    <string name="draw_adetailer_resolution_hint">正方形重绘尺寸，会向下取整为 64 的倍数（128–1024）。</string>
+    <string name="draw_adetailer_padding">裁剪边距</string>
+    <string name="draw_adetailer_mask_blur">蒙版模糊</string>
+    <string name="draw_adetailer_denoise">去噪强度</string>
+    <string name="draw_adetailer_steps">修复步数</string>
+    <string name="draw_adetailer_steps_hint">0 表示沿用主生成步数；可以先从 8 步开始。</string>
 </resources>
