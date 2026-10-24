@@ -119,7 +119,7 @@ jobs:
           grep -q 'buildClipSkipControl' app/src/main/java/com/litertchat/app/draw/DrawPage.kt
           grep -q 'clipSkip = clipSkip' app/src/main/java/com/litertchat/app/draw/DrawPage.kt
           grep -q 'clipSkip: Int' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt
-          grep -q 'jint sampleMethod, jint scheduler, jint clipSkip' app/src/main/cpp/sdcpp_jni.cpp
+          grep -q 'jint sampleMethod, jint scheduler, jfloat eta, jint clipSkip' app/src/main/cpp/sdcpp_jni.cpp
           grep -q 'g.clip_skip       = (clipSkip < 1)' app/src/main/cpp/sdcpp_jni.cpp
           echo "Verified persisted CLIP skip slider reaches the native generation parameter"
 
