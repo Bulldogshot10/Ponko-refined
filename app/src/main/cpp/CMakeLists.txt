@@ -245,7 +245,7 @@ if(PONKO_SO_OUT)
 endif()
 
 # ---------------------------------------------------------------------------
-# JNI 桥 → libponko_sd.so
+# C ABI bridge → libponko_sd.so
 # ---------------------------------------------------------------------------
 # Plain C ABI consumed by the Rust/UniFFI facade. The app-facing JNI entry points
 # are no longer part of this target; Kotlin reaches this bridge through Rust.
