@@ -51,6 +51,25 @@ add_compile_options(
     "$<$<CONFIG:Debug>:-DNDEBUG>"
 )
 
+# Apply the compiler cache to the whole native project, not just GGML, when
+# ccache/sccache is installed. Cache misses or absent tools fall back normally.
+option(PONKO_ENABLE_COMPILER_CACHE "Use ccache/sccache for native compilation when available" ON)
+if (PONKO_ENABLE_COMPILER_CACHE)
+    find_program(PONKO_CCACHE_EXECUTABLE NAMES ccache)
+    find_program(PONKO_SCCACHE_EXECUTABLE NAMES sccache)
+    if (PONKO_CCACHE_EXECUTABLE)
+        set(CMAKE_C_COMPILER_LAUNCHER "${PONKO_CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${PONKO_CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        message(STATUS "Ponko compiler cache: ccache (${PONKO_CCACHE_EXECUTABLE})")
+    elseif (PONKO_SCCACHE_EXECUTABLE)
+        set(CMAKE_C_COMPILER_LAUNCHER "${PONKO_SCCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${PONKO_SCCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        message(STATUS "Ponko compiler cache: sccache (${PONKO_SCCACHE_EXECUTABLE})")
+    else ()
+        message(STATUS "Ponko compiler cache not found; native compilation will proceed uncached.")
+    endif ()
+endif ()
+
 # 强制各 Release 变体都是 -O3 且不带调试符号。
 # （AGP 给 release 变体传的可能是 RelWithDebInfo = -O2 -g，性能与体积都不理想）
 foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
