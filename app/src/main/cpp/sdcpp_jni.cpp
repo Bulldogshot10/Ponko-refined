@@ -572,7 +572,7 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeQuantizeUnet(
 
     const bool converted = convert_with_components(
         modelPath, nullptr, nullptr, nullptr, diffusionPath, nullptr,
-        temporary.c_str(), SD_TYPE_F16, typeRules.c_str(), false, threads);
+        temporary.c_str(), SD_TYPE_F16, typeRules.c_str(), true, threads);
     if (!converted) {
         std::remove(temporary.c_str());
         LOGE("UNet quantizer: stable-diffusion.cpp conversion failed; source left untouched");

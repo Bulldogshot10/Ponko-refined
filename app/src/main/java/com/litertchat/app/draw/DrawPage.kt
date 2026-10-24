@@ -2382,18 +2382,22 @@ class DrawPage(
                         // sd.cpp reuses the progress callback for lazy tensor loading. Keep the
                         // UI in Loading model until a callback matches this request's sample-step count.
                         val phase = if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)
-                        val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
-                        progressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
+                        val displayStep = if (previewFrameSeen && totalStep > 0) {
+                            previewFrameStep.coerceIn(0, totalStep)
+                        } else {
+                            curStep.coerceAtLeast(0)
+                        }
+                        val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, displayStep, totalStep) else ""
+                        progressText.text = c.getString(R.string.v_050, phase, stepInfo, sec)
                         if (::procStepText.isInitialized) {
-                            val processStep = if (previewFrameSeen && totalStep > 0) previewFrameStep.coerceIn(0, totalStep) else curStep
-                            val processStepInfo = if (totalStep > 0) c.getString(R.string.v_049, processStep, totalStep) else ""
                             val processPhase = if (previewFrameSeen) c.getString(R.string.s_129) else phase
-                            procStepText.text = c.getString(R.string.v_050, processPhase, processStepInfo, sec)
+                            procStepText.text = c.getString(R.string.v_050, processPhase, stepInfo, sec)
                         }
                         if (totalStep > 0) {
-                            progressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
+                            val progress = (displayStep * 100 / totalStep).coerceIn(0, 100)
+                            progressBar.progress = progress
                             if (::procProgressBar.isInitialized && !previewFrameSeen) {
-                                procProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
+                                procProgressBar.progress = progress
                             }
                         }
                     }
@@ -2578,6 +2582,8 @@ class DrawPage(
             Toast.makeText(c, c.getString(R.string.s_047), Toast.LENGTH_SHORT).show()
             return
         }
+        val requestedSteps = i2iStepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
+        denoisingStarted = false
         setGenerating(true)
         i2iProgressText.visibility = View.VISIBLE
         i2iProgressText.text = c.getString(R.string.s_126)
@@ -2594,19 +2600,23 @@ class DrawPage(
                     delay(1000)
                     val sec = (System.currentTimeMillis() - startedAt) / 1000
                     i2iProgressText.post {
-                        val phase = if (sec < 8) c.getString(R.string.s_127) else c.getString(R.string.s_129)
-                        val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, (curStep), (totalStep)) else ""
-                        i2iProgressText.text = c.getString(R.string.v_050, (phase), (stepInfo), (sec))
+                        val phase = if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)
+                        val displayStep = if (previewFrameSeen && totalStep > 0) {
+                            previewFrameStep.coerceIn(0, totalStep)
+                        } else {
+                            curStep.coerceAtLeast(0)
+                        }
+                        val stepInfo = if (totalStep > 0) c.getString(R.string.v_049, displayStep, totalStep) else ""
+                        i2iProgressText.text = c.getString(R.string.v_050, phase, stepInfo, sec)
                         if (::procStepText.isInitialized) {
-                            val processStep = if (previewFrameSeen && totalStep > 0) previewFrameStep.coerceIn(0, totalStep) else curStep
-                            val processStepInfo = if (totalStep > 0) c.getString(R.string.v_049, processStep, totalStep) else ""
                             val processPhase = if (previewFrameSeen) c.getString(R.string.s_129) else phase
-                            procStepText.text = c.getString(R.string.v_050, processPhase, processStepInfo, sec)
+                            procStepText.text = c.getString(R.string.v_050, processPhase, stepInfo, sec)
                         }
                         if (totalStep > 0) {
-                            i2iProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
+                            val progress = (displayStep * 100 / totalStep).coerceIn(0, 100)
+                            i2iProgressBar.progress = progress
                             if (::procProgressBar.isInitialized && !previewFrameSeen) {
-                                procProgressBar.progress = (curStep * 100 / totalStep).coerceIn(0, 100)
+                                procProgressBar.progress = progress
                             }
                         }
                     }
@@ -2616,8 +2626,14 @@ class DrawPage(
                 val img = generateImageI2i(
                     prompt,
                     onProgress = { cur, total ->
-                        curStep = cur
-                        totalStep = total
+                        if (total in 1..(requestedSteps + 2)) {
+                            denoisingStarted = true
+                            curStep = cur.coerceIn(0, total)
+                            totalStep = total
+                        } else if (!denoisingStarted) {
+                            curStep = 0
+                            totalStep = 0
+                        }
                     },
                     onPreview = { st, w, h, rgb -> onPreviewFrame(st, w, h, rgb) },
                 )
@@ -2974,7 +2990,10 @@ class DrawPage(
             previewFrameStep = if (total > 0) frame.step.coerceIn(0, total) else frame.step
             previewFrameSeen = true
             if (total > 0) {
-                procProgressBar.progress = (previewFrameStep * 100 / total).coerceIn(0, 100)
+                val progress = (previewFrameStep * 100 / total).coerceIn(0, 100)
+                procProgressBar.progress = progress
+                if (::progressBar.isInitialized) progressBar.progress = progress
+                if (::i2iProgressBar.isInitialized) i2iProgressBar.progress = progress
                 procStepText.text = c.getString(R.string.s_129) +
                     c.getString(R.string.v_049, previewFrameStep, total)
             }
