@@ -102,12 +102,11 @@ class DrawPage(
 
     companion object {
         const val DIR_NAME = "draw"
-        /** 打标模型/标签表目录：filesDir/tagger */
-        const val TAGGER_DIR = "tagger"
         private const val REQ_IMAGE = 0x5D02
-        private const val REQ_TAGGER_IMAGE = 0x5D03
         private const val REQ_RESADAPTER_LORA = 0x5D04
         private const val REQ_RESADAPTER_NORM = 0x5D05
+        private const val REQ_HIRES_MODEL = 0x5D06
+        private const val HIRES_UPSCALER_DIR = "hires-upscalers"
 
         /** LCM-LoRA：HuggingFace 官方仓库路径（文件实名为 pytorch_lora_weights.safetensors） */
         private const val LORA_HF_PATH =
@@ -226,10 +225,15 @@ class DrawPage(
         private const val KEY_I2I_SAMPLER = "i2iSampler"
         private const val KEY_I2I_SCHEDULER = "i2iScheduler"
 
-        // 打标（Tagger）
-        private const val KEY_TAG_THRESHOLD = "tagThreshold"
-        private const val KEY_TAG_TOPK = "tagTopK"
-        private const val KEY_TAG_CHAN = "tagChan"   // 0 = BGR（WD 系默认），1 = RGB
+        private const val KEY_HIRES_ENABLED = "hiresEnabled"
+        private const val KEY_HIRES_UPSCALER = "hiresUpscaler"
+        private const val KEY_HIRES_MODEL_PATH = "hiresUpscalerModelPath"
+        private const val KEY_HIRES_SCALE = "hiresScale"
+        private const val KEY_HIRES_TARGET_W = "hiresTargetWidth"
+        private const val KEY_HIRES_TARGET_H = "hiresTargetHeight"
+        private const val KEY_HIRES_STEPS = "hiresSteps"
+        private const val KEY_HIRES_DENOISE = "hiresDenoise"
+        private const val KEY_HIRES_TILE = "hiresTileSize"
     }
 
     private val c: Context get() = act
@@ -393,7 +397,7 @@ class DrawPage(
     private lateinit var t2iContent: LinearLayout
     private lateinit var i2iContent: LinearLayout
 
-    /** 当前参数页模式：0=文生图 1=图生图 2=Tagger */
+    /** 当前参数页模式：0=文生图 1=图生图 2=HiRes Fix */
     private var mode = 0
 
     // ---- 图生图专属控件 ----
@@ -424,35 +428,23 @@ class DrawPage(
     /** 图生图选中的参考图（仅内存，进程结束即失效） */
     private var i2iBitmap: Bitmap? = null
 
-    // ---- Tagger 专属控件 ----
-    private lateinit var tabTagger: TextView
-    private lateinit var taggerContent: LinearLayout
-    private lateinit var taggerPreview: ImageView
-    private lateinit var taggerPickBtn: Button
-    private lateinit var taggerImgHint: TextView
-    private lateinit var taggerRunBtn: Button
-    private lateinit var taggerProgressText: TextView
-    private lateinit var taggerProgressBar: ProgressBar
-    private lateinit var taggerThresholdEdit: EditText
-    private lateinit var taggerTopKEdit: EditText
-    private lateinit var taggerChanSpinner: android.widget.Spinner
-
-    /** 参数 / 结果两个面板的 ScrollView（跳转后用来回到顶部） */
+    // ---- HiRes Fix controls ----
+    private lateinit var tabHiRes: TextView
+    private lateinit var hiresContent: LinearLayout
+    private lateinit var hiresEnabledCheck: CheckBox
+    private lateinit var hiresUpscalerSpinner: android.widget.Spinner
+    private lateinit var hiresModelButton: Button
+    private lateinit var hiresModelStatus: TextView
+    private lateinit var hiresScaleEdit: EditText
+    private lateinit var hiresTargetWidthEdit: EditText
+    private lateinit var hiresTargetHeightEdit: EditText
+    private lateinit var hiresStepsEdit: EditText
+    private lateinit var hiresDenoiseEdit: EditText
+    private lateinit var hiresTileEdit: EditText
+    private var hiresModelFile: File? = null
     private lateinit var paramScroll: ScrollView
     private lateinit var resultScroll: ScrollView
-    private lateinit var taggerOut: TextView
-    private lateinit var taggerSendT2iBtn: Button
-    private lateinit var taggerSendI2iBtn: Button
-
-    /** Tagger 选中的输入图（仅内存） */
-    private var taggerBitmap: Bitmap? = null
-
-    /** 最近一次打标结果（逗号分隔的 tag 文本） */
-    private var taggerTags: String = ""
-
-    /** 结果页的「发送至图生图 / 发送至 Tagger」按钮 */
     private lateinit var resultToI2iBtn: Button
-    private lateinit var resultToTaggerBtn: Button
 
     /** 保存图片到相册：MainActivity 注入实现（复用它的 MediaStore 逻辑）。参数：图 + 文件名 */
     var onSaveImage: ((Bitmap, String) -> Unit)? = null
@@ -523,13 +515,13 @@ class DrawPage(
         }
         tabT2i = modeTab(c.getString(R.string.s_207))
         tabI2i = modeTab(c.getString(R.string.s_208))
-        tabTagger = modeTab(c.getString(R.string.s_221))
+        tabHiRes = modeTab(c.getString(R.string.draw_hires_tab))
         tabT2i.setOnClickListener { switchMode(0) }
         tabI2i.setOnClickListener { switchMode(1) }
-        tabTagger.setOnClickListener { switchMode(2) }
+        tabHiRes.setOnClickListener { switchMode(2) }
         modeBar.addView(tabT2i, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         modeBar.addView(tabI2i, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        modeBar.addView(tabTagger, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        modeBar.addView(tabHiRes, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         paramPane.addView(modeBar, matchWrap())
 
         // ---- 提示词 ----
@@ -661,8 +653,8 @@ class DrawPage(
         // ---- 图生图页面 ----
         i2iContent = buildI2iContent()
 
-        // ---- Tagger 页面 ----
-        taggerContent = buildTaggerContent()
+        // ---- HiRes Fix 页面 ----
+        hiresContent = buildHiresContent()
         refreshLoraHint()
 
         // 模式容器：用 visibility 切换，不用嵌套 ViewPager，
@@ -672,7 +664,7 @@ class DrawPage(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         paramHost.addView(i2iContent, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        paramHost.addView(taggerContent, ViewGroup.LayoutParams(
+        paramHost.addView(hiresContent, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         paramPane.addView(paramHost, matchWrap())
 
@@ -756,7 +748,6 @@ class DrawPage(
         }
         resultCard.addView(saveBtn, matchWrap(top = 10))
 
-        // 结果图一键送去「图生图」当参考图，或送去「Tagger」当输入图
         resultToI2iBtn = Button(c).apply {
             text = c.getString(R.string.s_225)
             textSize = 13f
@@ -764,19 +755,9 @@ class DrawPage(
             setBackgroundColor(pal.primarySoft)
             setOnClickListener { sendResultToI2i() }
         }
-        resultToTaggerBtn = Button(c).apply {
-            text = c.getString(R.string.s_238)
-            textSize = 13f
-            setTextColor(primary)
-            setBackgroundColor(pal.primarySoft)
-            setOnClickListener { sendResultToTagger() }
-        }
         val sendRow = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
         sendRow.addView(resultToI2iBtn,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        sendRow.addView(resultToTaggerBtn,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { leftMargin = dp(8) })
         resultCard.addView(sendRow, matchWrap(top = 8))
         resultContent.addView(resultCard)
 
@@ -1009,17 +990,17 @@ class DrawPage(
         return box
     }
 
-    /** 切换参数页：0=文生图 1=图生图 2=Tagger */
+    /** 切换参数页：0=文生图 1=图生图 2=HiRes Fix */
     private fun switchMode(m: Int) {
         if (!::t2iContent.isInitialized) return
         mode = m
         t2iContent.visibility = if (m == 0) View.VISIBLE else View.GONE
         i2iContent.visibility = if (m == 1) View.VISIBLE else View.GONE
-        if (::taggerContent.isInitialized) {
-            taggerContent.visibility = if (m == 2) View.VISIBLE else View.GONE
+        if (::hiresContent.isInitialized) {
+            hiresContent.visibility = if (m == 2) View.VISIBLE else View.GONE
         }
         for ((tv, sel) in listOf(
-            tabT2i to (m == 0), tabI2i to (m == 1), tabTagger to (m == 2)
+            tabT2i to (m == 0), tabI2i to (m == 1), tabHiRes to (m == 2)
         )) {
             tv.setTextColor(if (sel) primary else subText)
             tv.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
@@ -1036,241 +1017,153 @@ class DrawPage(
         setPadding(0, dp(9), 0, dp(9))
     }
 
-    // ================= Tagger 页面 =================
-
-    /** 构建「Tagger」参数页：选图 → 打标 → 结果可发送到文生图/图生图 */
-    private fun buildTaggerContent(): LinearLayout {
+    // ================= HiRes Fix 页面 =================
+    private fun buildHiresContent(): LinearLayout {
         val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
-
-        // ---- 输入图 ----
-        val imgCard = card()
-        imgCard.addView(title(c.getString(R.string.s_209)))
-        taggerPreview = ImageView(c).apply {
-            adjustViewBounds = true
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(pal.fieldBg)
-            visibility = View.GONE
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-        }
-        imgCard.addView(taggerPreview, matchWrap(top = 8))
-        taggerPickBtn = Button(c).apply {
-            text = c.getString(R.string.s_210)
-            setBackgroundColor(primary)
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            setOnClickListener { pickTaggerImage() }
-        }
-        imgCard.addView(taggerPickBtn, matchWrap(top = 10))
-        taggerImgHint = TextView(c).apply {
-            text = c.getString(R.string.s_211)
-            textSize = 11.5f
-            setTextColor(subText)
-            setPadding(0, dp(6), 0, 0)
-        }
-        imgCard.addView(taggerImgHint)
-        box.addView(imgCard)
-
-        // ---- 参数：阈值 / 最多标签数 ----
-        val paramCard = card()
-        paramCard.addView(title(c.getString(R.string.s_065)))
-        taggerThresholdEdit = smallNumber(loadParam(KEY_TAG_THRESHOLD, prefs().getString("def_tag_threshold", null) ?: "0.35"))
-        bindParam(taggerThresholdEdit, KEY_TAG_THRESHOLD)
-        paramCard.addView(paramRow(c.getString(R.string.s_226), taggerThresholdEdit, "0 ~ 1"))
-        taggerTopKEdit = smallNumber(loadParam(KEY_TAG_TOPK, prefs().getString("def_tag_topk", null) ?: "40"))
-        bindParam(taggerTopKEdit, KEY_TAG_TOPK)
-        paramCard.addView(paramRow(c.getString(R.string.s_227), taggerTopKEdit, "1 ~ 300"))
-        taggerChanSpinner = choiceSpinner(listOf("BGR", "RGB"))
-        taggerChanSpinner.setSelection(loadInt(KEY_TAG_CHAN, 0).coerceIn(0, 1), false)
-        taggerChanSpinner.onItemSelectedListener = persistSpinner(KEY_TAG_CHAN)
-        paramCard.addView(paramRow(c.getString(R.string.s_260), taggerChanSpinner, c.getString(R.string.s_261)))
-        paramCard.addView(defaultButtonsRow("tag"), matchWrap(top = 10))
-        box.addView(paramCard)
-
-        // ---- 开始打标 ----
-        taggerRunBtn = Button(c).apply {
-            text = c.getString(R.string.s_222)
-            setBackgroundColor(primary)
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            setOnClickListener { runTagger() }
-        }
-        box.addView(taggerRunBtn, matchWrap(top = 2))
-
-        taggerProgressText = TextView(c).apply {
-            textSize = 12f
-            setTextColor(subText)
-            visibility = View.GONE
-            setPadding(0, dp(8), 0, 0)
-        }
-        box.addView(taggerProgressText)
-        taggerProgressBar = ProgressBar(c, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            progress = 0
-            visibility = View.GONE
-        }
-        box.addView(taggerProgressBar, matchWrap(top = 4))
-
-        // ---- 结果 ----
-        val outCard = card()
-        outCard.addView(title(c.getString(R.string.s_223)))
-        taggerOut = TextView(c).apply {
+        val enableCard = card()
+        enableCard.addView(title(c.getString(R.string.draw_hires_title)))
+        hiresEnabledCheck = CheckBox(c).apply {
+            text = c.getString(R.string.draw_hires_enable)
             textSize = 13f
             setTextColor(textColor)
-            setTextIsSelectable(true)
-            setPadding(0, dp(6), 0, 0)
+            isChecked = prefs().getBoolean(KEY_HIRES_ENABLED, false)
+            setOnCheckedChangeListener { _, checked -> prefs().edit().putBoolean(KEY_HIRES_ENABLED, checked).apply() }
         }
-        outCard.addView(taggerOut)
-        taggerSendT2iBtn = Button(c).apply {
-            text = c.getString(R.string.s_224)
-            textSize = 13f
-            setTextColor(primary)
-            setBackgroundColor(pal.primarySoft)
-            setOnClickListener { sendTags(0) }
-        }
-        taggerSendI2iBtn = Button(c).apply {
-            text = c.getString(R.string.s_225)
-            textSize = 13f
-            setTextColor(primary)
-            setBackgroundColor(pal.primarySoft)
-            setOnClickListener { sendTags(1) }
-        }
-        val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(taggerSendT2iBtn,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(taggerSendI2iBtn,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { leftMargin = dp(8) })
-        outCard.addView(row, matchWrap(top = 10))
-        box.addView(outCard)
+        enableCard.addView(hiresEnabledCheck, matchWrap(top = 6))
+        enableCard.addView(body(c.getString(R.string.draw_hires_enable_hint)))
+        box.addView(enableCard)
 
+        val upscalerCard = card()
+        upscalerCard.addView(title(c.getString(R.string.draw_hires_upscaler)))
+        hiresUpscalerSpinner = choiceSpinner(SdCppEngine.HiresUpscaler.entries.map { it.label })
+        hiresUpscalerSpinner.setSelection(loadInt(KEY_HIRES_UPSCALER, SdCppEngine.HiresUpscaler.LATENT.code)
+            .coerceIn(0, SdCppEngine.HiresUpscaler.entries.lastIndex), false)
+        hiresUpscalerSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                prefs().edit().putInt(KEY_HIRES_UPSCALER, pos).apply()
+                updateHiresModelControls()
+            }
+            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+        }
+        upscalerCard.addView(hiresUpscalerSpinner, matchWrap(top = 4))
+        upscalerCard.addView(body(c.getString(R.string.draw_hires_upscaler_hint)))
+        hiresModelFile = prefs().getString(KEY_HIRES_MODEL_PATH, null)?.let { File(it) }?.takeIf { it.isFile }
+        hiresModelButton = Button(c).apply {
+            text = c.getString(R.string.draw_hires_pick_model)
+            setBackgroundColor(pal.primarySoft)
+            setTextColor(primary)
+            setOnClickListener { pickHiresUpscalerModel() }
+        }
+        upscalerCard.addView(hiresModelButton, matchWrap(top = 8))
+        hiresModelStatus = TextView(c).apply { textSize = 11.5f; setTextColor(subText); setPadding(0, dp(5), 0, 0) }
+        upscalerCard.addView(hiresModelStatus)
+        box.addView(upscalerCard)
+
+        val paramsCard = card()
+        paramsCard.addView(title(c.getString(R.string.draw_hires_params_title)))
+        hiresScaleEdit = smallNumber(loadParam(KEY_HIRES_SCALE, "2.0"))
+        bindParam(hiresScaleEdit, KEY_HIRES_SCALE)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_scale), hiresScaleEdit, c.getString(R.string.draw_hires_scale_hint)))
+        hiresTargetWidthEdit = smallNumber(loadParam(KEY_HIRES_TARGET_W, "0"))
+        bindParam(hiresTargetWidthEdit, KEY_HIRES_TARGET_W)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_target_width), hiresTargetWidthEdit, "0 = use scale"))
+        hiresTargetHeightEdit = smallNumber(loadParam(KEY_HIRES_TARGET_H, "0"))
+        bindParam(hiresTargetHeightEdit, KEY_HIRES_TARGET_H)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_target_height), hiresTargetHeightEdit, "0 = use scale"))
+        hiresStepsEdit = smallNumber(loadParam(KEY_HIRES_STEPS, "0"))
+        bindParam(hiresStepsEdit, KEY_HIRES_STEPS)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_steps), hiresStepsEdit, c.getString(R.string.draw_hires_steps_hint)))
+        hiresDenoiseEdit = smallNumber(loadParam(KEY_HIRES_DENOISE, "0.7"))
+        bindParam(hiresDenoiseEdit, KEY_HIRES_DENOISE)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_denoise), hiresDenoiseEdit, c.getString(R.string.draw_hires_denoise_hint)))
+        hiresTileEdit = smallNumber(loadParam(KEY_HIRES_TILE, "128"))
+        bindParam(hiresTileEdit, KEY_HIRES_TILE)
+        paramsCard.addView(paramRow(c.getString(R.string.draw_hires_tile), hiresTileEdit, c.getString(R.string.draw_hires_tile_hint)))
+        box.addView(paramsCard)
+        updateHiresModelControls()
         return box
     }
 
-    /** 从相册给 Tagger 选输入图 */
-    private fun pickTaggerImage() {
-        val i = android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).apply {
+    private fun updateHiresModelControls() {
+        if (!::hiresUpscalerSpinner.isInitialized || !::hiresModelButton.isInitialized || !::hiresModelStatus.isInitialized) return
+        val selected = SdCppEngine.HiresUpscaler.entries.getOrNull(hiresUpscalerSpinner.selectedItemPosition)
+            ?: SdCppEngine.HiresUpscaler.LATENT
+        val isModel = selected == SdCppEngine.HiresUpscaler.MODEL
+        hiresModelButton.visibility = if (isModel) View.VISIBLE else View.GONE
+        hiresModelStatus.visibility = if (isModel) View.VISIBLE else View.GONE
+        val model = hiresModelFile?.takeIf { it.isFile }
+        hiresModelStatus.text = if (model != null) c.getString(R.string.draw_hires_model_selected, model.name)
+            else c.getString(R.string.draw_hires_model_none)
+    }
+
+    private fun pickHiresUpscalerModel() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(android.content.Intent.CATEGORY_OPENABLE)
-            type = "image/*"
+            type = "*/*"
         }
-        act.startActivityForResult(i, REQ_TAGGER_IMAGE)
+        act.startActivityForResult(intent, REQ_HIRES_MODEL)
     }
 
-    /** 把某张图设为 Tagger 的输入图 */
-    private fun applyTaggerImage(bmp: Bitmap) {
-        taggerBitmap = bmp
-        taggerPreview.setImageBitmap(bmp)
-        taggerPreview.visibility = View.VISIBLE
-        taggerImgHint.text = c.getString(R.string.v_061, bmp.width, bmp.height)
-    }
-
-    /** 执行打标（IO 线程推理，回主线程更新 UI） */
-    private fun runTagger() {
-        val bmp = taggerBitmap
-        if (bmp == null) {
-            toast(c.getString(R.string.s_214))
-            return
+    private fun handleHiresUpscalerPickedFile(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (requestCode != REQ_HIRES_MODEL) return false
+        if (resultCode != Activity.RESULT_OK) return true
+        val uri = data?.data ?: return true
+        val name = queryDisplayName(uri).orEmpty()
+        if (name.substringAfterLast('.', "").lowercase() !in setOf("safetensors", "gguf", "pt", "pth", "ckpt")) {
+            toast(c.getString(R.string.draw_hires_model_bad_file))
+            return true
         }
-        val threshold = taggerThresholdEdit.text.toString().toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.35f
-        val topK = taggerTopKEdit.text.toString().toIntOrNull()?.coerceIn(1, 300) ?: 40
-        taggerRunBtn.isEnabled = false
-        taggerProgressText.visibility = View.VISIBLE
-        taggerProgressText.text = c.getString(R.string.s_229)
-        taggerProgressBar.visibility = View.VISIBLE
-        taggerProgressBar.isIndeterminate = true
         scope.launch {
-            var err: String? = null
-            var list: List<Pair<String, Float>>? = null
-            withContext(Dispatchers.IO) {
-                err = taggerReadyError()
-                if (err == null) {
-                    list = try {
-                        TaggerEngine.run(bmp, threshold, topK, rgbOrder = taggerChanSpinner.selectedItemPosition == 1)
-                    } catch (t: Throwable) {
-                        err = t.message ?: t.javaClass.simpleName
-                        null
+            try {
+                val destination = withContext(Dispatchers.IO) {
+                    val dir = File(c.filesDir, HIRES_UPSCALER_DIR).apply { mkdirs() }
+                    val safeName = File(name).name.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120)
+                        .ifBlank { "upscaler.safetensors" }
+                    val stem = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "")
+                    var target = File(dir, safeName)
+                    var suffix = 2
+                    while (target.exists()) {
+                        target = File(dir, "$stem-$suffix" + if (ext.isEmpty()) "" else ".$ext")
+                        suffix++
                     }
+                    copyContentUri(uri, target)
+                    target
                 }
-            }
-            taggerRunBtn.isEnabled = true
-            taggerProgressBar.visibility = View.GONE
-            taggerProgressText.visibility = View.GONE
-            when {
-                err != null -> toast(c.getString(R.string.s_236, err))
-                list.isNullOrEmpty() -> {
-                    taggerTags = ""
-                    taggerOut.text = c.getString(R.string.s_230)
-                    toast(c.getString(R.string.s_230))
-                }
-                else -> {
-                    val text = list!!.joinToString(", ") { it.first.replace('_', ' ') }
-                    taggerTags = text
-                    taggerOut.text = text
-                    toast(c.getString(R.string.s_237, list!!.size))
-                }
+                hiresModelFile = destination
+                prefs().edit().putString(KEY_HIRES_MODEL_PATH, destination.absolutePath).apply()
+                updateHiresModelControls()
+                toast(c.getString(R.string.draw_hires_model_imported, destination.name))
+            } catch (e: Throwable) {
+                toast(c.getString(R.string.draw_hires_model_copy_failed, e.message ?: e.javaClass.simpleName))
             }
         }
+        return true
     }
 
-    /** 按需加载打标模型（模型名 / 标签表 / 后端变了就重载）；返回 null = 就绪 */
-    private fun ensureTaggerLoaded(): String? {
-        val model = taggerModelFile() ?: return c.getString(R.string.s_228)
-        val csv = taggerCsvFile() ?: return c.getString(R.string.s_228)
-        val (mName, cName) = TaggerEngine.fileNames()
-        if (TaggerEngine.isLoaded() && mName == model.name && cName == csv.name &&
-            TaggerEngine.loadedWithGpu() == useGpu) return null
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        return TaggerEngine.load(c, model, csv, useGpu, threads)
-    }
-
-    /**
-     * 手动模式：不自动加载。已加载且模型/标签表/后端都与当前选择一致时才放行，
-     * 否则提示用户到「模型」页点「加载打标模型」。
-     */
-    private fun taggerReadyError(): String? {
-        val model = taggerModelFile() ?: return c.getString(R.string.s_228)
-        val csv = taggerCsvFile() ?: return c.getString(R.string.s_228)
-        if (!TaggerEngine.isLoaded()) return c.getString(R.string.s_259)
-        val (mName, cName) = TaggerEngine.fileNames()
-        if (mName != model.name || cName != csv.name || TaggerEngine.loadedWithGpu() != useGpu)
-            return c.getString(R.string.s_259)
-        return null
-    }
-
-    /** 把打标结果发送到目标页（0=文生图 1=图生图），发送前弹确认 */
-    private fun sendTags(target: Int) {
-        val text = taggerTags.ifBlank { taggerOut.text?.toString().orEmpty() }
-        if (text.isBlank()) {
-            toast(c.getString(R.string.s_230))
-            return
+    private fun currentHiresSettings(): SdCppEngine.HiResSettings {
+        if (!::hiresEnabledCheck.isInitialized || !::hiresUpscalerSpinner.isInitialized) return SdCppEngine.HiResSettings()
+        val upscaler = SdCppEngine.HiresUpscaler.entries.getOrNull(hiresUpscalerSpinner.selectedItemPosition)
+            ?: SdCppEngine.HiresUpscaler.LATENT
+        val modelPath = hiresModelFile?.takeIf { it.isFile }?.absolutePath
+        val enabled = hiresEnabledCheck.isChecked
+        if (enabled && upscaler == SdCppEngine.HiresUpscaler.MODEL && modelPath.isNullOrBlank()) {
+            throw IllegalStateException(c.getString(R.string.draw_hires_model_missing))
         }
-        val pageName = c.getString(if (target == 0) R.string.s_207 else R.string.s_208)
-        android.app.AlertDialog.Builder(act)
-            .setTitle(c.getString(R.string.s_233))
-            .setMessage(c.getString(R.string.s_234, pageName))
-            .setPositiveButton(c.getString(R.string.s_235)) { _, _ ->
-                if (target == 0) {
-                    promptEdit.setText(text)
-                    switchMode(0)
-                    scrollTop(paramScroll)
-                    toast(c.getString(R.string.s_231))
-                } else {
-                    i2iPromptEdit.setText(text)
-                    switchMode(1)
-                    scrollTop(paramScroll)
-                    toast(c.getString(R.string.s_232))
-                }
-            }
-            .setNegativeButton(c.getString(R.string.s_049), null)
-            .show()
+        return SdCppEngine.HiResSettings(
+            enabled = enabled, upscaler = upscaler, modelPath = modelPath,
+            scale = hiresScaleEdit.text.toString().toFloatOrNull()?.coerceIn(0.25f, 8f) ?: 2f,
+            targetWidth = hiresTargetWidthEdit.text.toString().toIntOrNull()?.coerceIn(0, 8192) ?: 0,
+            targetHeight = hiresTargetHeightEdit.text.toString().toIntOrNull()?.coerceIn(0, 8192) ?: 0,
+            steps = hiresStepsEdit.text.toString().toIntOrNull()?.coerceIn(0, 150) ?: 0,
+            denoisingStrength = hiresDenoiseEdit.text.toString().toFloatOrNull()?.coerceIn(0.0001f, 1f) ?: 0.7f,
+            tileSize = hiresTileEdit.text.toString().toIntOrNull()?.coerceIn(0, 2048) ?: 128,
+        )
     }
 
-    /** 结果图 → 图生图参考图（并切换过去） */
     private fun sendResultToI2i() {
         val b = lastImage
-        if (b == null) {
-            toast(c.getString(R.string.s_183))
-            return
-        }
+        if (b == null) { toast(c.getString(R.string.s_183)); return }
         applyPickedImage(b)
         switchMode(1)
         switchPane(toResult = false)
@@ -1278,159 +1171,12 @@ class DrawPage(
         toast(c.getString(R.string.s_239))
     }
 
-    /** 结果图 → Tagger 输入图（并切换过去） */
-    private fun sendResultToTagger() {
-        val b = lastImage
-        if (b == null) {
-            toast(c.getString(R.string.s_183))
-            return
-        }
-        applyTaggerImage(b)
-        switchMode(2)
-        switchPane(toResult = false)
-        scrollTop(paramScroll)
-        toast(c.getString(R.string.s_240))
-    }
-
-    /** 外部图片 → 图生图参考图（并切到图生图页）。供对话里的图片长按菜单调用。 */
     fun sendImageToI2i(b: Bitmap) {
         applyPickedImage(b)
         switchMode(1)
         switchPane(toResult = false)
         scrollTop(paramScroll)
         toast(c.getString(R.string.s_239))
-    }
-
-    /** 外部图片 → Tagger 输入图（并切到 Tagger 页）。供对话里的图片长按菜单调用。 */
-    fun sendImageToTagger(b: Bitmap) {
-        applyTaggerImage(b)
-        switchMode(2)
-        switchPane(toResult = false)
-        scrollTop(paramScroll)
-        toast(c.getString(R.string.s_240))
-    }
-
-    // ---- 打标模型文件（模型页导入，这里只读） ----
-
-    /** 打标目录：filesDir/tagger */
-    private fun taggerDir(): File = File(c.filesDir, TAGGER_DIR).apply { mkdirs() }
-
-    /** 已导入的打标模型（.onnx），按名字排序 */
-    fun listTaggerModels(): List<File> =
-        taggerDir().listFiles { f -> f.isFile && f.name.endsWith(".onnx", true) }?.sortedBy { it.name } ?: emptyList()
-
-    /** 已导入的标签表（.csv） */
-    fun listTaggerCsvs(): List<File> =
-        taggerDir().listFiles { f -> f.isFile && f.name.endsWith(".csv", true) }?.sortedBy { it.name } ?: emptyList()
-
-    /** 当前选中的打标模型（优先上次选择的，否则第一个） */
-    fun taggerModelFile(): File? = pickSelected(listTaggerModels(), "selTaggerModel")
-
-    /** 当前选中的标签表 */
-    fun taggerCsvFile(): File? = pickSelected(listTaggerCsvs(), "selTaggerCsv")
-
-    private fun pickSelected(all: List<File>, key: String): File? {
-        if (all.isEmpty()) return null
-        val saved = prefs().getString(key, null)
-        return all.firstOrNull { it.name == saved } ?: all.first()
-    }
-
-    fun currentTaggerModelName(): String? = taggerModelFile()?.name
-    fun currentTaggerCsvName(): String? = taggerCsvFile()?.name
-
-    /** 选择打标模型（换模型就卸载旧的，下次打标时重新加载） */
-    fun selectTaggerModel(f: File) {
-        prefs().edit().putString("selTaggerModel", f.name).apply()
-        TaggerEngine.unload()
-    }
-
-    /** 选择标签表 */
-    fun selectTaggerCsv(f: File) {
-        prefs().edit().putString("selTaggerCsv", f.name).apply()
-        TaggerEngine.unload()
-    }
-
-    fun taggerLoaded(): Boolean = TaggerEngine.isLoaded()
-
-    /** Tagger 界面选的通道顺序（false = BGR，true = RGB）；对话页借打标看图时沿用这个设置。 */
-    fun taggerRgbOrder(): Boolean =
-        ::taggerChanSpinner.isInitialized && taggerChanSpinner.selectedItemPosition == 1
-
-    /** 卸载打标模型，释放内存 */
-    fun unloadTagger() = TaggerEngine.unload()
-
-    /** 模型页「加载打标模型」：按当前选择的模型/标签表加载，返回 null=成功 */
-    suspend fun loadTaggerFromUi(onStage: (String) -> Unit = {}): String? {
-        val model = taggerModelFile()
-        val csv = taggerCsvFile()
-        if (model == null || csv == null) return c.getString(R.string.s_228)
-        onStage(c.getString(R.string.s_245))
-        return withContext(Dispatchers.IO) { ensureTaggerLoaded() }
-    }
-
-    /** 供「模型」页展示的打标状态 */
-    fun taggerSummary(): String {
-        val m = taggerModelFile() ?: return c.getString(R.string.s_245)
-        val csv = taggerCsvFile() ?: return c.getString(R.string.s_245)
-        val n = TaggerEngine.parseCsv(csv).size
-        return c.getString(R.string.v_062, m.name, csv.name, n)
-    }
-
-    /** 导入 ONNX 打标模型（单文件） */
-    suspend fun importTaggerModel(
-        uri: Uri,
-        onStage: (String) -> Unit,
-        onProgress: ((Long, Long) -> Unit)? = null
-    ): String? = copyToTagger(uri, ".onnx", R.string.s_246, onStage, onProgress)
-
-    /** 导入标签表 CSV（单文件） */
-    suspend fun importTaggerCsv(
-        uri: Uri,
-        onStage: (String) -> Unit,
-        onProgress: ((Long, Long) -> Unit)? = null
-    ): String? = copyToTagger(uri, ".csv", R.string.s_247, onStage, onProgress)
-
-    private suspend fun copyToTagger(
-        uri: Uri,
-        ext: String,
-        extErr: Int,
-        onStage: (String) -> Unit,
-        onProgress: ((Long, Long) -> Unit)?
-    ): String? = withContext(Dispatchers.IO) {
-        try {
-            val name = queryDisplayName(uri)
-            if (name == null || !name.endsWith(ext, ignoreCase = true)) {
-                return@withContext c.getString(extErr)
-            }
-            withContext(Dispatchers.Main) { onStage(c.getString(R.string.v_033, name)) }
-            val dest = File(taggerDir(), name)
-            val total = runCatching {
-                c.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
-            }.getOrDefault(-1L)
-            withContext(Dispatchers.Main) { onProgress?.invoke(0L, total) }
-            c.contentResolver.openInputStream(uri)?.use { ins ->
-                dest.outputStream().use { outs ->
-                    val buf = ByteArray(1 shl 20)
-                    var done = 0L
-                    var tick = 0L
-                    while (true) {
-                        val n = ins.read(buf)
-                        if (n < 0) break
-                        outs.write(buf, 0, n)
-                        done += n
-                        if (done - tick >= (1L shl 20)) {
-                            tick = done
-                            val d = done
-                            withContext(Dispatchers.Main) { onProgress?.invoke(d, total) }
-                        }
-                    }
-                }
-            } ?: return@withContext c.getString(R.string.s_106)
-            TaggerEngine.unload() // 文件变了，下次重新加载
-            null
-        } catch (e: Throwable) {
-            c.getString(R.string.v_038, (e.message ?: e.javaClass.simpleName))
-        }
     }
 
     /** 从相册/文件选择参考图 */
@@ -2206,32 +1952,19 @@ class DrawPage(
         refreshModelCard()
     }
 
-    /** 顶部模型卡片跟随子页切换：文生图/图生图 显示绘图模型，Tagger 显示打标模型 */
+    /** 顶部模型卡片跟随子页切换：显示当前绘图模型 */
     private fun refreshModelCard() {
         if (!::modelCardTitle.isInitialized) return
-        if (mode == 2) {
-            if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.GONE
-            if (::resAdapterButton.isInitialized) resAdapterButton.visibility = View.GONE
-            modelCardTitle.text = c.getString(R.string.s_262)
-            statusText.text = taggerSummary()
-            quantText.text = if (taggerLoaded()) {
-                c.getString(R.string.s_263) + " · " + TaggerEngine.backendLabel()
-            } else {
-                c.getString(R.string.s_264)
-            }
-        } else {
-            if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
-            if (::resAdapterButton.isInitialized) {
-                resAdapterButton.visibility =
-                    if (activeSetOrSelected()?.family == FAM_SDXL) View.VISIBLE else View.GONE
-            }
-            modelCardTitle.text = c.getString(R.string.s_164)
-            try { statusText.text = modelSummary() } catch (_: Throwable) {}
-            refreshQuantText()
+        if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
+        if (::resAdapterButton.isInitialized) {
+            resAdapterButton.visibility = if (activeSetOrSelected()?.family == FAM_SDXL) View.VISIBLE else View.GONE
         }
+        modelCardTitle.text = c.getString(R.string.s_164)
+        try { statusText.text = modelSummary() } catch (_: Throwable) {}
+        refreshQuantText()
     }
 
-    /** 当前绘图模型的量化等级（始终可见）。
+        /** 当前绘图模型的量化等级（始终可见）。
      *  量化等级是烧在模型文件里的（Q4_0 的 gguf 就是 Q4_0），App 无法凭空转换，只能读出来展示。 */
     private fun refreshQuantText() {
         try {
@@ -2772,6 +2505,7 @@ class DrawPage(
 
         // LoRA 列表按槽位逐个传给 sd.cpp，支持每个 adapter 独立权重。
         val loras = selectedLoras("t2i")
+        val hires = currentHiresSettings()
         // EditText 必须在主线程读，先取出来再进 IO
         val negative = negEdit.text.toString()
 
@@ -2800,6 +2534,7 @@ class DrawPage(
                     sampler = sampler,
                     scheduler = scheduler,
                     eta = eta,
+                    hires = hires,
                     cb = { cur, total -> onProgress(cur, total) },
                     onPreview = onPreview?.let { f ->
                         SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -2990,6 +2725,7 @@ class DrawPage(
         val negative = i2iNegEdit.text.toString()
         val sampler = pickI2iSampler(loras.isNotEmpty())
         val scheduler = pickI2iScheduler(loras.isNotEmpty())
+        val hires = currentHiresSettings()
 
         val bmp = withContext(Dispatchers.IO) {
             val rgb = SdCppEngine.bitmapToRgb888(src)
@@ -3007,6 +2743,7 @@ class DrawPage(
                 sampler = sampler,
                 scheduler = scheduler,
                 eta = eta,
+                hires = hires,
                 cb = { cur, total -> onProgress(cur, total) },
                 onPreview = onPreview?.let { f ->
                     SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -3054,19 +2791,14 @@ class DrawPage(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (handleHiresUpscalerPickedFile(requestCode, resultCode, data)) return true
         if (handleResAdapterPickedFile(requestCode, resultCode, data)) return true
-        if (requestCode != REQ_IMAGE && requestCode != REQ_TAGGER_IMAGE) return false
+        if (requestCode != REQ_IMAGE) return false
         if (resultCode != Activity.RESULT_OK) return true
         val uri = data?.data ?: return true
         scope.launch {
             val bmp = withContext(Dispatchers.IO) { decodePickedImage(uri) }
-            if (bmp == null) {
-                toast(c.getString(R.string.s_215))
-            } else if (requestCode == REQ_IMAGE) {
-                applyPickedImage(bmp)
-            } else {
-                applyTaggerImage(bmp)
-            }
+            if (bmp == null) toast(c.getString(R.string.s_215)) else applyPickedImage(bmp)
         }
         return true
     }
@@ -3431,9 +3163,6 @@ class DrawPage(
             e.putInt(KEY_I2I_SAMPLER, i2iSamplerSpinner.selectedItemPosition)
             e.putInt(KEY_I2I_SCHEDULER, i2iSchedulerSpinner.selectedItemPosition)
         }
-        if (::taggerChanSpinner.isInitialized) {
-            e.putInt(KEY_TAG_CHAN, taggerChanSpinner.selectedItemPosition)
-        }
         e.apply()
         syncDrawCore()   // 参数一改就同步给 API 侧（下一次请求即生效）
     }
@@ -3531,7 +3260,7 @@ class DrawPage(
         override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
     }
 
-    // ---- 默认值（文生图 / 图生图按 LoRA 开/关各一套；Tagger 不分） ----
+    // ---- 默认值（文生图 / 图生图按 LoRA 开/关各一套） ----
 
     /** 当前 LoRA 状态（0=关 1=开），作默认值键后缀 */
     private fun loraTag(): String = if (useLora) "1" else "0"
@@ -3573,11 +3302,6 @@ class DrawPage(
                 e.putInt("def_i2i_sampler_$lg", i2iSamplerSpinner.selectedItemPosition)
                 e.putInt("def_i2i_scheduler_$lg", i2iSchedulerSpinner.selectedItemPosition)
             }
-            "tag" -> {
-                e.putString("def_tag_threshold", taggerThresholdEdit.text.toString())
-                e.putString("def_tag_topk", taggerTopKEdit.text.toString())
-                e.putInt("def_tag_chan", taggerChanSpinner.selectedItemPosition)
-            }
         }
         e.apply()
         toast(c.getString(R.string.s_250))
@@ -3614,11 +3338,6 @@ class DrawPage(
                 }
                 i2iSamplerSpinner.setSelection(defOfInt("i2i", "sampler", 0), false)
                 i2iSchedulerSpinner.setSelection(defOfInt("i2i", "scheduler", 0), false)
-            }
-            "tag" -> {
-                taggerThresholdEdit.setText(prefs().getString("def_tag_threshold", null) ?: "0.35")
-                taggerTopKEdit.setText(prefs().getString("def_tag_topk", null) ?: "40")
-                taggerChanSpinner.setSelection(prefs().getInt("def_tag_chan", 0).coerceIn(0, 1), false)
             }
         }
     }
