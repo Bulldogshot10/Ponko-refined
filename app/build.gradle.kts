@@ -7,6 +7,11 @@ plugins {
 // Keep the requested Exynos ISA profile enabled unless explicitly overridden.
 val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("ON").get()
 val ponkoExynosCpuProfile = providers.gradleProperty("ponkoExynosCpuProfile").orElse("ON").get()
+val ponkoCpuArchFlags = if (ponkoExynosCpuProfile.equals("ON", ignoreCase = true)) {
+    "-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4"
+} else {
+    "-march=armv8.2-a+dotprod+fp16"
+}
 val ponkoEnableCompilerCache = providers.gradleProperty("ponkoEnableCompilerCache").orElse("ON").get()
 val ponkoRustFacadeEnabled = providers.gradleProperty("ponkoRustFacade")
     .map { it.equals("true", ignoreCase = true) }
@@ -113,10 +118,12 @@ if (ponkoRustFacadeEnabled) {
         workingDir(ponkoRustDir)
         description = "Build the opt-in Ponko Rust facade for Android arm64-v8a."
         inputs.files(fileTree(ponkoRustDir) {
-            include("Cargo.toml", "uniffi.toml", "src/**")
+            include("Cargo.toml", "build.rs", "uniffi.toml", "src/**")
         })
         outputs.file(rustNativeLibrary)
         environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
+        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
         doFirst {
             ponkoRustJniLibsDir.get().asFile.mkdirs()
             check(ponkoRustDir.resolve("Cargo.toml").isFile) {
@@ -139,6 +146,8 @@ if (ponkoRustFacadeEnabled) {
         inputs.file(ponkoRustDir.resolve("uniffi.toml"))
         outputs.dir(ponkoUniffiKotlinDir)
         environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
+        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
         doFirst {
             val library = rustNativeLibrary.get().asFile
             check(library.isFile) { "Rust library was not produced: $library" }
