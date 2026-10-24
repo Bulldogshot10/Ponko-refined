@@ -581,6 +581,16 @@ SD_API bool convert_with_components(const char* model_path,
                                     bool convert_name,
                                     int n_threads);
 
+SD_API bool fuse_loras_to_file(const char* input_model_path,
+                                const char* const* lora_paths,
+                                const float* lora_scales,
+                                size_t lora_count,
+                                const char* output_path,
+                                enum sd_type_t output_type,
+                                const char* tensor_type_rules,
+                                bool convert_name,
+                                int n_threads);
+
 SD_API bool preprocess_canny(sd_image_t image,
                              float high_threshold,
                              float low_threshold,

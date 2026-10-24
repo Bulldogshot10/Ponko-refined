@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <condition_variable>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -7,11 +8,15 @@
 #include <memory>
 #include <mutex>
 #include <regex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "core/ggml_extend_backend.h"
 #include "core/util.h"
+#include "model/adapter/lora.hpp"
+#include "model_manager.h"
 #include "model_io/gguf_io.h"
 #include "model_io/safetensors_io.h"
 #include "model_io/streaming_writer.h"
@@ -21,6 +26,179 @@ struct TensorExportInfo {
     TensorStorage storage;
     ggml_type type;
 };
+
+
+struct LoraFusionContext {
+    // Declare the backend owner before the runners so the LoRA runners are destroyed first.
+    SDBackendManager backend_manager;
+    std::shared_ptr<ModelManager> model_manager;
+    std::vector<std::unique_ptr<LoraModel>> lora_models;
+    std::set<std::string> model_tensor_names;
+    std::set<std::string> target_tensor_names;
+    SDVersion model_version = VERSION_COUNT;
+    int n_threads = 1;
+    std::mutex apply_mutex;
+
+    static bool has_weight_delta(const LoraModel& lora, const std::string& tensor_name) {
+        static const char* suffixes[] = {
+            ".lora_down", ".lora_up", ".lora_mid", ".diff", ".alpha", ".scale",
+            ".hada_w1_a", ".hada_w1_b", ".hada_w2_a", ".hada_w2_b",
+            ".lokr_w1", ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2", ".lokr_w2_a", ".lokr_w2_b"
+        };
+        const std::string root = "lora." + tensor_name;
+        // Some adapters split a target into multiple delta groups, suffixed .1, .2, ...
+        for (int index = 0; index < 16; ++index) {
+            const std::string key = root + (index == 0 ? "" : "." + std::to_string(index));
+            for (const char* suffix : suffixes) {
+                if (lora.lora_tensors.find(key + suffix) != lora.lora_tensors.end()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool initialize(const std::vector<std::string>& paths,
+                    const std::vector<float>& scales,
+                    const std::set<std::string>& base_names,
+                    SDVersion version,
+                    int threads,
+                    std::string* error) {
+        if (paths.empty() || paths.size() != scales.size()) {
+            if (error) *error = "at least one LoRA path and one matching scale are required";
+            return false;
+        }
+        if (!sd_version_is_unet(version)) {
+            if (error) *error = "LoRA fusion currently supports Stable Diffusion 1.x, 2.x, and SDXL checkpoints";
+            return false;
+        }
+
+        std::string backend_error;
+        if (!backend_manager.init("cpu", "cpu", nullptr, &backend_error)) {
+            if (error) *error = "failed to initialize CPU backend for LoRA fusion: " + backend_error;
+            return false;
+        }
+        ggml_backend_t compute_backend = backend_manager.runtime_backend(SDBackendModule::DIFFUSION);
+        ggml_backend_t params_backend = backend_manager.params_backend(SDBackendModule::DIFFUSION);
+        if (compute_backend == nullptr || params_backend == nullptr) {
+            if (error) *error = "CPU backend did not provide a valid LoRA fusion backend";
+            return false;
+        }
+
+        model_manager = std::make_shared<ModelManager>();
+        model_manager->set_n_threads(std::max(1, threads));
+        model_manager->set_enable_mmap(false);
+        model_tensor_names = base_names;
+        model_version = version;
+        n_threads = std::max(1, threads);
+
+        std::vector<ModelManager::LoraSpec> specs;
+        specs.reserve(paths.size());
+        for (size_t i = 0; i < paths.size(); ++i) {
+            ModelManager::LoraSpec spec;
+            spec.path = paths[i];
+            spec.multiplier = scales[i];
+            spec.required = true;
+            specs.push_back(std::move(spec));
+        }
+        if (!model_manager->prepare_lora_sources(specs)) {
+            if (error) *error = "failed to read or register one of the LoRA source files";
+            return false;
+        }
+
+        lora_models.reserve(specs.size());
+        for (const auto& spec : specs) {
+            auto model = std::make_unique<LoraModel>(
+                spec.path, compute_backend, params_backend, model_manager, spec.file_id, model_version);
+            model->multiplier = spec.multiplier;
+            if (!model->init_params(n_threads)) {
+                if (error) *error = "failed to load LoRA tensors from '" + spec.path + "'";
+                return false;
+            }
+            model->preprocess_lora_tensors(model_tensor_names);
+            for (const auto& tensor_name : model_tensor_names) {
+                if (has_weight_delta(*model, tensor_name)) {
+                    target_tensor_names.insert(tensor_name);
+                }
+            }
+            lora_models.push_back(std::move(model));
+        }
+
+        if (target_tensor_names.empty()) {
+            if (error) *error = "none of the selected LoRAs matched tensors in this checkpoint";
+            return false;
+        }
+        LOG_INFO("LoRA fusion initialized: %zu adapter(s), %zu matching model tensor(s), version=%d",
+                 lora_models.size(), target_tensor_names.size(), static_cast<int>(model_version));
+        return true;
+    }
+
+    bool targets(const std::string& tensor_name) const {
+        return target_tensor_names.find(tensor_name) != target_tensor_names.end();
+    }
+
+    bool apply_tensor(const std::string& tensor_name, ggml_tensor* tensor, std::string* error) {
+        std::lock_guard<std::mutex> lock(apply_mutex);
+        std::map<std::string, ggml_tensor*> target{{tensor_name, tensor}};
+        for (auto& model : lora_models) {
+            if (!has_weight_delta(*model, tensor_name)) continue;
+            // Reuse the inference engine's LoRA/LoHA/LoKR math so fusion matches runtime
+            // scaling, alpha/rank handling, tensor-name conversion, and shape checks.
+            if (!model->apply(target, model_tensor_names, model_version, n_threads, false)) {
+                if (error) *error = "failed to apply LoRA delta to tensor '" + tensor_name + "'";
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+static bool convert_fused_f32_tensor(const ggml_tensor* source,
+                                     ggml_type destination_type,
+                                     std::vector<uint8_t>* output,
+                                     std::string* error) {
+    if (source == nullptr || source->data == nullptr || output == nullptr ||
+        source->type != GGML_TYPE_F32) {
+        if (error) *error = "invalid F32 tensor supplied to LoRA fusion exporter";
+        return false;
+    }
+    const int64_t elements = ggml_nelements(source);
+    if (elements <= 0) {
+        if (error) *error = "LoRA fusion encountered an empty model tensor";
+        return false;
+    }
+    const size_t output_bytes = static_cast<size_t>(elements) *
+        ggml_type_size(destination_type) / ggml_blck_size(destination_type);
+    output->resize(output_bytes);
+    const auto* src = static_cast<const float*>(source->data);
+
+    if (destination_type == GGML_TYPE_F32) {
+        std::memcpy(output->data(), src, output_bytes);
+        return true;
+    }
+    if (destination_type == GGML_TYPE_F16) {
+        ggml_fp32_to_fp16_row(src, reinterpret_cast<ggml_fp16_t*>(output->data()),
+                              static_cast<int64_t>(elements));
+        return true;
+    }
+    if (destination_type == GGML_TYPE_Q4_0 || destination_type == GGML_TYPE_Q5_0 ||
+        destination_type == GGML_TYPE_Q8_0) {
+        const int64_t row_width = source->ne[0];
+        if (row_width <= 0 || elements % row_width != 0) {
+            if (error) *error = "invalid row shape while quantizing fused LoRA tensor";
+            return false;
+        }
+        std::vector<float> importance(static_cast<size_t>(row_width), 1.0f);
+        ggml_quantize_chunk(
+            destination_type, src, output->data(), 0,
+            static_cast<int64_t>(elements / row_width), static_cast<int64_t>(row_width),
+            importance.data());
+        return true;
+    }
+    if (error) *error = std::string("unsupported output tensor type for LoRA fusion: ") +
+                        ggml_type_name(destination_type);
+    return false;
+}
 
 struct TensorExportJob {
     TensorExportInfo info;
@@ -122,38 +300,71 @@ static bool preallocate_output_file(const std::string& output_path, uint64_t fil
     return true;
 }
 
-static bool load_tensor_for_export(ModelLoader& model_loader, TensorExportJob& job) {
+static bool load_tensor_for_export(ModelLoader& model_loader,
+                                   TensorExportJob& job,
+                                   LoraFusionContext* fusion = nullptr) {
+    const TensorStorage& storage = job.info.storage;
+    TensorStorage output_storage = storage;
+    output_storage.type = job.info.type;
+
+    if (fusion != nullptr && fusion->targets(storage.name)) {
+        const size_t float_bytes = static_cast<size_t>(storage.nelements()) * sizeof(float);
+        const size_t mem_size = 1 * 1024 * 1024 + ggml_tensor_overhead() + float_bytes;
+        ggml_context* ggml_ctx = ggml_init({mem_size, nullptr, false});
+        if (ggml_ctx == nullptr) {
+            job.error = "ggml_init failed for fused tensor '" + storage.name + "'";
+            return false;
+        }
+        ggml_tensor* tensor = ggml_new_tensor(ggml_ctx, GGML_TYPE_F32, storage.n_dims, storage.ne);
+        if (tensor == nullptr) {
+            ggml_free(ggml_ctx);
+            job.error = "ggml_new_tensor failed for fused tensor '" + storage.name + "'";
+            return false;
+        }
+        ggml_set_name(tensor, storage.name.c_str());
+        std::vector<float> base_weights;
+        // The loader's thread count was set before worker threads started; zero avoids
+        // mutating shared loader state while other tensor-export workers are active.
+        if (!model_loader.load_float_tensor(storage.name, base_weights, 0, false) ||
+            base_weights.size() != static_cast<size_t>(storage.nelements())) {
+            ggml_free(ggml_ctx);
+            job.error = "failed to dequantize base weights for fused tensor '" + storage.name + "'";
+            return false;
+        }
+        std::memcpy(tensor->data, base_weights.data(), base_weights.size() * sizeof(float));
+        if (!fusion->apply_tensor(storage.name, tensor, &job.error)) {
+            ggml_free(ggml_ctx);
+            return false;
+        }
+        const bool converted = convert_fused_f32_tensor(tensor, job.info.type, &job.data, &job.error);
+        ggml_free(ggml_ctx);
+        return converted;
+    }
+
     size_t mem_size = 1 * 1024 * 1024;
     mem_size += ggml_tensor_overhead();
-    TensorStorage output_storage = job.info.storage;
-    output_storage.type          = job.info.type;
     mem_size += static_cast<size_t>(output_storage.nbytes());
-
     ggml_context* ggml_ctx = ggml_init({mem_size, nullptr, false});
     if (ggml_ctx == nullptr) {
-        job.error = "ggml_init failed for tensor '" + job.info.storage.name + "'";
+        job.error = "ggml_init failed for tensor '" + storage.name + "'";
         return false;
     }
 
-    ggml_tensor* tensor = ggml_new_tensor(ggml_ctx, job.info.type, job.info.storage.n_dims, job.info.storage.ne);
+    ggml_tensor* tensor = ggml_new_tensor(ggml_ctx, job.info.type, storage.n_dims, storage.ne);
     if (tensor == nullptr) {
         ggml_free(ggml_ctx);
-        job.error = "ggml_new_tensor failed for tensor '" + job.info.storage.name + "'";
+        job.error = "ggml_new_tensor failed for tensor '" + storage.name + "'";
         return false;
     }
-    ggml_set_name(tensor, job.info.storage.name.c_str());
-
+    ggml_set_name(tensor, storage.name.c_str());
     const size_t tensor_nbytes = ggml_nbytes(tensor);
-    if (tensor_nbytes > 0 && !model_loader.load_tensor(job.info.storage, tensor)) {
+    if (tensor_nbytes > 0 && !model_loader.load_tensor(storage, tensor)) {
         ggml_free(ggml_ctx);
-        job.error = "failed to load tensor '" + job.info.storage.name + "'";
+        job.error = "failed to load tensor '" + storage.name + "'";
         return false;
     }
-
     job.data.resize(tensor_nbytes);
-    if (tensor_nbytes > 0) {
-        memcpy(job.data.data(), tensor->data, tensor_nbytes);
-    }
+    if (tensor_nbytes > 0) std::memcpy(job.data.data(), tensor->data, tensor_nbytes);
     ggml_free(ggml_ctx);
     return true;
 }
@@ -163,7 +374,8 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                                const std::vector<TensorExportInfo>& tensors,
                                const StreamingModelWriter& writer,
                                int n_threads,
-                               std::string* error) {
+                               std::string* error,
+                               LoraFusionContext* fusion = nullptr) {
     n_threads = n_threads > 0 ? n_threads : sd_get_num_physical_cores();
     n_threads = std::max(1, n_threads);
     LOG_INFO("streaming convert with %d threads", n_threads);
@@ -187,7 +399,8 @@ static bool stream_tensor_data(ModelLoader& model_loader,
     auto reserve_memory = [&](size_t bytes) -> bool {
         std::unique_lock<std::mutex> lock(work_mutex);
         memory_cv.wait(lock, [&]() {
-            return failed || reserved_bytes == 0 || reserved_bytes + bytes <= memory_budget;
+            return failed || reserved_bytes == 0 ||
+                   (bytes <= memory_budget && reserved_bytes <= memory_budget - bytes);
         });
         if (failed) {
             return false;
@@ -233,7 +446,18 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                     tensor_index = next_tensor_index++;
                 }
 
-                const size_t tensor_bytes = export_tensor_nbytes(tensors[tensor_index]);
+                size_t tensor_bytes = export_tensor_nbytes(tensors[tensor_index]);
+                if (fusion != nullptr && fusion->targets(tensors[tensor_index].info.storage.name)) {
+                    const int64_t raw_elements = tensors[tensor_index].info.storage.nelements();
+                    const size_t elements = raw_elements > 0 ? static_cast<size_t>(raw_elements) : 0;
+                    const size_t float_bytes = elements > SIZE_MAX / sizeof(float)
+                        ? SIZE_MAX
+                        : elements * sizeof(float);
+                    // Fusion keeps both the F32 destination and a temporary dequantized copy alive
+                    // while applying deltas. Account for both, not only the compressed GGUF output.
+                    const size_t fusion_bytes = float_bytes > SIZE_MAX / 3 ? SIZE_MAX : float_bytes * 3;
+                    tensor_bytes = std::max(tensor_bytes, fusion_bytes);
+                }
                 if (!reserve_memory(tensor_bytes)) {
                     return;
                 }
@@ -241,7 +465,7 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                 TensorExportJob job;
                 job.info = tensors[tensor_index];
                 try {
-                    job.success = load_tensor_for_export(model_loader, job);
+                    job.success = load_tensor_for_export(model_loader, job, fusion);
                 } catch (const std::exception& e) {
                     job.error   = e.what();
                     job.success = false;
@@ -298,7 +522,8 @@ static bool write_model_file_streaming(ModelLoader& model_loader,
                                        const std::vector<TensorExportInfo>& tensors,
                                        StreamingModelWriter& writer,
                                        int n_threads,
-                                       std::string* error) {
+                                       std::string* error,
+                                       LoraFusionContext* fusion = nullptr) {
     std::vector<TensorWritePlan> plans = tensor_write_plans_from_export_infos(tensors);
     if (!writer.write_metadata(output_path, plans, error)) {
         return false;
@@ -307,7 +532,7 @@ static bool write_model_file_streaming(ModelLoader& model_loader,
         return false;
     }
     model_loader.process_model_files(false, false);
-    return stream_tensor_data(model_loader, output_path, tensors, writer, n_threads, error);
+    return stream_tensor_data(model_loader, output_path, tensors, writer, n_threads, error, fusion);
 }
 
 static bool init_convert_path(ModelLoader& model_loader, const char* path, const char* prefix, bool& loaded_any) {
@@ -326,7 +551,8 @@ static bool export_loaded_model(ModelLoader& model_loader,
                                 const char* output_path,
                                 sd_type_t output_type,
                                 const char* tensor_type_rules,
-                                int n_threads) {
+                                int n_threads,
+                                LoraFusionContext* fusion = nullptr) {
     ggml_type type             = sd_type_to_ggml_type(output_type);
     bool output_is_safetensors = ends_with(output_path, ".safetensors");
     TensorTypeRules type_rules = parse_tensor_type_rules(tensor_type_rules);
@@ -341,7 +567,7 @@ static bool export_loaded_model(ModelLoader& model_loader,
         } else {
             writer = std::make_unique<GGUFStreamingWriter>();
         }
-        success = write_model_file_streaming(model_loader, output_path, tensors, *writer, n_threads, &error);
+        success = write_model_file_streaming(model_loader, output_path, tensors, *writer, n_threads, &error, fusion);
     }
 
     if (!success && !error.empty()) {
@@ -384,6 +610,56 @@ bool convert_with_components(const char* model_path,
     }
 
     return export_loaded_model(model_loader, output_path, output_type, tensor_type_rules, n_threads);
+}
+
+bool fuse_loras_to_file(const char* input_model_path,
+                        const char* const* lora_paths,
+                        const float* lora_scales,
+                        size_t lora_count,
+                        const char* output_path,
+                        sd_type_t output_type,
+                        const char* tensor_type_rules,
+                        bool convert_name,
+                        int n_threads) {
+    if (input_model_path == nullptr || input_model_path[0] == '\0' ||
+        output_path == nullptr || output_path[0] == '\0' ||
+        lora_paths == nullptr || lora_scales == nullptr || lora_count == 0) {
+        LOG_ERROR("LoRA fusion requires an input model, output path, and at least one LoRA");
+        return false;
+    }
+
+    ModelLoader model_loader;
+    model_loader.set_n_threads(n_threads);
+    if (!model_loader.init_from_file(input_model_path)) {
+        LOG_ERROR("failed to load base checkpoint for LoRA fusion: '%s'", input_model_path);
+        return false;
+    }
+    if (convert_name) model_loader.convert_tensors_name();
+
+    std::set<std::string> base_names;
+    for (const auto& item : model_loader.get_tensor_storage_map()) {
+        if (!starts_with(item.first, "lora.")) base_names.insert(item.first);
+    }
+    const SDVersion version = model_loader.get_sd_version();
+    LoraFusionContext fusion;
+    std::vector<std::string> paths;
+    std::vector<float> scales;
+    paths.reserve(lora_count);
+    scales.reserve(lora_count);
+    for (size_t i = 0; i < lora_count; ++i) {
+        if (lora_paths[i] == nullptr || lora_paths[i][0] == '\0' || !std::isfinite(lora_scales[i])) {
+            LOG_ERROR("invalid LoRA path or non-finite LoRA scale at index %zu", i);
+            return false;
+        }
+        paths.emplace_back(lora_paths[i]);
+        scales.push_back(lora_scales[i]);
+    }
+    std::string error;
+    if (!fusion.initialize(paths, scales, base_names, version, n_threads, &error)) {
+        LOG_ERROR("LoRA fusion initialization failed: %s", error.c_str());
+        return false;
+    }
+    return export_loaded_model(model_loader, output_path, output_type, tensor_type_rules, n_threads, &fusion);
 }
 
 bool convert(const char* input_path,

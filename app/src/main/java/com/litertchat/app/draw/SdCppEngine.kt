@@ -131,6 +131,23 @@ object SdCppEngine {
         true
     }.getOrDefault(false)
 
+    /** Fuse one or more LoRA adapters into a new standalone GGUF checkpoint. */
+    fun nativeFuseLoras(
+        inputPath: String,
+        loraPaths: List<String>,
+        loraScales: List<Float>,
+        outputPath: String,
+        quantType: String = "f16",
+        nThreads: Int,
+    ): Boolean = runCatching {
+        nativeEngine.fuseLoras(
+            com.litertchat.app.ponko.LoraFusionRequest(
+                inputPath, loraPaths, loraScales, outputPath, quantType, nThreads
+            )
+        )
+        true
+    }.getOrDefault(false)
+
     /** Merge ResAdapter normalization tensors and quantize the UNet into a new GGUF. */
     fun nativeApplyResAdapter(
         inputModelPath: String,

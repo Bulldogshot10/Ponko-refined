@@ -73,6 +73,9 @@ type FreeBufferFn = unsafe extern "C" fn(*mut c_void);
 type TextFn = unsafe extern "C" fn(*mut c_char, usize) -> usize;
 type ListDevicesFn = TextFn;
 type QuantizeFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, i32, i32) -> i32;
+type FuseLorasFn = unsafe extern "C" fn(
+    *const c_char, *const *const c_char, *const f32, usize, *const c_char, *const c_char, i32,
+) -> i32;
 type ResAdapterFn = unsafe extern "C" fn(
     *const c_char, *const c_char, *const c_char, *const c_char, *const c_char, i32,
 ) -> i32;
@@ -91,6 +94,7 @@ struct NativeApi {
     last_params: TextFn,
     list_devices: ListDevicesFn,
     quantize_unet: QuantizeFn,
+    fuse_loras: FuseLorasFn,
     apply_resadapter: ResAdapterFn,
 }
 
@@ -125,6 +129,7 @@ impl NativeApi {
                 last_params: symbol(&library, b"ponko_sd_last_params\0")?,
                 list_devices: symbol(&library, b"ponko_sd_list_devices\0")?,
                 quantize_unet: symbol(&library, b"ponko_sd_quantize_unet\0")?,
+                fuse_loras: symbol(&library, b"ponko_sd_fuse_loras\0")?,
                 apply_resadapter: symbol(&library, b"ponko_sd_apply_resadapter\0")?,
                 _library: library,
             }
@@ -316,6 +321,17 @@ pub struct ResAdapterRequest {
     pub n_threads: i32,
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LoraFusionRequest {
+    pub input_model_path: String,
+    pub lora_paths: Vec<String>,
+    pub lora_scales: Vec<f32>,
+    pub output_path: String,
+    /// "f16", "q4_0", "q5_0", or "q8_0" (quantizes UNet tensors only).
+    pub quant_type: String,
+    pub n_threads: i32,
+}
+
 #[uniffi::export(rust, foreign)]
 pub trait StepCallback: Send + Sync {
     fn on_step(&self, step: i32, steps: i32);
@@ -498,6 +514,32 @@ impl NativeEngine {
             )
         };
         self.api.check_native(result, "UNet quantization")
+    }
+
+    pub fn fuse_loras(&self, request: LoraFusionRequest) -> Result<(), PonkoError> {
+        let report = validate_lora_fusion_request(request.clone());
+        if !report.valid {
+            return Err(PonkoError::InvalidArgument { details: report.message });
+        }
+        let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
+        let output = NativeApi::cstring(&request.output_path, "output_path")?;
+        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
+        let lora_paths = request.lora_paths.iter()
+            .map(|path| NativeApi::cstring(path, "lora_path"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let lora_pointers: Vec<*const c_char> = lora_paths.iter().map(|path| path.as_ptr()).collect();
+        let result = unsafe {
+            (self.api.fuse_loras)(
+                input.as_ptr(),
+                lora_pointers.as_ptr(),
+                request.lora_scales.as_ptr(),
+                lora_pointers.len(),
+                output.as_ptr(),
+                kind.as_ptr(),
+                request.n_threads,
+            )
+        };
+        self.api.check_native(result, "LoRA fusion")
     }
 
     pub fn apply_resadapter(&self, request: ResAdapterRequest) -> Result<(), PonkoError> {
@@ -796,6 +838,35 @@ pub fn validate_res_adapter_request(request: ResAdapterRequest) -> ValidationRep
     validate_quantization_type(request.quant_type)
 }
 
+#[uniffi::export]
+pub fn validate_lora_fusion_request(request: LoraFusionRequest) -> ValidationReport {
+    if request.input_model_path.trim().is_empty() || request.output_path.trim().is_empty() {
+        return invalid("LoRA fusion input and output paths must not be empty.");
+    }
+    if request.output_path == request.input_model_path || request.lora_paths.iter().any(|path| path == &request.output_path) {
+        return invalid("LoRA fusion output must not overwrite the source checkpoint or an adapter.");
+    }
+    if request.lora_paths.is_empty() {
+        return invalid("Select at least one LoRA adapter to fuse.");
+    }
+    if request.lora_paths.len() != request.lora_scales.len() {
+        return invalid("LoRA paths and scales must have the same number of entries.");
+    }
+    if request.lora_paths.iter().any(|path| path.trim().is_empty()) {
+        return invalid("LoRA adapter paths must not be empty.");
+    }
+    if request.lora_scales.iter().any(|scale| !scale.is_finite()) {
+        return invalid("Every LoRA strength must be finite.");
+    }
+    match request.quant_type.as_str() {
+        "f16" | "q4_0" | "q5_0" | "q8_0" => ValidationReport {
+            valid: true,
+            message: "LoRA fusion request is valid.".to_owned(),
+        },
+        _ => invalid("Supported LoRA fusion outputs are f16, q4_0, q5_0, and q8_0."),
+    }
+}
+
 fn invalid(message: &str) -> ValidationReport {
     ValidationReport { valid: false, message: message.to_owned() }
 }
@@ -898,6 +969,32 @@ mod tests {
         assert!(validate_res_adapter_request(request.clone()).valid);
         let mut bad = request; bad.normalization_path.clear();
         assert!(!validate_res_adapter_request(bad).valid);
+    }
+
+    #[test]
+    fn validates_lora_fusion_paths_scales_and_output_mode() {
+        let request = LoraFusionRequest {
+            input_model_path: "base.safetensors".into(),
+            lora_paths: vec!["style.safetensors".into(), "detail.safetensors".into()],
+            lora_scales: vec![0.7, 0.4],
+            output_path: "fused.gguf".into(),
+            quant_type: "q5_0".into(),
+            n_threads: 4,
+        };
+        assert!(validate_lora_fusion_request(request.clone()).valid);
+        let mut no_adapters = request.clone();
+        no_adapters.lora_paths.clear();
+        no_adapters.lora_scales.clear();
+        assert!(!validate_lora_fusion_request(no_adapters).valid);
+        let mut mismatch = request.clone();
+        mismatch.lora_scales.pop();
+        assert!(!validate_lora_fusion_request(mismatch).valid);
+        let mut overwrite = request.clone();
+        overwrite.output_path = overwrite.input_model_path.clone();
+        assert!(!validate_lora_fusion_request(overwrite).valid);
+        let mut unsupported = request;
+        unsupported.quant_type = "q6_k".into();
+        assert!(!validate_lora_fusion_request(unsupported).valid);
     }
 
     #[test]

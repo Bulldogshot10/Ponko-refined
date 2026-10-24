@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -196,6 +197,35 @@ bool parseQuantType(const std::string& name, enum sd_type_t* output) {
         return false;
     }
     return true;
+}
+
+bool validateReadableGguf(const std::string& path) {
+    gguf_init_params params = { true, nullptr };
+    gguf_context* context = gguf_init_from_file(path.c_str(), params);
+    if (context == nullptr) {
+        setError("LoRA fusion output is not a readable GGUF file");
+        return false;
+    }
+    const int64_t tensor_count = gguf_get_n_tensors(context);
+    const uint64_t data_base = static_cast<uint64_t>(gguf_get_data_offset(context));
+    uint64_t required_file_size = data_base;
+    const uint64_t max_size = std::numeric_limits<uint64_t>::max();
+    bool valid = tensor_count > 0;
+    for (int64_t i = 0; valid && i < tensor_count; ++i) {
+        const uint64_t offset = static_cast<uint64_t>(gguf_get_tensor_offset(context, i));
+        const uint64_t size = static_cast<uint64_t>(gguf_get_tensor_size(context, i));
+        if (offset > max_size - data_base || size > max_size - data_base - offset) {
+            valid = false;
+            break;
+        }
+        required_file_size = std::max(required_file_size, data_base + offset + size);
+    }
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    const std::streamoff actual_size = file ? static_cast<std::streamoff>(file.tellg()) : -1;
+    valid = valid && actual_size >= 0 && static_cast<uint64_t>(actual_size) >= required_file_size;
+    gguf_free(context);
+    if (!valid) setError("LoRA fusion GGUF validation failed: tensor metadata or payload is incomplete");
+    return valid;
 }
 } // namespace
 
@@ -560,6 +590,92 @@ extern "C" size_t ponko_sd_last_params(char* out, size_t capacity) {
 
 extern "C" size_t ponko_sd_list_devices(char* out, size_t capacity) {
     return sd_list_devices(out, capacity);
+}
+
+extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
+                                       const char* const* lora_paths,
+                                       const float* lora_scales,
+                                       size_t lora_count,
+                                       const char* output_path,
+                                       const char* quant_type,
+                                       int32_t n_threads) {
+    g_last_error.clear();
+    const std::string output_name = stringIsNonempty(output_path) ? output_path : "";
+    if (!stringIsNonempty(input_model_path) || output_name.empty() ||
+        !stringIsNonempty(quant_type) || lora_paths == nullptr || lora_scales == nullptr ||
+        lora_count == 0 || output_name.size() < 5 ||
+        output_name.compare(output_name.size() - 5, 5, ".gguf") != 0) {
+        setError("LoRA fusion requires an input checkpoint, at least one LoRA, a quantization mode, and a .gguf output path");
+        return 0;
+    }
+    if (std::string(input_model_path) == output_path) {
+        setError("LoRA fusion output must be different from the source checkpoint");
+        return 0;
+    }
+
+    std::ifstream source(input_model_path, std::ios::binary);
+    if (!source.good()) {
+        setError("LoRA fusion base checkpoint does not exist");
+        return 0;
+    }
+    for (size_t i = 0; i < lora_count; ++i) {
+        if (!stringIsNonempty(lora_paths[i]) || !std::isfinite(lora_scales[i])) {
+            setError("LoRA fusion contains an empty adapter path or a non-finite scale");
+            return 0;
+        }
+        std::ifstream adapter(lora_paths[i], std::ios::binary);
+        if (!adapter.good()) {
+            setError(std::string("LoRA fusion adapter file does not exist: ") + lora_paths[i]);
+            return 0;
+        }
+    }
+    std::ifstream existing_output(output_path, std::ios::binary);
+    if (existing_output.good()) {
+        setError("refusing to overwrite an existing LoRA fusion output");
+        return 0;
+    }
+
+    const bool keep_f16 = std::string(quant_type) == "f16";
+    enum sd_type_t quant_type_enum = SD_TYPE_F16;
+    std::string rules;
+    if (!keep_f16) {
+        if (!parseQuantType(quant_type, &quant_type_enum)) return 0;
+        rules = std::string("^model\\.diffusion_model\\..*=") + quant_type;
+    }
+
+    const std::string temporary = std::string(output_path) + ".partial.gguf";
+    std::remove(temporary.c_str());
+    const int threads = std::max(1, std::min(6, n_threads));
+    const bool converted = fuse_loras_to_file(
+        input_model_path, lora_paths, lora_scales, lora_count, temporary.c_str(),
+        SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads);
+    if (!converted) {
+        std::remove(temporary.c_str());
+        setError("native LoRA fusion/export failed; source files were left untouched");
+        return 0;
+    }
+
+    bool valid = false;
+    if (keep_f16) {
+        valid = validateReadableGguf(temporary);
+    } else {
+        int64_t unet_count = 0;
+        int64_t quantized_count = 0;
+        valid = validateQuantizedUnetFile(temporary, static_cast<enum ggml_type>(quant_type_enum),
+                                          &unet_count, &quantized_count);
+    }
+    if (!valid) {
+        std::remove(temporary.c_str());
+        return 0;
+    }
+    if (std::rename(temporary.c_str(), output_path) != 0) {
+        std::remove(temporary.c_str());
+        setError("failed to atomically publish fused LoRA GGUF output");
+        return 0;
+    }
+    PONKO_LOGI("LoRA fusion complete: adapters=%zu quant=%s output=%s",
+               lora_count, quant_type, output_path);
+    return 1;
 }
 
 extern "C" int32_t ponko_sd_quantize_unet(const char* input_path, const char* output_path,

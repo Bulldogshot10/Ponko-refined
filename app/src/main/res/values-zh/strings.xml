@@ -540,4 +540,24 @@
     <string name="draw_adetailer_denoise">去噪强度</string>
     <string name="draw_adetailer_steps">修复步数</string>
     <string name="draw_adetailer_steps_hint">0 表示沿用主生成步数；可以先从 8 步开始。</string>
+    <string name="draw_lora_fusion_button">融合 LoRA 到模型</string>
+    <string name="draw_lora_fusion_title">将 LoRA 融合到检查点</string>
+    <string name="draw_lora_fusion_intro">选择一个或多个本地 LoRA 适配器并融合到 %1$s。Ponko 会创建新的 GGUF 检查点，原模型和 LoRA 文件都不会被修改。</string>
+    <string name="draw_lora_fusion_next">下一步</string>
+    <string name="draw_lora_fusion_no_model">请先选择绘图模型。</string>
+    <string name="draw_lora_fusion_supported">目前支持单文件 Stable Diffusion 1.x 和 SDXL 检查点（.safetensors、.gguf、.ckpt、.pt 或 .pth）。</string>
+    <string name="draw_lora_fusion_no_loras">请先导入或选择至少一个本地 .safetensors LoRA 适配器。</string>
+    <string name="draw_lora_fusion_settings">融合设置</string>
+    <string name="draw_lora_fusion_strength">LoRA 强度</string>
+    <string name="draw_lora_fusion_strength_hint">分别设置每个适配器的强度，支持 -4.0 到 4.0。</string>
+    <string name="draw_lora_fusion_output_precision">输出检查点精度</string>
+    <string name="draw_lora_fusion_apply">融合并导出</string>
+    <string name="draw_lora_fusion_bad_scale">请为每个 LoRA 输入有限的 -4.0 到 4.0 之间的强度值。</string>
+    <string name="draw_lora_fusion_busy">请等待图像生成完成后再融合 LoRA。</string>
+    <string name="draw_lora_fusion_working">正在融合适配器并写入 %1$s GGUF。请保持 Ponko 运行，直到验证完成。</string>
+    <string name="draw_lora_fusion_success">已创建新的 %1$s 融合检查点。原模型和 LoRA 文件未被修改。加载当前选中的模型集即可使用。</string>
+    <string name="draw_lora_fusion_failed">LoRA 融合失败，源文件未修改。%1$s</string>
+    <string name="draw_lora_fusion_failed_detail">原生融合失败，或生成的 GGUF 未通过验证。</string>
+    <string name="draw_lora_fusion_create_failed">无法创建输出模型集目录。</string>
+    <string name="draw_lora_fusion_register_failed">融合已完成，但无法注册新的模型集。</string>
 </resources>

@@ -24,6 +24,7 @@ The Kotlin-facing JNI declarations have been removed from the active build. Kotl
 | Preview callback | UniFFI `PreviewCallback` -> Rust trampoline -> C ABI callback | RGB888 previews; temporary native memory is copied before callback return |
 | `nativeCancel` | `NativeEngine.cancel` -> `ponko_sd_cancel` | Calls `sd_cancel_generation(..., SD_CANCEL_ALL)` |
 | `nativeFree` | `NativeEngine.freeContext` -> `ponko_sd_free` | Rust read/write locking prevents freeing a context during active native calls |
+| LoRA fusion | `LoraFusionRequest` -> `NativeEngine.fuseLoras` -> `ponko_sd_fuse_loras` -> `fuse_loras_to_file` | Multi-LoRA weighted fusion to a new GGUF; F16 or Q4/Q5/Q8 UNet output; streamed export, original inputs preserved |
 | `nativeQuantizeUnet` | `QuantizeUnetRequest` -> `ponko_sd_quantize_unet` | q4_0/q5_0/q8_0, source checks, temporary GGUF, tensor/type/payload validation, atomic publish |
 | `nativeApplyResAdapter` | `ResAdapterRequest` -> `ponko_sd_apply_resadapter` | Optional VAE, normalization merge, same quantization rules and output validation |
 | Single-flight generation | C++ generation mutex + global callback reset | Conflicting generation attempts fail as busy instead of racing global callback state |

@@ -63,6 +63,10 @@ size_t ponko_sd_info(char* out, size_t capacity);
 size_t ponko_sd_vulkan_diagnostics(char* out, size_t capacity);
 size_t ponko_sd_last_params(char* out, size_t capacity);
 size_t ponko_sd_list_devices(char* out, size_t capacity);
+int32_t ponko_sd_fuse_loras(const char* input_model_path,
+                              const char* const* lora_paths, const float* lora_scales,
+                              size_t lora_count, const char* output_path,
+                              const char* quant_type, int32_t n_threads);
 int32_t ponko_sd_quantize_unet(const char* input_path, const char* output_path,
                                const char* quant_type, int32_t diffusion_slot, int32_t n_threads);
 int32_t ponko_sd_apply_resadapter(const char* input_model_path, const char* vae_path,

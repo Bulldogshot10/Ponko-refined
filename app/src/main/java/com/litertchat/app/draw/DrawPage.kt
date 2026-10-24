@@ -335,6 +335,7 @@ class DrawPage(
     private lateinit var quantText: TextView
     private lateinit var quantizeUnetButton: Button
     private lateinit var resAdapterButton: Button
+    private lateinit var fuseLoraButton: Button
     private var pendingResAdapterSet: ModelSet? = null
     private var pendingResAdapterLoraUri: Uri? = null
     private var pendingResAdapterQuantType: String = "q5_0"
@@ -532,6 +533,11 @@ class DrawPage(
             setOnClickListener { showResAdapterWizard() }
         }
         modelCard.addView(resAdapterButton, matchWrap(top = 4))
+        fuseLoraButton = Button(c).apply {
+            text = c.getString(R.string.draw_lora_fusion_button)
+            setOnClickListener { showLoraFusionWizard() }
+        }
+        modelCard.addView(fuseLoraButton, matchWrap(top = 4))
         paramPane.addView(modelCard)
 
         // ---- 模式子标签：文生图 / 图生图 ----
@@ -2264,6 +2270,216 @@ class DrawPage(
         }
     }
 
+
+
+    // ================= Native LoRA fusion =================
+
+    private fun showLoraFusionWizard() {
+        if (generating || DrawCore.busy) {
+            Toast.makeText(c, c.getString(R.string.draw_lora_fusion_busy), Toast.LENGTH_LONG).show()
+            return
+        }
+        val set = activeSetOrSelected()
+        if (set == null) {
+            toast(c.getString(R.string.draw_lora_fusion_no_model))
+            return
+        }
+        if (set.kind != KIND_SINGLE || set.family !in setOf(FAM_SD15, FAM_SDXL)) {
+            toast(c.getString(R.string.draw_lora_fusion_supported))
+            return
+        }
+        val source = set.files["model"] ?: set.mainFile()
+        if (source == null || !source.isFile ||
+            source.extension.lowercase() !in setOf("safetensors", "gguf", "ckpt", "pt", "pth")) {
+            toast(c.getString(R.string.draw_lora_fusion_supported))
+            return
+        }
+        val available = listLoras()
+        if (available.isEmpty()) {
+            toast(c.getString(R.string.draw_lora_fusion_no_loras))
+            return
+        }
+
+        val checked = BooleanArray(available.size)
+        android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_lora_fusion_title))
+            .setMessage(c.getString(R.string.draw_lora_fusion_intro, source.name))
+            .setMultiChoiceItems(available.map { it.name }.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton(c.getString(R.string.draw_lora_fusion_next)) { _, _ ->
+                val selected = available.filterIndexed { index, _ -> checked[index] }
+                if (selected.isEmpty()) {
+                    toast(c.getString(R.string.draw_lora_fusion_no_loras))
+                } else {
+                    showLoraFusionSettings(set, source, selected)
+                }
+            }
+            .setNegativeButton(c.getString(R.string.s_066), null)
+            .show()
+    }
+
+    private fun showLoraFusionSettings(baseSet: ModelSet, source: File, loras: List<File>) {
+        val panel = LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        panel.addView(body(c.getString(R.string.draw_lora_fusion_strength_hint)), matchWrap(bottom = 6))
+        val scaleFields = mutableListOf<EditText>()
+        for (lora in loras) {
+            val row = LinearLayout(c).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(TextView(c).apply {
+                text = lora.name
+                textSize = 11.5f
+                setTextColor(textColor)
+                maxLines = 2
+            }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            val scale = smallNumber("1.0")
+            scale.setText("1.0")
+            scale.hint = "1.0"
+            scale.contentDescription = c.getString(R.string.draw_lora_fusion_strength)
+            row.addView(scale, LinearLayout.LayoutParams(dp(78), dp(46)).apply {
+                leftMargin = dp(8)
+            })
+            scaleFields.add(scale)
+            panel.addView(row)
+        }
+
+        panel.addView(TextView(c).apply {
+            text = c.getString(R.string.draw_lora_fusion_output_precision)
+            textSize = 12.5f
+            setTextColor(textColor)
+            setPadding(0, dp(12), 0, dp(4))
+        })
+        val quantTypes = listOf("f16", "q4_0", "q5_0", "q8_0")
+        val quantLabels = listOf(
+            "F16 · no new quantization",
+            "Q4_0 · quantize UNet",
+            "Q5_0 · quantize UNet",
+            "Q8_0 · quantize UNet",
+        )
+        val quantSpinner = android.widget.Spinner(c).apply {
+            adapter = android.widget.ArrayAdapter(
+                c, android.R.layout.simple_spinner_item, quantLabels
+            ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            setSelection(0, false)
+        }
+        panel.addView(quantSpinner, matchWrap())
+
+        val scroll = ScrollView(c).apply { addView(panel) }
+        val dialog = android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_lora_fusion_settings))
+            .setView(scroll)
+            .setPositiveButton(c.getString(R.string.draw_lora_fusion_apply), null)
+            .setNegativeButton(c.getString(R.string.s_066), null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val scales = scaleFields.map { field ->
+                    field.text.toString().trim().toFloatOrNull()
+                }
+                if (scales.any { it == null || !it.isFinite() || it < -4f || it > 4f }) {
+                    toast(c.getString(R.string.draw_lora_fusion_bad_scale))
+                    return@setOnClickListener
+                }
+                val selectedScales = scales.map { it!! }
+                val quantType = quantTypes.getOrElse(quantSpinner.selectedItemPosition) { "f16" }
+                dialog.dismiss()
+                runLoraFusion(baseSet, source, loras, selectedScales, quantType)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun runLoraFusion(
+        baseSet: ModelSet,
+        source: File,
+        loras: List<File>,
+        scales: List<Float>,
+        quantType: String,
+    ) {
+        if (generating || DrawCore.busy) {
+            toast(c.getString(R.string.draw_lora_fusion_busy))
+            return
+        }
+        val setId = newSetId(baseSet.name + "-lora-fused")
+        val outputDir = File(setsDir(), setId)
+        if (!outputDir.mkdirs()) {
+            toast(c.getString(R.string.draw_lora_fusion_create_failed))
+            return
+        }
+        val outputFile = File(outputDir, source.nameWithoutExtension + "-fused-" + quantType + ".gguf")
+        val progressView = LinearLayout(c).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(24), dp(18), dp(24), dp(18))
+            addView(ProgressBar(c).apply { isIndeterminate = true },
+                LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(TextView(c).apply {
+                text = c.getString(R.string.draw_lora_fusion_working, quantType.uppercase())
+                textSize = 14f
+                setTextColor(pal.text)
+                setPadding(dp(16), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val dialog = android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_lora_fusion_title))
+            .setView(progressView)
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        scope.launch {
+            try {
+                // Release mapped checkpoint weights first. The native converter streams the
+                // source tensor-by-tensor and publishes a new file without editing its inputs.
+                unloadModel()
+                val success = withContext(Dispatchers.IO) {
+                    SdCppEngine.nativeFuseLoras(
+                        inputPath = source.absolutePath,
+                        loraPaths = loras.map { it.absolutePath },
+                        loraScales = scales,
+                        outputPath = outputFile.absolutePath,
+                        quantType = quantType,
+                        nThreads = nThreads.coerceIn(1, 6),
+                    )
+                }
+                if (!success || !outputFile.isFile || outputFile.length() <= 0L) {
+                    throw IllegalStateException(c.getString(R.string.draw_lora_fusion_failed_detail))
+                }
+
+                val files = LinkedHashMap(baseSet.files)
+                files["model"] = outputFile
+                val fusedSet = ModelSet(
+                    setId,
+                    baseSet.name + " (LoRA fused)",
+                    KIND_SINGLE,
+                    baseSet.family,
+                    outputDir,
+                    files,
+                )
+                withContext(Dispatchers.IO) { writeSetJson(fusedSet) }
+                if (!File(outputDir, "ponko-set.json").isFile) {
+                    throw IllegalStateException(c.getString(R.string.draw_lora_fusion_register_failed))
+                }
+                selectSet(fusedSet)
+                refreshModelCard()
+                Toast.makeText(c, c.getString(R.string.draw_lora_fusion_success, quantType.uppercase()),
+                    Toast.LENGTH_LONG).show()
+            } catch (e: Throwable) {
+                withContext(Dispatchers.IO) { runCatching { outputDir.deleteRecursively() } }
+                Toast.makeText(
+                    c,
+                    c.getString(R.string.draw_lora_fusion_failed, e.message ?: e.javaClass.simpleName),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                dialog.dismiss()
+            }
+        }
+    }
 
     // ================= ResAdapter (LoRA + normalization weights) =================
 

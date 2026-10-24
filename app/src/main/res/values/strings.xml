@@ -566,4 +566,24 @@
     <string name="draw_adetailer_denoise">Denoising strength</string>
     <string name="draw_adetailer_steps">Detail steps</string>
     <string name="draw_adetailer_steps_hint">0 inherits the main generation step count; 8 is a useful starting point.</string>
+    <string name="draw_lora_fusion_button">Fuse LoRA to Model</string>
+    <string name="draw_lora_fusion_title">Fuse LoRA into checkpoint</string>
+    <string name="draw_lora_fusion_intro">Choose one or more local LoRA adapters to merge into %1$s. Ponko will create a new GGUF checkpoint; the original model and adapter files stay unchanged.</string>
+    <string name="draw_lora_fusion_next">Next</string>
+    <string name="draw_lora_fusion_no_model">Select a drawing model first.</string>
+    <string name="draw_lora_fusion_supported">Fusion currently supports single-file Stable Diffusion 1.x and SDXL checkpoints (.safetensors, .gguf, .ckpt, .pt, or .pth).</string>
+    <string name="draw_lora_fusion_no_loras">Import or select at least one local .safetensors LoRA adapter.</string>
+    <string name="draw_lora_fusion_settings">Fusion settings</string>
+    <string name="draw_lora_fusion_strength">LoRA strength</string>
+    <string name="draw_lora_fusion_strength_hint">Set each adapter strength. Values from -4.0 to 4.0 are accepted.</string>
+    <string name="draw_lora_fusion_output_precision">Output checkpoint precision</string>
+    <string name="draw_lora_fusion_apply">Fuse and export</string>
+    <string name="draw_lora_fusion_bad_scale">Enter a finite strength between -4.0 and 4.0 for every LoRA.</string>
+    <string name="draw_lora_fusion_busy">Wait for image generation to finish before fusing LoRAs.</string>
+    <string name="draw_lora_fusion_working">Fusing adapters and writing %1$s GGUF. Keep Ponko open until validation finishes.</string>
+    <string name="draw_lora_fusion_success">Created a new %1$s fused checkpoint. The original model and LoRA files were not modified. Load the selected model set to use it.</string>
+    <string name="draw_lora_fusion_failed">LoRA fusion failed. Source files were left unchanged. %1$s</string>
+    <string name="draw_lora_fusion_failed_detail">Native fusion failed or the generated GGUF did not pass validation.</string>
+    <string name="draw_lora_fusion_create_failed">Could not create the output model-set directory.</string>
+    <string name="draw_lora_fusion_register_failed">Fusion completed, but Ponko could not register the new model set.</string>
 </resources>
