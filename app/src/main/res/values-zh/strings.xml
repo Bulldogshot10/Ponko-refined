@@ -490,6 +490,7 @@
     <string name="draw_unet_quantize_failed">UNet 量化失败，源文件未修改。%1$s</string>
     <string name="draw_unet_quantize_failed_detail">转换器失败，或生成的 GGUF 未通过验证。</string>
     <string name="draw_unet_quantize_no_model">请先选择一个绘图模型集。</string>
+    <string name="draw_unet_quantize_not_supported">目前仅支持 Stable Diffusion 1.x 和 SDXL 模型集的 UNet 专用量化。</string>
     <string name="draw_unet_quantize_no_unet">这个模型集没有可量化的 model/UNet 槽位。</string>
     <string name="draw_unet_quantize_source_type">请使用 .safetensors、.sft、.ckpt、.pt 或 .pth 原始模型。为避免反复量化造成精度损失，已禁用现有量化 GGUF 输入。</string>
     <string name="draw_unet_quantize_busy">请等待图像生成完成后再进行量化。</string>

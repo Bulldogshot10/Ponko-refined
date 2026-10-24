@@ -490,6 +490,7 @@
     <string name="draw_unet_quantize_failed">UNet quantization failed; source left untouched. %1$s</string>
     <string name="draw_unet_quantize_failed_detail">Converter failed or the generated GGUF did not pass validation.</string>
     <string name="draw_unet_quantize_no_model">Select a drawing model set before quantizing.</string>
+    <string name="draw_unet_quantize_not_supported">UNet-only quantization is currently limited to Stable Diffusion 1.x and SDXL model sets.</string>
     <string name="draw_unet_quantize_no_unet">This model set has no supported model/UNet slot to quantize.</string>
     <string name="draw_unet_quantize_source_type">Start from a .safetensors, .sft, .ckpt, .pt, or .pth source. Already-quantized GGUF inputs are blocked to avoid cumulative quantization loss.</string>
     <string name="draw_unet_quantize_busy">Wait until image generation finishes before quantizing.</string>

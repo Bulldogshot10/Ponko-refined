@@ -2229,7 +2229,12 @@ class DrawPage(
             Toast.makeText(c, c.getString(R.string.draw_unet_quantize_no_model), Toast.LENGTH_LONG).show()
             return
         }
-        val sourceSlot = if (set.kind == KIND_SINGLE) "model" else "diffusion"
+        if (set.family !in setOf(FAM_SD15, FAM_SDXL)) {
+            Toast.makeText(c, c.getString(R.string.draw_unet_quantize_not_supported), Toast.LENGTH_LONG).show()
+            return
+        }
+        // Single-file checkpoints use "model"; split Diffusers-style sets use "diffusion".
+        val sourceSlot = if (set.files["diffusion"]?.isFile == true) "diffusion" else "model"
         val source = set.files[sourceSlot]
         if (source == null || !source.isFile) {
             Toast.makeText(c, c.getString(R.string.draw_unet_quantize_no_unet), Toast.LENGTH_LONG).show()
