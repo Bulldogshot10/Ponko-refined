@@ -32,6 +32,7 @@ namespace sd::pipeline {
         "DPM++ (2M) SDE",
         "DPM++ (2M) SDE BT",
         "LMS",
+        "DPM++ SDE",
     };
 
     static_assert(SAMPLE_METHOD_COUNT == sizeof(sampling_methods_str) / sizeof(sampling_methods_str[0]),
