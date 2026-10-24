@@ -106,7 +106,9 @@ class DrawPage(
         private const val REQ_RESADAPTER_LORA = 0x5D04
         private const val REQ_RESADAPTER_NORM = 0x5D05
         private const val REQ_HIRES_MODEL = 0x5D06
+        private const val REQ_ADETAILER_MODEL = 0x5D07
         private const val HIRES_UPSCALER_DIR = "hires-upscalers"
+        private const val ADETAILER_MODEL_DIR = "adetailer-models"
 
         /** LCM-LoRA：HuggingFace 官方仓库路径（文件实名为 pytorch_lora_weights.safetensors） */
         private const val LORA_HF_PATH =
@@ -234,6 +236,16 @@ class DrawPage(
         private const val KEY_HIRES_STEPS = "hiresSteps"
         private const val KEY_HIRES_DENOISE = "hiresDenoise"
         private const val KEY_HIRES_TILE = "hiresTileSize"
+        private const val KEY_ADETAILER_ENABLED = "drawAdetailerEnabled"
+        private const val KEY_ADETAILER_MODEL_PATH = "drawAdetailerModelPath"
+        private const val KEY_ADETAILER_PROMPT = "drawAdetailerPrompt"
+        private const val KEY_ADETAILER_NEGATIVE_PROMPT = "drawAdetailerNegativePrompt"
+        private const val KEY_ADETAILER_CONFIDENCE = "drawAdetailerConfidence"
+        private const val KEY_ADETAILER_RESOLUTION = "drawAdetailerResolution"
+        private const val KEY_ADETAILER_PADDING = "drawAdetailerPadding"
+        private const val KEY_ADETAILER_MASK_BLUR = "drawAdetailerMaskBlur"
+        private const val KEY_ADETAILER_DENOISE = "drawAdetailerDenoise"
+        private const val KEY_ADETAILER_STEPS = "drawAdetailerSteps"
     }
 
     private val c: Context get() = act
@@ -442,6 +454,21 @@ class DrawPage(
     private lateinit var hiresDenoiseEdit: EditText
     private lateinit var hiresTileEdit: EditText
     private var hiresModelFile: File? = null
+
+    // ADetailer detector and post-generation inpaint controls.
+    private lateinit var adetailerEnabledCheck: CheckBox
+    private lateinit var adetailerModelButton: Button
+    private lateinit var adetailerModelStatus: TextView
+    private lateinit var adetailerPromptEdit: EditText
+    private lateinit var adetailerNegativePromptEdit: EditText
+    private lateinit var adetailerConfidenceEdit: EditText
+    private lateinit var adetailerResolutionEdit: EditText
+    private lateinit var adetailerPaddingEdit: EditText
+    private lateinit var adetailerMaskBlurEdit: EditText
+    private lateinit var adetailerDenoiseEdit: EditText
+    private lateinit var adetailerStepsEdit: EditText
+    private var adetailerModelFile: File? = null
+
     private lateinit var paramScroll: ScrollView
     private lateinit var resultScroll: ScrollView
     private lateinit var resultToI2iBtn: Button
@@ -649,6 +676,7 @@ class DrawPage(
         paramCard.addView(loraHint)
         t2iContent.addView(paramCard)
         t2iContent.addView(defaultButtonsRow("t2i"), matchWrap(top = 10))
+        t2iContent.addView(buildADetailerContent(), matchWrap(top = 10))
 
         // ---- 图生图页面 ----
         i2iContent = buildI2iContent()
@@ -1015,6 +1043,138 @@ class DrawPage(
         textSize = 13f
         gravity = Gravity.CENTER
         setPadding(0, dp(9), 0, dp(9))
+    }
+
+    // ================= ADetailer =================
+    private fun buildADetailerContent(): LinearLayout {
+        val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        val settingsCard = card()
+        settingsCard.addView(title(c.getString(R.string.draw_adetailer_title)))
+        adetailerEnabledCheck = CheckBox(c).apply {
+            text = c.getString(R.string.draw_adetailer_enable)
+            textSize = 13f
+            setTextColor(textColor)
+            isChecked = prefs().getBoolean(KEY_ADETAILER_ENABLED, false)
+            setOnCheckedChangeListener { _, checked -> prefs().edit().putBoolean(KEY_ADETAILER_ENABLED, checked).apply() }
+        }
+        settingsCard.addView(adetailerEnabledCheck, matchWrap(top = 6))
+        settingsCard.addView(body(c.getString(R.string.draw_adetailer_hint)))
+        adetailerModelFile = prefs().getString(KEY_ADETAILER_MODEL_PATH, null)?.let { File(it) }?.takeIf { it.isFile }
+        adetailerModelButton = Button(c).apply {
+            text = c.getString(R.string.draw_adetailer_pick_model)
+            setBackgroundColor(pal.primarySoft); setTextColor(primary)
+            setOnClickListener { pickADetailerModel() }
+        }
+        settingsCard.addView(adetailerModelButton, matchWrap(top = 8))
+        adetailerModelStatus = TextView(c).apply { textSize = 11.5f; setTextColor(subText); setPadding(0, dp(5), 0, 0) }
+        settingsCard.addView(adetailerModelStatus)
+
+        adetailerPromptEdit = labeledEdit(c.getString(R.string.draw_adetailer_prompt_hint), true)
+            .apply { setText(loadParam(KEY_ADETAILER_PROMPT, "")) }
+        bindParam(adetailerPromptEdit, KEY_ADETAILER_PROMPT)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_prompt), adetailerPromptEdit,
+            c.getString(R.string.draw_adetailer_prompt_hint)), matchWrap(top = 4))
+
+        adetailerNegativePromptEdit = labeledEdit(c.getString(R.string.draw_adetailer_negative_prompt_hint), true)
+            .apply { setText(loadParam(KEY_ADETAILER_NEGATIVE_PROMPT, "")) }
+        bindParam(adetailerNegativePromptEdit, KEY_ADETAILER_NEGATIVE_PROMPT)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_negative_prompt), adetailerNegativePromptEdit,
+            c.getString(R.string.draw_adetailer_negative_prompt_hint)), matchWrap(top = 4))
+
+        adetailerConfidenceEdit = smallNumber(loadParam(KEY_ADETAILER_CONFIDENCE, "0.3"))
+        bindParam(adetailerConfidenceEdit, KEY_ADETAILER_CONFIDENCE)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_confidence), adetailerConfidenceEdit, "0.01–0.99"), matchWrap(top = 4))
+        adetailerResolutionEdit = smallNumber(loadParam(KEY_ADETAILER_RESOLUTION, "512"))
+        bindParam(adetailerResolutionEdit, KEY_ADETAILER_RESOLUTION)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_resolution), adetailerResolutionEdit,
+            c.getString(R.string.draw_adetailer_resolution_hint)), matchWrap(top = 4))
+        adetailerPaddingEdit = smallNumber(loadParam(KEY_ADETAILER_PADDING, "32"))
+        bindParam(adetailerPaddingEdit, KEY_ADETAILER_PADDING)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_padding), adetailerPaddingEdit, "0–512 px around the detected region"), matchWrap(top = 4))
+        adetailerMaskBlurEdit = smallNumber(loadParam(KEY_ADETAILER_MASK_BLUR, "4"))
+        bindParam(adetailerMaskBlurEdit, KEY_ADETAILER_MASK_BLUR)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_mask_blur), adetailerMaskBlurEdit, "0 disables mask feathering"), matchWrap(top = 4))
+        adetailerDenoiseEdit = smallNumber(loadParam(KEY_ADETAILER_DENOISE, "0.4"))
+        bindParam(adetailerDenoiseEdit, KEY_ADETAILER_DENOISE)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_denoise), adetailerDenoiseEdit,
+            "0.01–1.0; lower values preserve the original crop"), matchWrap(top = 4))
+        adetailerStepsEdit = smallNumber(loadParam(KEY_ADETAILER_STEPS, "8"))
+        bindParam(adetailerStepsEdit, KEY_ADETAILER_STEPS)
+        settingsCard.addView(paramRow(c.getString(R.string.draw_adetailer_steps), adetailerStepsEdit,
+            c.getString(R.string.draw_adetailer_steps_hint)), matchWrap(top = 4))
+        box.addView(settingsCard)
+        updateADetailerModelStatus()
+        return box
+    }
+
+    private fun pickADetailerModel() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(android.content.Intent.EXTRA_TITLE, c.getString(R.string.draw_adetailer_pick_model))
+        }
+        act.startActivityForResult(intent, REQ_ADETAILER_MODEL)
+    }
+
+    private fun updateADetailerModelStatus() {
+        if (!::adetailerModelStatus.isInitialized) return
+        val model = adetailerModelFile?.takeIf { it.isFile }
+        adetailerModelStatus.text = if (model != null)
+            c.getString(R.string.draw_adetailer_model_selected, model.name)
+        else c.getString(R.string.draw_adetailer_model_none)
+    }
+
+    private fun handleADetailerPickedFile(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (requestCode != REQ_ADETAILER_MODEL) return false
+        if (resultCode != Activity.RESULT_OK) return true
+        val uri = data?.data ?: return true
+        val name = queryDisplayName(uri).orEmpty()
+        if (!name.endsWith(".safetensors", ignoreCase = true)) {
+            toast(c.getString(R.string.draw_adetailer_bad_model)); return true
+        }
+        scope.launch {
+            try {
+                val destination = withContext(Dispatchers.IO) {
+                    val dir = File(c.filesDir, ADETAILER_MODEL_DIR).apply { mkdirs() }
+                    val safeName = File(name).name.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120)
+                        .ifBlank { "yolov8-detector.safetensors" }
+                    val stem = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "")
+                    var target = File(dir, safeName)
+                    var suffix = 2
+                    while (target.exists()) {
+                        target = File(dir, "$stem-$suffix" + if (ext.isEmpty()) "" else ".$ext"); suffix++
+                    }
+                    copyContentUri(uri, target); target
+                }
+                adetailerModelFile = destination
+                prefs().edit().putString(KEY_ADETAILER_MODEL_PATH, destination.absolutePath).apply()
+                updateADetailerModelStatus()
+                toast(c.getString(R.string.draw_adetailer_imported, destination.name))
+            } catch (e: Throwable) {
+                toast(c.getString(R.string.draw_adetailer_import_failed, e.message ?: e.javaClass.simpleName))
+            }
+        }
+        return true
+    }
+
+    private fun currentADetailerSettings(): SdCppEngine.ADetailerSettings {
+        if (!::adetailerEnabledCheck.isInitialized || !adetailerEnabledCheck.isChecked) return SdCppEngine.ADetailerSettings()
+        val detector = adetailerModelFile?.takeIf { it.isFile }
+            ?: throw IllegalStateException(c.getString(R.string.draw_adetailer_model_missing))
+        val rawSize = adetailerResolutionEdit.text.toString().toIntOrNull() ?: 512
+        val size = ((rawSize / 64) * 64).coerceIn(128, 1024)
+        return SdCppEngine.ADetailerSettings(
+            enabled = true, detectorPath = detector.absolutePath,
+            prompt = adetailerPromptEdit.text.toString().trim(),
+            negativePrompt = adetailerNegativePromptEdit.text.toString().trim(),
+            confidence = adetailerConfidenceEdit.text.toString().toFloatOrNull()?.coerceIn(0.01f, 0.99f) ?: 0.3f,
+            inpaintSize = size,
+            padding = adetailerPaddingEdit.text.toString().toIntOrNull()?.coerceIn(0, 512) ?: 32,
+            maskBlur = adetailerMaskBlurEdit.text.toString().toIntOrNull()?.coerceIn(0, 64) ?: 4,
+            denoisingStrength = adetailerDenoiseEdit.text.toString().toFloatOrNull()?.coerceIn(0.01f, 1f) ?: 0.4f,
+            steps = adetailerStepsEdit.text.toString().toIntOrNull()?.coerceIn(0, 150) ?: 8,
+        )
     }
 
     // ================= HiRes Fix 页面 =================
@@ -2506,6 +2666,7 @@ class DrawPage(
         // LoRA 列表按槽位逐个传给 sd.cpp，支持每个 adapter 独立权重。
         val loras = selectedLoras("t2i")
         val hires = currentHiresSettings()
+        val adetailer = currentADetailerSettings()
         // EditText 必须在主线程读，先取出来再进 IO
         val negative = negEdit.text.toString()
 
@@ -2535,6 +2696,7 @@ class DrawPage(
                     scheduler = scheduler,
                     eta = eta,
                     hires = hires,
+                    adetailer = adetailer,
                     cb = { cur, total -> onProgress(cur, total) },
                     onPreview = onPreview?.let { f ->
                         SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -2726,6 +2888,7 @@ class DrawPage(
         val sampler = pickI2iSampler(loras.isNotEmpty())
         val scheduler = pickI2iScheduler(loras.isNotEmpty())
         val hires = currentHiresSettings()
+        val adetailer = currentADetailerSettings()
 
         val bmp = withContext(Dispatchers.IO) {
             val rgb = SdCppEngine.bitmapToRgb888(src)
@@ -2744,6 +2907,7 @@ class DrawPage(
                 scheduler = scheduler,
                 eta = eta,
                 hires = hires,
+                adetailer = adetailer,
                 cb = { cur, total -> onProgress(cur, total) },
                 onPreview = onPreview?.let { f ->
                     SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -2792,6 +2956,7 @@ class DrawPage(
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
         if (handleHiresUpscalerPickedFile(requestCode, resultCode, data)) return true
+        if (handleADetailerPickedFile(requestCode, resultCode, data)) return true
         if (handleResAdapterPickedFile(requestCode, resultCode, data)) return true
         if (requestCode != REQ_IMAGE) return false
         if (resultCode != Activity.RESULT_OK) return true
