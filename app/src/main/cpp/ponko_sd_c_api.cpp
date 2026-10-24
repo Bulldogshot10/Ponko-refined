@@ -389,7 +389,8 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     bool ok = generate_image(handle->ctx, &generation, &images, &image_count);
     // Post-generation ADetailer. Cache the detector on this loaded model handle.
     if (image_count > 0 && images != nullptr && images[0].data != nullptr) ok = true;
-    if (ok && params->adetailer_enabled != 0) {
+    if (ok && image_count > 0 && images != nullptr && images[0].data != nullptr &&
+        params->adetailer_enabled != 0) {
         const char* detector_path = params->adetailer_detector_path;
         bool detector_ready = false;
         if (!stringIsNonempty(detector_path)) {
