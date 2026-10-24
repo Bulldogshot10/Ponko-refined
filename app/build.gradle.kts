@@ -69,6 +69,7 @@ android {
         sourceSets.getByName("main").apply {
             jniLibs.srcDir(ponkoRustJniLibsDir)
             java.srcDir(ponkoUniffiKotlinDir)
+            java.srcDir("src/rust/java")
         }
     }
 }
