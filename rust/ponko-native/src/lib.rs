@@ -306,12 +306,12 @@ pub struct ResAdapterRequest {
     pub n_threads: i32,
 }
 
-#[uniffi::export(callback_interface)]
+#[uniffi::export(rust, foreign)]
 pub trait StepCallback: Send + Sync {
     fn on_step(&self, step: i32, steps: i32);
 }
 
-#[uniffi::export(callback_interface)]
+#[uniffi::export(rust, foreign)]
 pub trait PreviewCallback: Send + Sync {
     fn on_preview(&self, step: i32, width: i32, height: i32, rgb888: Vec<u8>);
 }
