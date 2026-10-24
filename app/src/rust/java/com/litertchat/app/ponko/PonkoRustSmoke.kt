@@ -1,4 +1,4 @@
-// This source set is included only with -PponkoRustFacade=true.
+// This source set is compiled with the default Rust/UniFFI facade.
 // Compiling it verifies that generated Kotlin bindings match the Rust exports.
 package com.litertchat.app.ponko
 
