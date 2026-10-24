@@ -259,10 +259,6 @@ public:
             return {};
         }
         int64_t t1 = ggml_time_ms();
-        LOG_INFO("BENCHMARK vae_stage stage=encode elapsed_ms=%lld threads=%d tiled=%d input=%lldx%lldx%lldx%lld output=%lldx%lldx%lldx%lld",
-                 (long long)(t1-t0),n_threads,tiling_params.enabled?1:0,
-                 (long long)input.shape()[0],(long long)input.shape()[1],(long long)input.shape()[2],(long long)input.shape()[3],
-                 (long long)output.shape()[0],(long long)output.shape()[1],(long long)output.shape()[2],(long long)output.shape()[3]);
         LOG_VERBOSE("computing vae encode graph completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         return std::move(output);
     }
@@ -320,10 +316,6 @@ public:
             scale_tensor_to_0_1(&output);
         }
         int64_t t1 = ggml_time_ms();
-        LOG_INFO("BENCHMARK vae_stage stage=decode elapsed_ms=%lld threads=%d tiled=%d input=%lldx%lldx%lldx%lld output=%lldx%lldx%lldx%lld",
-                 (long long)(t1-t0),n_threads,tiling_params.enabled?1:0,
-                 (long long)input.shape()[0],(long long)input.shape()[1],(long long)input.shape()[2],(long long)input.shape()[3],
-                 (long long)output.shape()[0],(long long)output.shape()[1],(long long)output.shape()[2],(long long)output.shape()[3]);
         LOG_VERBOSE("computing vae decode graph completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         return std::move(output);
     }

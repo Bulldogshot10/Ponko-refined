@@ -3,8 +3,6 @@ plugins {
     id("com.android.application")
 }
 
-val ponkoExynosSve2 = providers.gradleProperty("ponkoExynosSve2").orNull == "true"
-
 android {
     namespace = "com.litertchat.app"
     compileSdk = 36
@@ -20,11 +18,6 @@ android {
         ndk {
             // LiteRT-LM 与 llama.cpp 的 native 都只跑 arm64 真机，去掉 x86_64 可减小 APK
             abiFilters += "arm64-v8a"
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += "-DPONKO_EXYNOS_2400E_SVE2=${if (ponkoExynosSve2) "ON" else "OFF"}"
-            }
         }
     }
 
@@ -77,5 +70,5 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // 绘图（文生图）：自编的 stable-diffusion.cpp（arm64-v8a），源码在 src/main/cpp，
     // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（JNI 桥）。
-    // 相比现成 AAR，这里能直接控制线程数 / 采样器 / 调度器 / 量化类型 / 取消。
+    // 相比现成 AAR，这里能直接控制线程数 / 采样器 / 调度器 / LoRA / 量化类型 / 取消。
 }

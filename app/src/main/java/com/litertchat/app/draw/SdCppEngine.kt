@@ -84,20 +84,6 @@ object SdCppEngine {
 
     external fun nativeInfo(): String
 
-    /** CPU topology, userspace ISA features, clocks/thermal zones and process memory. */
-    external fun nativeCpuDiagnostics(): String
-
-    /** Affinity preset: none, performance, little, or explicit CPU IDs such as 0,2-5. */
-    external fun nativeSetCpuAffinity(cpuList: String): String
-
-    fun performanceDiagnostics(): String =
-        runCatching { nativeCpuDiagnostics() }.getOrDefault("CPU diagnostics unavailable")
-
-    fun setCpuAffinity(cpuList: String): String =
-        runCatching { nativeSetCpuAffinity(cpuList) }.getOrElse {
-            "CPU affinity configuration failed: ${it.message}"
-        }
-
     /** Runtime Vulkan capabilities detected by ggml-vulkan for the active GPU. */
     external fun nativeVulkanDiagnostics(): String
 

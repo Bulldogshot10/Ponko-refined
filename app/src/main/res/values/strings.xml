@@ -481,12 +481,4 @@
     <string name="draw_clip_skip_label">CLIP skip</string>
     <string name="draw_clip_skip_value">CLIP skip: %1$d</string>
     <string name="draw_clip_skip_hint">1 keeps standard CLIP output; higher values skip more CLIP layers. Support depends on the model.</string>
-
-    <string name="draw_cpu_affinity">CPU affinity</string>
-    <string name="draw_cpu_affinity_scheduler">Android scheduler (default)</string>
-    <string name="draw_cpu_affinity_performance">Performance-capacity CPUs</string>
-    <string name="draw_cpu_affinity_efficiency">Efficiency-capacity CPUs</string>
-    <string name="draw_cpu_affinity_hint">Experimental: restricts the generation-calling thread only. OpenMP workers remain scheduler-managed; compare timings and thermals.</string>
-    <string name="draw_cpu_diagnostics">Exynos CPU diagnostics</string>
-
 </resources>

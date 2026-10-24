@@ -83,17 +83,6 @@ class DrawPage(
         prefs().edit().putInt(KEY_CPU_THREADS, nThreads).apply()
     }
 
-    /** Experimental affinity for the generation-calling thread; native code restores its prior mask after each render. */
-    fun cpuAffinity(): String = prefs().getString(KEY_CPU_AFFINITY, "none") ?: "none"
-
-    fun setCpuAffinity(value: String): String {
-        val normalized = value.lowercase().let {
-            if (it == "performance" || it == "little") it else "none"
-        }
-        prefs().edit().putString(KEY_CPU_AFFINITY, normalized).apply()
-        return SdCppEngine.setCpuAffinity(normalized)
-    }
-
     fun taesdEnabled(): Boolean = prefs().getBoolean(KEY_TAESD_ENABLED, false)
 
     fun setTaesdEnabled(enabled: Boolean) {
@@ -128,7 +117,6 @@ class DrawPage(
         /** 模型集偏好键（当前选中的模型集 id） */
         private const val KEY_SEL_SET = "selSet"
         private const val KEY_CPU_THREADS = "drawCpuThreads"
-        private const val KEY_CPU_AFFINITY = "drawCpuAffinity"
         private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
         private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"
 

@@ -481,12 +481,4 @@
     <string name="draw_clip_skip_label">CLIP skip</string>
     <string name="draw_clip_skip_value">CLIP skip：%1$d</string>
     <string name="draw_clip_skip_hint">1 为标准 CLIP 输出；数值越高跳过的 CLIP 层越多。是否生效取决于模型。</string>
-
-    <string name="draw_cpu_affinity">CPU 亲和性</string>
-    <string name="draw_cpu_affinity_scheduler">Android 调度器（默认）</string>
-    <string name="draw_cpu_affinity_performance">高性能容量 CPU</string>
-    <string name="draw_cpu_affinity_efficiency">高能效 CPU</string>
-    <string name="draw_cpu_affinity_hint">实验功能：只限制执行生成调用的线程；OpenMP 工作线程仍由系统调度。请对比耗时和温度。</string>
-    <string name="draw_cpu_diagnostics">Exynos CPU 诊断</string>
-
 </resources>

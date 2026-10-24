@@ -23,27 +23,21 @@ project(ponko_sd CXX C)
 # ARM64 builds: -DPONKO_EXYNOS_2400E_CPU_PROFILE=OFF.
 option(PONKO_EXYNOS_2400E_CPU_PROFILE
        "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
-option(PONKO_EXYNOS_2400E_SVE2
-       "Build with SVE2 instructions; use only after Android reports HWCAP SVE2 support" OFF)
-
 if (PONKO_EXYNOS_2400E_CPU_PROFILE)
-    if (PONKO_EXYNOS_2400E_SVE2)
-        set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+sve2+dotprod+i8mm+fp16 -mtune=cortex-x4)
-        set(PONKO_GGML_CPU_ARCH "armv8.6-a+sve2+dotprod+i8mm+fp16")
-        message(STATUS "Ponko CPU profile: Exynos 2400e + SVE2 (runtime HWCAP must be checked)")
-    else()
-        set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
-        set(PONKO_GGML_CPU_ARCH "armv8.6-a+dotprod+i8mm+fp16")
-        message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
-    endif()
-    set(GGML_CPU_ARM_ARCH "${PONKO_GGML_CPU_ARCH}" CACHE STRING "" FORCE)
+    set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
+    message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
 else()
-    if (PONKO_EXYNOS_2400E_SVE2)
-        message(FATAL_ERROR "PONKO_EXYNOS_2400E_SVE2 requires PONKO_EXYNOS_2400E_CPU_PROFILE=ON")
-    endif()
     set(PONKO_CPU_ARCH_FLAGS -march=armv8.2-a+dotprod+fp16)
-    set(GGML_CPU_ARM_ARCH "" CACHE STRING "" FORCE)
     message(STATUS "Ponko CPU profile: generic ARMv8.2-A (dotprod + FP16)")
+endif()
+
+# Keep GGML's own ARM feature detection aligned with the same Exynos ISA profile.
+# This controls backend feature probes and architecture-specific kernel selection;
+# global add_compile_options alone is not enough for every GGML subcomponent.
+if (PONKO_EXYNOS_2400E_CPU_PROFILE)
+    set(GGML_CPU_ARM_ARCH "armv8.6-a+dotprod+i8mm+fp16" CACHE STRING "" FORCE)
+else()
+    set(GGML_CPU_ARM_ARCH "" CACHE STRING "" FORCE)
 endif()
 
 # Android's toolchain can define CMAKE_*_FLAGS_DEBUG as normal variables, so a
