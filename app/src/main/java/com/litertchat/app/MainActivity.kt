@@ -4737,7 +4737,8 @@ class MainActivity : Activity() {
                                         shown += roundText
                     thoughtShown += out.thought
                     break
-                    turn.answer = shown.trimEnd()
+                }
+                turn.answer = shown.trimEnd()
                 if (turn.answer.isNotEmpty()) {
                     markwonFull.setMarkdown(ai.answer, turn.answer)
                 } else if (turn.thought.isEmpty()) {
