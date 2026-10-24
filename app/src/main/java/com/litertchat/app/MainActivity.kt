@@ -972,7 +972,7 @@ class MainActivity : Activity() {
         row.addView(backendSpinner, wrapWrap().apply { leftMargin = dp(6) })
         backendSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                // 运行方式实时同步给绘图页（Ponko 的 sd.cpp 用 Vulkan，Tagger 用 NNAPI）
+                // 运行方式实时同步给绘图页。
                 drawPage?.useGpu = (position == 1)
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -1827,7 +1827,7 @@ class MainActivity : Activity() {
         typeface = Typeface.DEFAULT_BOLD
     }
 
-    /** 分区内的子标题（比 pageTitle 小一号），用于「绘图模型」下的 LoRA / tagger 等子块。 */
+    /** 分区内的子标题（比 pageTitle 小一号），用于绘图模型下的附加设置。 */
     private fun subTitle(text: String) = TextView(this).apply {
         this.text = text
         textSize = 14f
@@ -4617,11 +4617,10 @@ class MainActivity : Activity() {
         // 生成过程中不允许发起新的一轮（选图/引用可以在生成中进行，发送不行）
         if (busy) { toast(getString(R.string.s_133)); return }
 
-        // 带图发送：模型要么自己能看图（.litertlm 多模态 / 挂了 mmproj 的 gguf），
-        // 要么能借打标模型看图（看不见图时用 <tag> 命令让打标模型识别）
+        // 带图发送只支持模型自身具备视觉输入能力的情况。
         if (attachJpegs.isNotEmpty()) {
             if (engine == null && llamaModel == null) { toast(getString(R.string.s_273)); return }
-            if (!visionOk && !canTagFromChat) { toast(getString(R.string.s_272)); return }
+            if (!visionOk) { toast(getString(R.string.s_272)); return }
         }
 
         // 绘图模式：把输入当作正面提示词，按绘图页的参数（除正面提示词外）生成
@@ -5059,7 +5058,6 @@ class MainActivity : Activity() {
         drawImportBtn?.alpha = if (b) 0.5f else 1f
     }
 
-    /** 刷新模型页的打标（Tagger）状态：状态行 + 可选列表（模型 / 标签表） */
     /** 列表小标题 */
     private fun listHeader(t: String) = TextView(this).apply {
         text = t
