@@ -95,14 +95,14 @@ impl NativeApi {
             .unwrap_or_else(|_| "libponko_sd.so".to_owned());
         // SAFETY: The library is the in-app native bridge, packaged by Gradle in this APK.
         let library = unsafe { Library::new(&library_name) }.map_err(|error| PonkoError::Native {
-            message: format!("could not load {library_name}: {error}"),
+            details: format!("could not load {library_name}: {error}"),
         })?;
         unsafe fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, PonkoError> {
             // SAFETY: Each symbol name and function type matches ponko_sd_c_api.h.
             unsafe { library.get::<T>(name) }
                 .map(|symbol| *symbol)
                 .map_err(|error| PonkoError::Native {
-                    message: format!("native bridge symbol {} is unavailable: {error}",
+                    details: format!("native bridge symbol {} is unavailable: {error}",
                         String::from_utf8_lossy(&name[..name.len().saturating_sub(1)])),
                 })
         }
@@ -143,13 +143,13 @@ impl NativeApi {
         // First call asks for the number of bytes excluding the NUL terminator.
         let length = unsafe { function(ptr::null_mut(), 0) };
         let capacity = length.checked_add(1).ok_or_else(|| PonkoError::Native {
-            message: "native text result length overflowed".to_owned(),
+            details: "native text result length overflowed".to_owned(),
         })?;
         let mut bytes = vec![0u8; capacity];
         let written = unsafe { function(bytes.as_mut_ptr().cast::<c_char>(), bytes.len()) };
         if written > length {
             return Err(PonkoError::Native {
-                message: "native text result changed size while being copied".to_owned(),
+                details: "native text result changed size while being copied".to_owned(),
             });
         }
         let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
@@ -158,7 +158,7 @@ impl NativeApi {
 
     fn cstring(value: &str, field: &str) -> Result<CString, PonkoError> {
         CString::new(value).map_err(|error: NulError| PonkoError::InvalidArgument {
-            message: format!("{field} contains an embedded NUL byte: {error}"),
+            details: format!("{field} contains an embedded NUL byte: {error}"),
         })
     }
 
@@ -167,7 +167,7 @@ impl NativeApi {
             Ok(())
         } else {
             Err(PonkoError::Native {
-                message: format!("{operation}: {}", self.last_error_message()),
+                details: format!("{operation}: {}", self.last_error_message()),
             })
         }
     }
@@ -175,12 +175,12 @@ impl NativeApi {
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum PonkoError {
-    #[error("{message}")]
-    InvalidArgument { message: String },
-    #[error("{message}")]
-    Native { message: String },
-    #[error("{message}")]
-    InvalidHandle { message: String },
+    #[error("{details}")]
+    InvalidArgument { details: String },
+    #[error("{details}")]
+    Native { details: String },
+    #[error("{details}")]
+    InvalidHandle { details: String },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -284,7 +284,7 @@ pub struct GeneratedImage {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ValidationReport {
     pub valid: bool,
-    pub message: String,
+    pub details: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -373,7 +373,7 @@ impl NativeEngine {
     pub fn create_context(&self, request: ModelLoadRequest) -> Result<i64, PonkoError> {
         let report = validate_model_load_request(request.clone());
         if !report.valid {
-            return Err(PonkoError::InvalidArgument { message: report.message });
+            return Err(PonkoError::InvalidArgument { details: report.message });
         }
         let model = NativeApi::cstring(&request.model_path, "model_path")?;
         let vae = request.vae_path.as_deref()
@@ -413,17 +413,17 @@ impl NativeEngine {
         };
         if pointer.is_null() {
             return Err(PonkoError::Native {
-                message: format!("model context creation failed: {}", self.api.last_error_message()),
+                details: format!("model context creation failed: {}", self.api.last_error_message()),
             });
         }
         let id = pointer as usize as i64;
         let handle = Arc::new(NativeHandle { state: RwLock::new(pointer as usize) });
         let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
-            message: "native handle registry lock poisoned".to_owned(),
+            details: "native handle registry lock poisoned".to_owned(),
         })?;
         if handles.insert(id, handle).is_some() {
             unsafe { (self.api.free_handle)(pointer) };
-            return Err(PonkoError::Native { message: "native handle identifier collision".to_owned() });
+            return Err(PonkoError::Native { details: "native handle identifier collision".to_owned() });
         }
         Ok(id)
     }
@@ -431,10 +431,10 @@ impl NativeEngine {
     pub fn cancel(&self, handle_id: i64) -> Result<(), PonkoError> {
         let handle = self.lookup_handle(handle_id)?;
         let pointer = handle.state.read().map_err(|_| PonkoError::Native {
-            message: "native handle state lock poisoned".to_owned(),
+            details: "native handle state lock poisoned".to_owned(),
         })?;
         if *pointer == 0 {
-            return Err(PonkoError::InvalidHandle { message: "model handle has already been freed".to_owned() });
+            return Err(PonkoError::InvalidHandle { details: "model handle has already been freed".to_owned() });
         }
         let success = unsafe { (self.api.cancel)(*pointer as *mut c_void) };
         self.api.check_native(success, "cancel generation")
@@ -443,14 +443,14 @@ impl NativeEngine {
     pub fn free_context(&self, handle_id: i64) -> Result<(), PonkoError> {
         let handle = {
             let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
-                message: "native handle registry lock poisoned".to_owned(),
+                details: "native handle registry lock poisoned".to_owned(),
             })?;
             handles.remove(&handle_id).ok_or_else(|| PonkoError::InvalidHandle {
-                message: "unknown or already freed model handle".to_owned(),
+                details: "unknown or already freed model handle".to_owned(),
             })?
         };
         let mut pointer = handle.state.write().map_err(|_| PonkoError::Native {
-            message: "native handle state lock poisoned".to_owned(),
+            details: "native handle state lock poisoned".to_owned(),
         })?;
         if *pointer != 0 {
             unsafe { (self.api.free_handle)(*pointer as *mut c_void) };
@@ -477,7 +477,7 @@ impl NativeEngine {
 
     pub fn quantize_unet(&self, request: QuantizeUnetRequest) -> Result<(), PonkoError> {
         let report = validate_unet_quantization_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
+        if !report.valid { return Err(PonkoError::InvalidArgument { details: report.message }); }
         let input = NativeApi::cstring(&request.input_path, "input_path")?;
         let output = NativeApi::cstring(&request.output_path, "output_path")?;
         let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
@@ -492,7 +492,7 @@ impl NativeEngine {
 
     pub fn apply_resadapter(&self, request: ResAdapterRequest) -> Result<(), PonkoError> {
         let report = validate_res_adapter_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
+        if !report.valid { return Err(PonkoError::InvalidArgument { details: report.message }); }
         let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
         let vae = request.vae_path.as_deref().map(|value| NativeApi::cstring(value, "vae_path")).transpose()?;
         let normalization = NativeApi::cstring(&request.normalization_path, "normalization_path")?;
@@ -521,14 +521,14 @@ impl NativeEngine {
     ) -> Result<GeneratedImage, PonkoError> {
         let report = validate_generation_request(request.clone());
         if !report.valid {
-            return Err(PonkoError::InvalidArgument { message: report.message });
+            return Err(PonkoError::InvalidArgument { details: report.message });
         }
         let handle = self.lookup_handle(handle_id)?;
         let pointer_guard = handle.state.read().map_err(|_| PonkoError::Native {
-            message: "native handle state lock poisoned".to_owned(),
+            details: "native handle state lock poisoned".to_owned(),
         })?;
         if *pointer_guard == 0 {
-            return Err(PonkoError::InvalidHandle { message: "model handle has already been freed".to_owned() });
+            return Err(PonkoError::InvalidHandle { details: "model handle has already been freed".to_owned() });
         }
 
         let prompt = NativeApi::cstring(&request.prompt, "prompt")?;
@@ -593,13 +593,13 @@ impl NativeEngine {
         self.api.check_native(success, "image generation")?;
         if output.is_null() || width <= 0 || height <= 0 {
             if !output.is_null() { unsafe { (self.api.free_buffer)(output.cast::<c_void>()) }; }
-            return Err(PonkoError::Native { message: "generation returned an empty image".to_owned() });
+            return Err(PonkoError::Native { details: "generation returned an empty image".to_owned() });
         }
         let expected = (width as usize).checked_mul(height as usize).and_then(|pixels| pixels.checked_mul(3));
         if expected != Some(output_length) {
             unsafe { (self.api.free_buffer)(output.cast::<c_void>()) };
             return Err(PonkoError::Native {
-                message: "native RGB888 output length does not match the reported dimensions".to_owned(),
+                details: "native RGB888 output length does not match the reported dimensions".to_owned(),
             });
         }
         let rgb888 = unsafe { slice::from_raw_parts(output, output_length) }.to_vec();
@@ -610,9 +610,9 @@ impl NativeEngine {
 
     fn lookup_handle(&self, handle_id: i64) -> Result<Arc<NativeHandle>, PonkoError> {
         self.handles.lock().map_err(|_| PonkoError::Native {
-            message: "native handle registry lock poisoned".to_owned(),
+            details: "native handle registry lock poisoned".to_owned(),
         })?.get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
-            message: format!("unknown or already freed model handle {handle_id}"),
+            details: format!("unknown or already freed model handle {handle_id}"),
         })
     }
 }
@@ -740,7 +740,7 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
 pub fn validate_quantization_type(quant_type: String) -> ValidationReport {
     match quant_type.as_str() {
         "q4_0" | "q5_0" | "q8_0" => ValidationReport {
-            valid: true, message: "Quantization type is supported by the current native converter.".to_owned(),
+            valid: true, details: "Quantization type is supported by the current native converter.".to_owned(),
         },
         _ => invalid("Supported UNet quantization types are q4_0, q5_0, and q8_0."),
     }
@@ -769,7 +769,7 @@ pub fn validate_res_adapter_request(request: ResAdapterRequest) -> ValidationRep
     validate_quantization_type(request.quant_type)
 }
 
-fn invalid(message: &str) -> ValidationReport {
+fn invalid(details: &str) -> ValidationReport {
     ValidationReport { valid: false, message: message.to_owned() }
 }
 
