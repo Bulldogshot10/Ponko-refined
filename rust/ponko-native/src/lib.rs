@@ -349,7 +349,6 @@ unsafe extern "C" fn preview_trampoline(
 }
 
 struct NativeHandle {
-    pointer: usize,
     // Read locks allow generation and cancellation together. Free obtains a write lock,
     // so a native context can't be destroyed while any call is using its pointer.
     state: RwLock<usize>,
@@ -385,34 +384,13 @@ impl NativeEngine {
             .transpose()?;
 
         let slot_values = request.slots.as_ref().map(ModelSlots::ordered);
-        let slot_cstrings = slot_values.as_ref().map(|values| {
-            values.iter().enumerate().map(|(index, value)| {
-                value.map(|text| NativeApi::cstring(text, "model slot"))
-                    .transpose()
-                    .map_err(|error| error)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| item)
-                    .map(|item| (index, item))
-            }).collect::<Result<Vec<_>, PonkoError>>()
-        }).transpose()?;
-        let mut slot_storage: Vec<Option<CString>> = vec![None; 13];
-        if let Some(items) = slot_cstrings {
-            for (index, item) in items {
-                slot_storage[index] = item;
-            }
-        }
+        let slot_storage: Vec<Option<CString>> = if let Some(values) = slot_values.as_ref() {
+            values.iter().map(|value| {
+                value.map(|text| NativeApi::cstring(text, "model slot")).transpose()
+            }).collect::<Result<Vec<_>, PonkoError>>()?
+        } else {
+            vec![None; 13]
+        };
         let slot_pointers: Vec<*const c_char> = slot_storage.iter()
             .map(|item| item.as_ref().map_or(ptr::null(), |value| value.as_ptr()))
             .collect();
@@ -425,8 +403,8 @@ impl NativeEngine {
                 vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 request.n_threads.min(i32::MAX as u32) as i32,
                 request.wtype,
-                i32::from(request.flash_attn),
-                i32::from(request.vae_conv_direct),
+                request.flash_attn as i32,
+                request.vae_conv_direct as i32,
                 backend.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 slots_ptr,
                 slot_count,
@@ -438,7 +416,7 @@ impl NativeEngine {
             });
         }
         let id = pointer as usize as u64;
-        let handle = Arc::new(NativeHandle { pointer: id as usize, state: RwLock::new(pointer as usize) });
+        let handle = Arc::new(NativeHandle { state: RwLock::new(pointer as usize) });
         let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
             message: "native handle registry lock poisoned".to_owned(),
         })?;
@@ -449,7 +427,91 @@ impl NativeEngine {
         Ok(id)
     }
 
-    pub fn generate(
+    pub fn cancel(&self, handle_id: u64) -> Result<(), PonkoError> {
+        let handle = self.lookup_handle(handle_id)?;
+        let pointer = handle.state.read().map_err(|_| PonkoError::Native {
+            message: "native handle state lock poisoned".to_owned(),
+        })?;
+        if *pointer == 0 {
+            return Err(PonkoError::InvalidHandle { message: "model handle has already been freed".to_owned() });
+        }
+        let success = unsafe { (self.api.cancel)(*pointer as *mut c_void) };
+        self.api.check_native(success, "cancel generation")
+    }
+
+    pub fn free_context(&self, handle_id: u64) -> Result<(), PonkoError> {
+        let handle = {
+            let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
+                message: "native handle registry lock poisoned".to_owned(),
+            })?;
+            handles.remove(&handle_id).ok_or_else(|| PonkoError::InvalidHandle {
+                message: "unknown or already freed model handle".to_owned(),
+            })?
+        };
+        let mut pointer = handle.state.write().map_err(|_| PonkoError::Native {
+            message: "native handle state lock poisoned".to_owned(),
+        })?;
+        if *pointer != 0 {
+            unsafe { (self.api.free_handle)(*pointer as *mut c_void) };
+            *pointer = 0;
+        }
+        Ok(())
+    }
+
+    pub fn info(&self) -> Result<String, PonkoError> {
+        self.api.text(self.api.info)
+    }
+
+    pub fn vulkan_diagnostics(&self) -> Result<String, PonkoError> {
+        self.api.text(self.api.vulkan_diagnostics)
+    }
+
+    pub fn last_params(&self) -> Result<String, PonkoError> {
+        self.api.text(self.api.last_params)
+    }
+
+    pub fn list_devices(&self) -> Result<String, PonkoError> {
+        self.api.text(self.api.list_devices)
+    }
+
+    pub fn quantize_unet(&self, request: QuantizeUnetRequest) -> Result<(), PonkoError> {
+        let report = validate_unet_quantization_request(request.clone());
+        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
+        let input = NativeApi::cstring(&request.input_path, "input_path")?;
+        let output = NativeApi::cstring(&request.output_path, "output_path")?;
+        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
+        let result = unsafe {
+            (self.api.quantize_unet)(
+                input.as_ptr(), output.as_ptr(), kind.as_ptr(), request.diffusion_slot as i32,
+                request.n_threads.min(i32::MAX as u32) as i32,
+            )
+        };
+        self.api.check_native(result, "UNet quantization")
+    }
+
+    pub fn apply_resadapter(&self, request: ResAdapterRequest) -> Result<(), PonkoError> {
+        let report = validate_res_adapter_request(request.clone());
+        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
+        let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
+        let vae = request.vae_path.as_deref().map(|value| NativeApi::cstring(value, "vae_path")).transpose()?;
+        let normalization = NativeApi::cstring(&request.normalization_path, "normalization_path")?;
+        let output = NativeApi::cstring(&request.output_path, "output_path")?;
+        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
+        let result = unsafe {
+            (self.api.apply_resadapter)(
+                input.as_ptr(),
+                vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                normalization.as_ptr(), output.as_ptr(), kind.as_ptr(),
+                request.n_threads.min(i32::MAX as u32) as i32,
+            )
+        };
+        self.api.check_native(result, "ResAdapter")
+    }
+
+}
+
+impl NativeEngine {
+    fn generate_internal(
         &self,
         handle_id: u64,
         request: GenerationRequest,
@@ -544,86 +606,6 @@ impl NativeEngine {
         Ok(GeneratedImage { width: width as u32, height: height as u32, rgb888 })
     }
 
-    pub fn cancel(&self, handle_id: u64) -> Result<(), PonkoError> {
-        let handle = self.lookup_handle(handle_id)?;
-        let pointer = handle.state.read().map_err(|_| PonkoError::Native {
-            message: "native handle state lock poisoned".to_owned(),
-        })?;
-        if *pointer == 0 {
-            return Err(PonkoError::InvalidHandle { message: "model handle has already been freed".to_owned() });
-        }
-        let success = unsafe { (self.api.cancel)(*pointer as *mut c_void) };
-        self.api.check_native(success, "cancel generation")
-    }
-
-    pub fn free_context(&self, handle_id: u64) -> Result<(), PonkoError> {
-        let handle = {
-            let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
-                message: "native handle registry lock poisoned".to_owned(),
-            })?;
-            handles.remove(&handle_id).ok_or_else(|| PonkoError::InvalidHandle {
-                message: "unknown or already freed model handle".to_owned(),
-            })?
-        };
-        let mut pointer = handle.state.write().map_err(|_| PonkoError::Native {
-            message: "native handle state lock poisoned".to_owned(),
-        })?;
-        if *pointer != 0 {
-            unsafe { (self.api.free_handle)(*pointer as *mut c_void) };
-            *pointer = 0;
-        }
-        Ok(())
-    }
-
-    pub fn info(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.info)
-    }
-
-    pub fn vulkan_diagnostics(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.vulkan_diagnostics)
-    }
-
-    pub fn last_params(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.last_params)
-    }
-
-    pub fn list_devices(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.list_devices)
-    }
-
-    pub fn quantize_unet(&self, request: QuantizeUnetRequest) -> Result<(), PonkoError> {
-        let report = validate_unet_quantization_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
-        let input = NativeApi::cstring(&request.input_path, "input_path")?;
-        let output = NativeApi::cstring(&request.output_path, "output_path")?;
-        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
-        let result = unsafe {
-            (self.api.quantize_unet)(
-                input.as_ptr(), output.as_ptr(), kind.as_ptr(), i32::from(request.diffusion_slot),
-                request.n_threads.min(i32::MAX as u32) as i32,
-            )
-        };
-        self.api.check_native(result, "UNet quantization")
-    }
-
-    pub fn apply_resadapter(&self, request: ResAdapterRequest) -> Result<(), PonkoError> {
-        let report = validate_res_adapter_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { message: report.message }); }
-        let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
-        let vae = request.vae_path.as_deref().map(|value| NativeApi::cstring(value, "vae_path")).transpose()?;
-        let normalization = NativeApi::cstring(&request.normalization_path, "normalization_path")?;
-        let output = NativeApi::cstring(&request.output_path, "output_path")?;
-        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
-        let result = unsafe {
-            (self.api.apply_resadapter)(
-                input.as_ptr(),
-                vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                normalization.as_ptr(), output.as_ptr(), kind.as_ptr(),
-                request.n_threads.min(i32::MAX as u32) as i32,
-            )
-        };
-        self.api.check_native(result, "ResAdapter")
-    }
 
     fn lookup_handle(&self, handle_id: u64) -> Result<Arc<NativeHandle>, PonkoError> {
         self.handles.lock().map_err(|_| PonkoError::Native {
@@ -649,6 +631,17 @@ impl Drop for NativeEngine {
             }
         }
     }
+}
+
+#[uniffi::export]
+pub fn generate_image(
+    engine: Arc<NativeEngine>,
+    handle_id: u64,
+    request: GenerationRequest,
+    step_callback: Option<Arc<dyn StepCallback>>,
+    preview_callback: Option<Arc<dyn PreviewCallback>>,
+) -> Result<GeneratedImage, PonkoError> {
+    engine.generate_internal(handle_id, request, step_callback, preview_callback)
 }
 
 #[uniffi::export]
