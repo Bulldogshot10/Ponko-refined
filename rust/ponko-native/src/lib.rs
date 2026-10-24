@@ -740,7 +740,7 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
 pub fn validate_quantization_type(quant_type: String) -> ValidationReport {
     match quant_type.as_str() {
         "q4_0" | "q5_0" | "q8_0" => ValidationReport {
-            valid: true, details: "Quantization type is supported by the current native converter.".to_owned(),
+            valid: true, message: "Quantization type is supported by the current native converter.".to_owned(),
         },
         _ => invalid("Supported UNet quantization types are q4_0, q5_0, and q8_0."),
     }
@@ -769,7 +769,7 @@ pub fn validate_res_adapter_request(request: ResAdapterRequest) -> ValidationRep
     validate_quantization_type(request.quant_type)
 }
 
-fn invalid(details: &str) -> ValidationReport {
+fn invalid(message: &str) -> ValidationReport {
     ValidationReport { valid: false, message: message.to_owned() }
 }
 
