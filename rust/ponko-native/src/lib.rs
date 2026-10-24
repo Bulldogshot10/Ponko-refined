@@ -284,7 +284,7 @@ pub struct GeneratedImage {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ValidationReport {
     pub valid: bool,
-    pub details: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
