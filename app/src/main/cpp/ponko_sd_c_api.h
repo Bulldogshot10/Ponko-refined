@@ -40,6 +40,11 @@ typedef struct ponko_generation_params {
     int32_t init_image_width;
     int32_t init_image_height;
     float strength;
+    int32_t adetailer_enabled;
+    const char* adetailer_detector_path;
+    const char* adetailer_prompt;
+    const char* adetailer_negative_prompt;
+    const char* adetailer_extra_args;
 } ponko_generation_params_t;
 
 const char* ponko_sd_last_error(void);
