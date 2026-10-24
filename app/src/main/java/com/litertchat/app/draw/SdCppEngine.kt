@@ -64,6 +64,25 @@ object SdCppEngine {
         TCD(16, "TCD"),
     }
 
+    enum class HiresUpscaler(val code: Int, val label: String) {
+        NONE(0, "None"), LATENT(1, "Latent"), LATENT_NEAREST(2, "Latent (nearest)"),
+        LATENT_NEAREST_EXACT(3, "Latent (nearest-exact)"), LATENT_ANTIALIASED(4, "Latent (antialiased)"),
+        LATENT_BICUBIC(5, "Latent (bicubic)"), LATENT_BICUBIC_ANTIALIASED(6, "Latent (bicubic antialiased)"),
+        LANCZOS(7, "Lanczos"), NEAREST(8, "Nearest"), MODEL(9, "Model"),
+    }
+
+    data class HiResSettings(
+        val enabled: Boolean = false,
+        val upscaler: HiresUpscaler = HiresUpscaler.LATENT,
+        val modelPath: String? = null,
+        val scale: Float = 2.0f,
+        val targetWidth: Int = 0,
+        val targetHeight: Int = 0,
+        val steps: Int = 0,
+        val denoisingStrength: Float = 0.7f,
+        val tileSize: Int = 128,
+    )
+
     /** 权重类型（对应 sd.cpp enum sd_type_t）；KEEP = 保持模型原样 */
     const val WTYPE_KEEP = -1
     const val WTYPE_F32 = 0
@@ -141,6 +160,15 @@ object SdCppEngine {
         sampleMethod: Int,
         scheduler: Int,
         eta: Float,
+        hiresEnabled: Boolean,
+        hiresUpscaler: Int,
+        hiresModelPath: String,
+        hiresScale: Float,
+        hiresTargetWidth: Int,
+        hiresTargetHeight: Int,
+        hiresSteps: Int,
+        hiresDenoisingStrength: Float,
+        hiresTileSize: Int,
         clipSkip: Int,
         cb: StepCallback?,
         pcb: PreviewCallback?,
@@ -233,6 +261,7 @@ object SdCppEngine {
         sampler: Sampler = Sampler.EULER_A,
         scheduler: Scheduler = Scheduler.DISCRETE,
         eta: Float = -1.0f,
+        hires: HiResSettings = HiResSettings(),
         cb: StepCallback? = null,
         onPreview: PreviewCallback? = null,
         initImage: ByteArray? = null,
@@ -247,14 +276,21 @@ object SdCppEngine {
         val px = nativeGenerate(
             handle, prompt, negative, loraPaths, loraScales,
             width, height, steps, cfg, effectiveSeed,
-            sampler.code, scheduler.code, eta, clipSkip.coerceIn(1, 12), cb, onPreview,
+            sampler.code, scheduler.code, eta,
+            hires.enabled, hires.upscaler.code, hires.modelPath.orEmpty(),
+            hires.scale, hires.targetWidth, hires.targetHeight, hires.steps,
+            hires.denoisingStrength, hires.tileSize,
+            clipSkip.coerceIn(1, 12), cb, onPreview,
             if (useInit) initImage else null,
             if (useInit) initWidth else 0,
             if (useInit) initHeight else 0,
             if (useInit) strength else 1.0f,
         ) ?: return null
-        if (px.isEmpty()) return null
-        return Bitmap.createBitmap(px, width, height, Bitmap.Config.ARGB_8888)
+        if (px.size < 2) return null
+        val outWidth = px[0]
+        val outHeight = px[1]
+        if (outWidth <= 0 || outHeight <= 0 || px.size - 2 != outWidth * outHeight) return null
+        return Bitmap.createBitmap(px.copyOfRange(2, px.size), outWidth, outHeight, Bitmap.Config.ARGB_8888)
     }
 
         /** 预览小图（RGB888）→ Bitmap（ARGB_8888）；非法输入返回 null */

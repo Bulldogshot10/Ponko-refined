@@ -383,15 +383,19 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         jstring prompt, jstring negative,
         jobjectArray loraPaths, jfloatArray loraScales,
         jint width, jint height, jint steps, jfloat cfg, jlong seed,
-        jint sampleMethod, jint scheduler, jfloat eta, jint clipSkip,
-        jobject cb, jobject pcb,
+        jint sampleMethod, jint scheduler, jfloat eta,
+        jboolean hiresEnabled, jint hiresUpscaler, jstring hiresModelPath,
+        jfloat hiresScale, jint hiresTargetWidth, jint hiresTargetHeight,
+        jint hiresSteps, jfloat hiresDenoisingStrength, jint hiresTileSize,
+        jint clipSkip, jobject cb, jobject pcb,
         jbyteArray initData, jint initWidth, jint initHeight, jfloat strength) {
     SdHandle* h = reinterpret_cast<SdHandle*>(handle);
     if (h == nullptr || h->ctx == nullptr) return nullptr;
 
-    std::string sPrompt, sNeg;
+    std::string sPrompt, sNeg, sHiresModelPath;
     jstr(env, prompt, sPrompt);
     jstr(env, negative, sNeg);
+    jstr(env, hiresModelPath, sHiresModelPath);
 
     const jsize pathCount = loraPaths == nullptr ? 0 : env->GetArrayLength(loraPaths);
     const jsize scaleCount = loraScales == nullptr ? 0 : env->GetArrayLength(loraScales);
@@ -485,6 +489,15 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
     g.sample_params.guidance.txt_cfg = cfg;
     g.sample_params.sample_method = static_cast<enum sample_method_t>(sampleMethod);
     g.sample_params.scheduler     = static_cast<enum scheduler_t>(scheduler);
+    g.hires.enabled = hiresEnabled == JNI_TRUE;
+    g.hires.upscaler = static_cast<enum sd_hires_upscaler_t>(hiresUpscaler);
+    g.hires.model_path = sHiresModelPath.empty() ? nullptr : sHiresModelPath.c_str();
+    g.hires.scale = hiresScale;
+    g.hires.target_width = hiresTargetWidth;
+    g.hires.target_height = hiresTargetHeight;
+    g.hires.steps = hiresSteps;
+    g.hires.denoising_strength = hiresDenoisingStrength;
+    g.hires.upscale_tile_size = hiresTileSize;
 
     char* gdump = sd_img_gen_params_to_str(&g);
     LOGI("generate_image: %s", gdump ? gdump : "(null)");
@@ -510,18 +523,21 @@ Java_com_litertchat_app_draw_SdCppEngine_nativeGenerate(
         const int hh = static_cast<int>(img.height);
         const int ch = static_cast<int>(img.channel);
         const int total = w * hh;
-        std::vector<jint> px(static_cast<size_t>(total));
+        // HiRes can change output dimensions; prefix width and height for Kotlin.
+        std::vector<jint> px(static_cast<size_t>(total) + 2);
+        px[0] = static_cast<jint>(w);
+        px[1] = static_cast<jint>(hh);
         for (int i = 0; i < total; ++i) {
             const uint8_t* s = img.data + static_cast<size_t>(i) * ch;
             jint r, gg, b;
             if (ch >= 3) { r = s[0]; gg = s[1]; b = s[2]; }
             else         { r = gg = b = s[0]; }
-            px[static_cast<size_t>(i)] =
+            px[static_cast<size_t>(i) + 2] =
                 static_cast<jint>(0xFF000000u | (static_cast<uint32_t>(r) << 16) |
                                   (static_cast<uint32_t>(gg) << 8) | static_cast<uint32_t>(b));
         }
-        result = env->NewIntArray(total);
-        env->SetIntArrayRegion(result, 0, total, px.data());
+        result = env->NewIntArray(static_cast<jsize>(px.size()));
+        env->SetIntArrayRegion(result, 0, static_cast<jsize>(px.size()), px.data());
         free_sd_images(out, n);
     } else {
         if (out) free_sd_images(out, n);

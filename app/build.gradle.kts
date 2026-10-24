@@ -65,7 +65,6 @@ dependencies {
     implementation("io.noties.markwon:linkify:4.6.2")
     implementation("androidx.viewpager:viewpager:1.0.0")
     // 打标（Tagger）：ONNX Runtime，运行用户导入的 WD14 类 .onnx 模型（arm64-v8a）
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     // PDF 文本抽取（对话发送 PDF）：Tom Roush 的 PDFBox Android 移植
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // 绘图（文生图）：自编的 stable-diffusion.cpp（arm64-v8a），源码在 src/main/cpp，

@@ -478,6 +478,30 @@
     <string name="draw_vae_conv_direct_reload_hint">VAE convolution setting saved. Unload and reload the drawing model to apply it.</string>
     <string name="draw_vae_conv_direct_status">VAE direct-conv</string>
     <string name="draw_vae_conv_standard_status">VAE standard-conv</string>
+    <string name="draw_hires_tab">HiRes</string>
+    <string name="draw_hires_title">HiRes Fix / Upscaler</string>
+    <string name="draw_hires_enable">Enable second-pass HiRes Fix</string>
+    <string name="draw_hires_enable_hint">Upscale the first result, then run a second denoising pass. This costs extra time and RAM. Settings apply to both Text to Image and Image to Image.</string>
+    <string name="draw_hires_upscaler">Upscaler</string>
+    <string name="draw_hires_upscaler_hint">Latent methods upscale in latent space; Lanczos and Nearest operate on pixels; Model uses a compatible external upscaler checkpoint.</string>
+    <string name="draw_hires_pick_model">Choose model upscaler file</string>
+    <string name="draw_hires_model_selected">Model upscaler: %1$s</string>
+    <string name="draw_hires_model_none">No model upscaler selected</string>
+    <string name="draw_hires_model_missing">Choose a model upscaler file first, or select a built-in upscaler.</string>
+    <string name="draw_hires_model_bad_file">Choose a .safetensors, .gguf, .pt, .pth, or .ckpt upscaler file.</string>
+    <string name="draw_hires_model_copy_failed">Could not import upscaler file: %1$s</string>
+    <string name="draw_hires_model_imported">Imported upscaler: %1$s</string>
+    <string name="draw_hires_params_title">Second-pass parameters</string>
+    <string name="draw_hires_scale">Upscale factor</string>
+    <string name="draw_hires_scale_hint">Used when target width and height are both 0. Common values: 1.5 or 2.0.</string>
+    <string name="draw_hires_target_width">Target width</string>
+    <string name="draw_hires_target_height">Target height</string>
+    <string name="draw_hires_steps">HiRes steps</string>
+    <string name="draw_hires_steps_hint">0 = reuse the first-pass step count.</string>
+    <string name="draw_hires_denoise">Denoising strength</string>
+    <string name="draw_hires_denoise_hint">0.01–1.0. Lower values preserve more of the upscaled first pass.</string>
+    <string name="draw_hires_tile">Upscaler tile size</string>
+    <string name="draw_hires_tile_hint">128 is the native default. Only relevant to model-backed upscalers.</string>
     <string name="draw_eta_label">ETA</string>
     <string name="draw_eta_hint">-1 = Auto (TCD defaults to 0.3); otherwise set 0–1. Higher values add more stochastic noise where supported.</string>
     <string name="draw_clip_skip_label">CLIP skip</string>
