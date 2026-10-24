@@ -222,16 +222,18 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
                 any_slot = true;
             }
         }
-        if (!any_slot && !stringIsNonempty(model_path)) {
-            setError("at least one model slot path must be non-empty");
+        if (!any_slot) {
+            setError("slots were supplied but every model slot path is empty");
             return nullptr;
         }
     }
 
     sd_ctx_params_t params;
     sd_ctx_params_init(&params);
-    const char* effective_model = slot_paths[SLOT_MODEL] != nullptr ? slot_paths[SLOT_MODEL] : model_path;
-    const char* effective_vae = slot_paths[SLOT_VAE] != nullptr ? slot_paths[SLOT_VAE] : vae_path;
+    const char* effective_model = slot_paths[SLOT_MODEL] != nullptr
+        ? slot_paths[SLOT_MODEL] : (stringIsNonempty(model_path) ? model_path : nullptr);
+    const char* effective_vae = slot_paths[SLOT_VAE] != nullptr
+        ? slot_paths[SLOT_VAE] : (stringIsNonempty(vae_path) ? vae_path : nullptr);
     params.model_path = effective_model;
     params.diffusion_model_path = slot_paths[SLOT_DIFFUSION];
     params.high_noise_diffusion_model_path = slot_paths[SLOT_HIGH_NOISE];
