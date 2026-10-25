@@ -1,0 +1,39 @@
+#version 450
+
+// Naive FP32 GEMM baseline: C[M,N] = A[M,K] * B[K,N].
+// One invocation computes one output element. This intentionally favors a
+// simple correctness baseline before adding tiling/shared-memory optimizations.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer MatrixA {
+    float a_values[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer MatrixB {
+    float b_values[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer MatrixC {
+    float c_values[];
+};
+
+layout(push_constant) uniform MatmulParams {
+    uint m;
+    uint n;
+    uint k;
+} params;
+
+void main() {
+    const uint col = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    if (row >= params.m || col >= params.n) {
+        return;
+    }
+
+    float sum = 0.0;
+    for (uint inner = 0; inner < params.k; ++inner) {
+        sum += a_values[row * params.k + inner] *
+               b_values[inner * params.n + col];
+    }
+    c_values[row * params.n + col] = sum;
+}
