@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     let count_u32 = count as u32;
     let groups_x = ((count_u32 + 63) / 64).max(1);
 
-    let execute_and_verify = || -> Result<std::time::Duration> {
+    let execute_and_verify = || -> Result<(std::time::Duration, f32)> {
         let elapsed = device.dispatch(
             &kernel,
             &[&a_buffer, &b_buffer, &out_buffer],
@@ -80,8 +80,8 @@ fn main() -> Result<()> {
             [groups_x, 1, 1],
         )?;
         let bytes = device.readback(&out_buffer, count * std::mem::size_of::<f32>())?;
-        verify_output(&bytes, &expected)?;
-        Ok(elapsed)
+        let max_error = verify_output(&bytes, &expected)?;
+        Ok((elapsed, max_error))
     };
 
     for _ in 0..warmups {
@@ -90,9 +90,9 @@ fn main() -> Result<()> {
     let mut samples = Vec::with_capacity(iterations);
     let mut max_abs_error = 0.0_f32;
     for _ in 0..iterations {
-        samples.push(execute_and_verify()?);
-        let bytes = device.readback(&out_buffer, count * std::mem::size_of::<f32>())?;
-        max_abs_error = max_abs_error.max(verify_output(&bytes, &expected)?);
+        let (elapsed, error) = execute_and_verify()?;
+        samples.push(elapsed);
+        max_abs_error = max_abs_error.max(error);
     }
 
     let summary = summarize(&samples)?;
