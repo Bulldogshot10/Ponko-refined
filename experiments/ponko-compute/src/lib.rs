@@ -588,8 +588,8 @@ impl ComputeDevice {
                 vk::PipelineStageFlags::HOST,
                 vk::DependencyFlags::empty(),
                 &[],
-                &[],
                 &barriers,
+                &[],
             );
         }
         if let Err(error) = unsafe { self.inner.device.end_command_buffer(command) } {
