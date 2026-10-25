@@ -1,4 +1,4 @@
-name: PonkoCompute Vulkan Prototype
+name: PonkoCompute Vulkan Stable Testing
 
 on:
   push:
@@ -16,14 +16,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ponko-compute-${{ github.ref }}
+  group: ponko-compute-stable-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  linux-vulkan-smoke:
-    name: Rust + GLSL + Vulkan correctness
+  linux-vulkan-stable:
+    name: Rust + SPIR-V + Vulkan correctness
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: experiments/ponko-compute
@@ -34,31 +34,46 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Install Vulkan software driver and GLSL compiler
+      - name: Install Vulkan software driver, validation layer, and shader tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers glslang-tools
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-validationlayers glslang-tools spirv-tools
 
-      - name: Check formatting and Rust targets
+      - name: Check formatting and Rust test suite
         run: |
           cargo fmt --all -- --check
           cargo test --all-targets
 
-      - name: Compile SPIR-V shaders
+      - name: Compile and validate SPIR-V
         run: |
           glslangValidator -V --target-env vulkan1.0 shaders/vector_add.comp -o shaders/vector_add.spv
           glslangValidator -V --target-env vulkan1.0 shaders/matmul.comp -o shaders/matmul.spv
+          spirv-val --target-env vulkan1.0 shaders/vector_add.spv
+          spirv-val --target-env vulkan1.0 shaders/matmul.spv
 
-      - name: Run vector-add correctness check on lavapipe
+      - name: Configure Mesa lavapipe and Vulkan validation
+        shell: bash
         run: |
+          set -euo pipefail
           ICD="$(find /usr/share/vulkan/icd.d -type f -name 'lvp_icd*.json' -print -quit)"
           test -n "$ICD"
-          export VK_ICD_FILENAMES="$ICD"
-          cargo run --release --bin ponko-compute -- shaders/vector_add.spv 16384
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          echo "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation" >> "$GITHUB_ENV"
+          echo "Selected software Vulkan ICD: $ICD"
 
-      - name: Run matrix-multiply correctness check on lavapipe
+      - name: Run vector-add edge and repeated-run tests
+        shell: bash
         run: |
-          ICD="$(find /usr/share/vulkan/icd.d -type f -name 'lvp_icd*.json' -print -quit)"
-          test -n "$ICD"
-          export VK_ICD_FILENAMES="$ICD"
-          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 64 48 40
+          set -euo pipefail
+          cargo run --release --bin ponko-compute -- shaders/vector_add.spv 1 1 5
+          cargo run --release --bin ponko-compute -- shaders/vector_add.spv 65 1 5
+          cargo run --release --bin ponko-compute -- shaders/vector_add.spv 16387 3 10
+
+      - name: Run matrix-multiply edge and representative shapes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 1 1 1 0 5
+          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 17 9 3 1 5
+          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 67 53 29 3 10
+          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 64 64 64 3 10
