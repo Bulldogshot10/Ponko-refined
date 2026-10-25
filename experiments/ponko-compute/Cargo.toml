@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "ponko-compute"
 path = "src/main.rs"
 
+[[bin]]
+name = "ponko-matmul"
+path = "src/bin/matmul.rs"
+
 [dependencies]
 anyhow = "1"
 ash = "0.37.3"
