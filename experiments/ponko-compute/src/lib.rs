@@ -13,7 +13,7 @@ use std::{
     fs,
     path::Path,
     ptr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -23,6 +23,7 @@ struct Inner {
     physical_device: vk::PhysicalDevice,
     device: Device,
     queue: vk::Queue,
+    queue_mutex: Mutex<()>,
     queue_family_index: u32,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
     max_push_constant_size: u32,
@@ -161,6 +162,7 @@ impl ComputeDevice {
             physical_device,
             device,
             queue,
+            queue_mutex: Mutex::new(()),
             queue_family_index,
             memory_properties,
             max_push_constant_size: properties.limits.max_push_constants_size,
@@ -505,9 +507,14 @@ impl ComputeDevice {
         let command = command_buffers[0];
         let begin_info = vk::CommandBufferBeginInfo::builder()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        if let Err(error) = unsafe { self.inner.device.begin_command_buffer(command, &begin_info) } {
+            unsafe {
+                self.inner.device.destroy_command_pool(command_pool, None);
+                self.inner.device.destroy_descriptor_pool(descriptor_pool, None);
+            }
+            return Err(error).context("begin command buffer");
+        }
         unsafe {
-            self.inner.device.begin_command_buffer(command, &begin_info)
-                .context("begin command buffer")?;
             self.inner.device.cmd_bind_pipeline(
                 command,
                 vk::PipelineBindPoint::COMPUTE,
@@ -554,16 +561,33 @@ impl ComputeDevice {
                 &[],
                 &barriers,
             );
-            self.inner.device.end_command_buffer(command)
-                .context("end command buffer")?;
+        }
+        if let Err(error) = unsafe { self.inner.device.end_command_buffer(command) } {
+            unsafe {
+                self.inner.device.destroy_command_pool(command_pool, None);
+                self.inner.device.destroy_descriptor_pool(descriptor_pool, None);
+            }
+            return Err(error).context("end command buffer");
         }
 
-        let fence = unsafe {
+        let fence = match unsafe {
             self.inner.device.create_fence(&vk::FenceCreateInfo::default(), None)
-        }
-        .context("create dispatch fence")?;
+        } {
+            Ok(fence) => fence,
+            Err(error) => {
+                unsafe {
+                    self.inner.device.destroy_command_pool(command_pool, None);
+                    self.inner.device.destroy_descriptor_pool(descriptor_pool, None);
+                }
+                return Err(error).context("create dispatch fence");
+            }
+        };
         let commands = [command];
         let submit = [vk::SubmitInfo::builder().command_buffers(&commands).build()];
+        // VkQueue operations require external synchronization. Serialize submissions
+        // when callers share a ComputeDevice across threads.
+        let _queue_guard = self.inner.queue_mutex.lock()
+            .map_err(|_| anyhow::anyhow!("Vulkan queue submission lock poisoned"))?;
         let start = Instant::now();
         let submit_result = unsafe {
             self.inner.device.queue_submit(self.inner.queue, &submit, fence)
