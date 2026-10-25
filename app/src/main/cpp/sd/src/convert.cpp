@@ -360,7 +360,10 @@ static bool load_tensor_for_export(ModelLoader& model_loader,
             return false;
         }
         std::memcpy(tensor->data, base_weights.data(), base_weights.size() * sizeof(float));
-        if (sequence == 1 || sequence % 16 == 0) log_fusion_memory("after-base-tensor-f32");
+        // The ggml tensor owns its F32 copy now. Free the vector before building the LoRA graph
+        // so low-RAM Android devices do not keep two full-size F32 copies alive at once.
+        std::vector<float>().swap(base_weights);
+        if (sequence == 1 || sequence % 16 == 0) log_fusion_memory("after-base-vector-release");
         if (!fusion->apply_tensor(storage.name, tensor, &job.error)) {
             ggml_free(ggml_ctx);
             return false;
