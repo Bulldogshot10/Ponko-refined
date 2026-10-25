@@ -1,0 +1,64 @@
+name: PonkoCompute Vulkan Prototype
+
+on:
+  push:
+    branches: [feat/rust-uniffi-native-facade]
+    paths:
+      - "experiments/ponko-compute/**"
+      - ".github/workflows/ponko-compute.yml"
+  pull_request:
+    paths:
+      - "experiments/ponko-compute/**"
+      - ".github/workflows/ponko-compute.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ponko-compute-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-vulkan-smoke:
+    name: Rust + GLSL + Vulkan correctness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: experiments/ponko-compute
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Vulkan software driver and GLSL compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers glslang-tools
+
+      - name: Check formatting and Rust targets
+        run: |
+          cargo fmt --all -- --check
+          cargo test --all-targets
+
+      - name: Compile SPIR-V shaders
+        run: |
+          glslangValidator -V --target-env vulkan1.0 shaders/vector_add.comp -o shaders/vector_add.spv
+          glslangValidator -V --target-env vulkan1.0 shaders/matmul.comp -o shaders/matmul.spv
+
+      - name: Run vector-add correctness check on lavapipe
+        run: |
+          ICD="$(find /usr/share/vulkan/icd.d -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$ICD"
+          export VK_ICD_FILENAMES="$ICD"
+          cargo run --release --bin ponko-compute -- shaders/vector_add.spv 16384
+
+      - name: Run matrix-multiply correctness check on lavapipe
+        run: |
+          ICD="$(find /usr/share/vulkan/icd.d -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$ICD"
+          export VK_ICD_FILENAMES="$ICD"
+          cargo run --release --bin ponko-matmul -- shaders/matmul.spv 64 48 40
