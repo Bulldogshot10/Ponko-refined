@@ -4,6 +4,8 @@
 //! one compute queue, SPIR-V pipelines, descriptor sets, dispatch, and a fence.
 //! It is a measurement harness, not yet a tuned tensor library.
 
+pub mod benchmark;
+
 use anyhow::{bail, ensure, Context, Result};
 use ash::{vk, Device, Entry, Instance};
 use std::{
