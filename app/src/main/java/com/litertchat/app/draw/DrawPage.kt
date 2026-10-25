@@ -2275,7 +2275,7 @@ class DrawPage(
 
     // ================= Native LoRA fusion =================
 
-    private fun showLoraFusionWizard() {
+    private fun showLoraFusionWizard(preselectName: String? = null) {
         if (generating || DrawCore.busy) {
             Toast.makeText(c, c.getString(R.string.draw_lora_fusion_busy), Toast.LENGTH_LONG).show()
             return
@@ -2295,30 +2295,63 @@ class DrawPage(
             toast(c.getString(R.string.draw_lora_fusion_supported))
             return
         }
+
         val available = listLoras()
-        val checked = BooleanArray(available.size)
-        android.app.AlertDialog.Builder(act)
+        val checkboxes = mutableListOf<CheckBox>()
+        val content = LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        val intro = if (available.isEmpty()) {
+            c.getString(R.string.draw_lora_fusion_no_loras)
+        } else {
+            c.getString(R.string.draw_lora_fusion_intro, source.name)
+        }
+        content.addView(body(intro), matchWrap(bottom = if (available.isEmpty()) 0 else 8))
+
+        for (lora in available) {
+            val checkbox = CheckBox(c).apply {
+                text = lora.name
+                textSize = 13f
+                setTextColor(pal.text)
+                maxLines = 2
+                isChecked = lora.name == preselectName
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            checkboxes.add(checkbox)
+            content.addView(checkbox, matchWrap(bottom = 2))
+        }
+
+        val scroll = ScrollView(c).apply {
+            isFillViewport = true
+            addView(content, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+        }
+        val dialog = android.app.AlertDialog.Builder(act)
             .setTitle(c.getString(R.string.draw_lora_fusion_title))
-            .setMessage(
-                if (available.isEmpty()) c.getString(R.string.draw_lora_fusion_no_loras)
-                else c.getString(R.string.draw_lora_fusion_intro, source.name)
-            )
-            .setMultiChoiceItems(available.map { it.name }.toTypedArray(), checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
-            .setPositiveButton(c.getString(R.string.draw_lora_fusion_next)) { _, _ ->
-                val selected = available.filterIndexed { index, _ -> checked[index] }
-                if (selected.isEmpty()) {
-                    toast(c.getString(R.string.draw_lora_fusion_no_loras))
-                } else {
-                    showLoraFusionSettings(set, source, selected)
-                }
-            }
+            .setView(scroll)
+            .setPositiveButton(c.getString(R.string.draw_lora_fusion_next), null)
             .setNeutralButton(c.getString(R.string.draw_lora_fusion_import)) { _, _ ->
                 pickLoraForFusion()
             }
             .setNegativeButton(c.getString(R.string.s_066), null)
-            .show()
+            .create()
+        dialog.setOnShowListener {
+            val next = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            next.isEnabled = available.isNotEmpty()
+            next.setOnClickListener {
+                val selected = available.filterIndexed { index, _ -> checkboxes[index].isChecked }
+                if (selected.isEmpty()) {
+                    toast(c.getString(R.string.draw_lora_fusion_no_loras))
+                } else {
+                    dialog.dismiss()
+                    showLoraFusionSettings(set, source, selected)
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun pickLoraForFusion() {
@@ -2373,8 +2406,8 @@ class DrawPage(
                     }
                 }
                 toast(c.getString(R.string.draw_lora_fusion_imported, imported.name))
-                // Reopen the picker with the newly imported adapter included in the list.
-                showLoraFusionWizard()
+                // Reopen with the imported adapter selected, so Next can use it immediately.
+                showLoraFusionWizard(preselectName = imported.name)
             } catch (e: Throwable) {
                 toast(c.getString(
                     R.string.draw_lora_fusion_import_failed,
