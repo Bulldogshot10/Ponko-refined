@@ -1,29 +1,50 @@
 use anyhow::{ensure, Context, Result};
 use bytemuck::{cast_slice, try_cast_slice};
-use ponko_compute::ComputeDevice;
+use ponko_compute::{benchmark::summarize, ComputeDevice};
 use std::{env, path::PathBuf, time::Instant};
 
 const DEFAULT_DIMENSION: usize = 64;
 const MAX_DIMENSION: usize = 4096;
 const MAX_MULTIPLIES: usize = 64_000_000;
+const DEFAULT_WARMUPS: usize = 3;
+const DEFAULT_ITERATIONS: usize = 10;
+const MAX_WARMUPS: usize = 100;
+const MAX_ITERATIONS: usize = 1_000;
 
-fn parse_dimension(value: Option<String>, label: &str) -> Result<usize> {
+fn parse_usize(value: Option<String>, label: &str, default: usize) -> Result<usize> {
     value
         .map(|value| value.parse::<usize>())
         .transpose()
-        .with_context(|| format!("parse {label} dimension"))
-        .map(|value| value.unwrap_or(DEFAULT_DIMENSION))
+        .with_context(|| format!("parse {label}"))
+        .map(|value| value.unwrap_or(default))
+}
+
+fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
+    let actual: &[f32] = try_cast_slice(bytes).context("cast matrix output bytes to f32")?;
+    ensure!(actual.len() == expected.len(), "matrix output length mismatch");
+    let mut max_abs_error = 0.0_f32;
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        let error = (actual - expected).abs();
+        max_abs_error = max_abs_error.max(error);
+        if !actual.is_finite() || error > 1.0e-3 {
+            anyhow::bail!(
+                "matrix mismatch at index {index}: GPU={actual}, CPU={expected}, abs_error={error}"
+            );
+        }
+    }
+    Ok(max_abs_error)
 }
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let shader_path = PathBuf::from(
-        args.next()
-            .unwrap_or_else(|| "shaders/matmul.spv".to_owned()),
+        args.next().unwrap_or_else(|| "shaders/matmul.spv".to_owned()),
     );
-    let m = parse_dimension(args.next(), "M")?;
-    let n = parse_dimension(args.next(), "N")?;
-    let k = parse_dimension(args.next(), "K")?;
+    let m = parse_usize(args.next(), "M dimension", DEFAULT_DIMENSION)?;
+    let n = parse_usize(args.next(), "N dimension", DEFAULT_DIMENSION)?;
+    let k = parse_usize(args.next(), "K dimension", DEFAULT_DIMENSION)?;
+    let warmups = parse_usize(args.next(), "warm-up iteration count", DEFAULT_WARMUPS)?;
+    let iterations = parse_usize(args.next(), "timed iteration count", DEFAULT_ITERATIONS)?;
 
     ensure!(
         (1..=MAX_DIMENSION).contains(&m)
@@ -39,14 +60,14 @@ fn main() -> Result<()> {
         multiply_count <= MAX_MULTIPLIES,
         "M*N*K must be <= {MAX_MULTIPLIES} to keep the CPU reference bounded"
     );
+    ensure!(warmups <= MAX_WARMUPS, "warm-up iterations must be <= {MAX_WARMUPS}");
+    ensure!((1..=MAX_ITERATIONS).contains(&iterations), "timed iterations must be in 1..={MAX_ITERATIONS}");
     let a_count = m.checked_mul(k).context("A matrix size overflow")?;
     let b_count = k.checked_mul(n).context("B matrix size overflow")?;
     let c_count = m.checked_mul(n).context("C matrix size overflow")?;
 
-    println!("matrix= A[{m}x{k}] * B[{k}x{n}] -> C[{m}x{n}]");
+    println!("operation=matmul shape={m}x{k} * {k}x{n} -> {m}x{n} warmups={warmups} iterations={iterations}");
 
-    // Deterministic, bounded values make this run reproducible and keep the
-    // numerical comparison useful even on small test matrices.
     let a: Vec<f32> = (0..a_count)
         .map(|index| ((index % 23) as f32 - 11.0) / 11.0)
         .collect();
@@ -77,45 +98,53 @@ fn main() -> Result<()> {
     device.upload(&a_buffer, cast_slice(&a))?;
     device.upload(&b_buffer, cast_slice(&b))?;
 
-    // The shader maps the x dimension to output columns and y to output rows.
-    let kernel = device.load_kernel(&shader_path, 3, 3 * std::mem::size_of::<u32>() as u32)?;
-    let push_constants = [m as u32, n as u32, k as u32];
-    let workgroups = [
-        ((n as u32) + 7) / 8,
-        ((m as u32) + 7) / 8,
-        1,
-    ];
-    let gpu_elapsed = device.dispatch(
-        &kernel,
-        &[&a_buffer, &b_buffer, &c_buffer],
-        cast_slice(&push_constants),
-        workgroups,
+    let kernel = device.load_kernel(
+        &shader_path,
+        3,
+        3 * std::mem::size_of::<u32>() as u32,
     )?;
+    let push_constants = [m as u32, n as u32, k as u32];
+    let workgroups = [((n as u32) + 7) / 8, ((m as u32) + 7) / 8, 1];
 
-    let bytes = device.readback(&c_buffer, c_count * std::mem::size_of::<f32>())?;
-    let gpu_output: &[f32] = try_cast_slice(&bytes).context("cast output bytes to f32")?;
+    let execute_and_verify = || -> Result<(std::time::Duration, f32)> {
+        let elapsed = device.dispatch(
+            &kernel,
+            &[&a_buffer, &b_buffer, &c_buffer],
+            cast_slice(&push_constants),
+            workgroups,
+        )?;
+        let bytes = device.readback(&c_buffer, c_count * std::mem::size_of::<f32>())?;
+        let max_error = verify_output(&bytes, &cpu_output)?;
+        Ok((elapsed, max_error))
+    };
+
+    for _ in 0..warmups {
+        execute_and_verify()?;
+    }
+    let mut samples = Vec::with_capacity(iterations);
     let mut max_abs_error = 0.0_f32;
-    for (index, (&actual, &expected)) in gpu_output.iter().zip(&cpu_output).enumerate() {
-        let error = (actual - expected).abs();
+    for _ in 0..iterations {
+        let (elapsed, error) = execute_and_verify()?;
+        samples.push(elapsed);
         max_abs_error = max_abs_error.max(error);
-        if !actual.is_finite() || error > 1.0e-3 {
-            anyhow::bail!(
-                "mismatch at index {index}: GPU={actual}, CPU={expected}, abs_error={error}"
-            );
-        }
     }
 
-    let cpu_ms = cpu_elapsed.as_secs_f64() * 1000.0;
-    let gpu_ms = gpu_elapsed.as_secs_f64() * 1000.0;
-    let effective_gflops = if gpu_elapsed.is_zero() {
+    let summary = summarize(&samples)?;
+    let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+    let median_seconds = summary.median.as_secs_f64();
+    let effective_gflops = if median_seconds == 0.0 {
         0.0
     } else {
-        (2.0 * multiply_count as f64) / gpu_elapsed.as_secs_f64() / 1.0e9
+        (2.0 * multiply_count as f64) / median_seconds / 1.0e9
     };
-    println!("cpu_reference_ms={cpu_ms:.3}");
-    println!("vulkan_dispatch_wait_ms={gpu_ms:.3}");
-    println!("effective_gflops={effective_gflops:.4}");
+    println!("cpu_reference_ms={:.3}", ms(cpu_elapsed));
+    println!("dispatch_ms_min={:.3}", ms(summary.min));
+    println!("dispatch_ms_median={:.3}", ms(summary.median));
+    println!("dispatch_ms_p95={:.3}", ms(summary.p95));
+    println!("dispatch_ms_max={:.3}", ms(summary.max));
+    println!("dispatch_ms_mean={:.3}", summary.mean_ms);
+    println!("effective_gflops_at_median={effective_gflops:.4}");
     println!("max_abs_error={max_abs_error:.8}");
-    println!("PASS: matrix-multiply output matches CPU reference");
+    println!("PASS: matrix-multiply output matches CPU reference for {warmups} warm-ups and {iterations} timed runs");
     Ok(())
 }
