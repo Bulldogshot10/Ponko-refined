@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -600,6 +601,9 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
                                        const char* quant_type,
                                        int32_t n_threads) {
     g_last_error.clear();
+    try {
+    PONKO_LOGI("LoRA fusion entered C ABI: adapters=%zu quant=%s threads=%d",
+               lora_count, stringIsNonempty(quant_type) ? quant_type : "(null)", n_threads);
     const std::string output_name = stringIsNonempty(output_path) ? output_path : "";
     if (!stringIsNonempty(input_model_path) || output_name.empty() ||
         !stringIsNonempty(quant_type) || lora_paths == nullptr || lora_scales == nullptr ||
@@ -645,10 +649,12 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
 
     const std::string temporary = std::string(output_path) + ".partial.gguf";
     std::remove(temporary.c_str());
-    const int threads = std::max(1, std::min(6, n_threads));
+    const int threads = std::max(1, std::min(2, n_threads));
+    PONKO_LOGI("LoRA fusion entering converter: output=%s threads=%d", output_path, threads);
     const bool converted = fuse_loras_to_file(
         input_model_path, lora_paths, lora_scales, lora_count, temporary.c_str(),
         SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads);
+    PONKO_LOGI("LoRA fusion converter returned: success=%d", converted ? 1 : 0);
     if (!converted) {
         std::remove(temporary.c_str());
         setError("native LoRA fusion/export failed; source files were left untouched");
@@ -676,6 +682,23 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
     PONKO_LOGI("LoRA fusion complete: adapters=%zu quant=%s output=%s",
                lora_count, quant_type, output_path);
     return 1;
+    } catch (const std::exception& e) {
+        if (stringIsNonempty(output_path)) {
+            const std::string temporary = std::string(output_path) + ".partial.gguf";
+            std::remove(temporary.c_str());
+        }
+        setError(std::string("LoRA fusion caught native exception: ") + e.what());
+        PONKO_LOGE("LoRA fusion caught native exception: %s", e.what());
+        return 0;
+    } catch (...) {
+        if (stringIsNonempty(output_path)) {
+            const std::string temporary = std::string(output_path) + ".partial.gguf";
+            std::remove(temporary.c_str());
+        }
+        setError("LoRA fusion caught an unknown native exception");
+        PONKO_LOGE("LoRA fusion caught an unknown native exception");
+        return 0;
+    }
 }
 
 extern "C" int32_t ponko_sd_quantize_unet(const char* input_path, const char* output_path,
