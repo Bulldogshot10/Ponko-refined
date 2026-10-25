@@ -72,7 +72,7 @@
 <string name="s_071">Copy</string>
 <string name="s_072">Copy failed</string>
 <string name="s_074">Chat</string>
-<string name="s_075">Shared by chat and drawing. Drawing uses the GPU when the device supports Vulkan (otherwise CPU, with automatic fallback); tagging uses NNAPI; GGUF chat always runs on CPU.</string>
+<string name="s_075">Backend selection for chat and tagging. Hearth drawing always uses Vulkan; tagging uses NNAPI; GGUF chat uses CPU.</string>
 <string name="s_076">Chat model</string>
 <string name="s_077">Chat model loaded. If a draw model is loaded too, just say \"draw a ...\" and it will be used; otherwise use the Draw page.</string>
 <string name="s_078">Chat model loaded (llama.cpp · CPU · KV reuse)</string>
@@ -471,6 +471,9 @@
     <string name="draw_taesd_need_model">Import or select a drawing model before adding TAESD weights.</string>
     <string name="draw_taesd_reload_hint">TAESD changes apply after unloading and reloading the drawing model.</string>
     <string name="draw_taesd_hint">Choose compatible sd.cpp TAESD .safetensors or .gguf weights. The official madebyollin/taesd diffusion_pytorch_model.safetensors works; decoder-only files with decoder.layers.* keys also work. ComfyUI taesd_decoder.pth is not directly compatible. TAESD replaces the standard VAE decoder, and output may differ.</string>
+    <string name="draw_tokenizer_vocab">Tokenizer vocab.json</string>
+    <string name="draw_tokenizer_merges">Tokenizer merges.txt</string>
+    <string name="draw_hearth_file_type">Hearth drawing imports require a .safetensors checkpoint/VAE, vocab.json, or merges.txt, depending on the selected slot.</string>
     <string name="draw_cpu_threads">CPU threads</string>
     <string name="draw_cpu_threads_hint">Applies the next time you load the drawing model.</string>
     <string name="draw_vae_conv_direct_enable">Use direct Conv2D for VAE (benchmark)</string>

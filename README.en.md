@@ -15,7 +15,7 @@ All inference runs on-device: apart from the optional in-app LoRA download, no f
 | Module | In one line |
 |---|---|
 | **Chat** | `.litertlm` / `.gguf` dual backend; image, file and document input; separated reasoning, streaming Markdown |
-| **Drawing** | stable-diffusion.cpp; text-to-image / image-to-image / LCM-LoRA speed-up; optional Vulkan |
+| **Drawing** | Rust Hearth + Burn/WGPU Vulkan; SD 1.5 / SDXL SafeTensors; LoRA |
 | **Tagging** | Fully offline ONNX (WD14 family); tags can be sent to T2I / I2I |
 | **API server** | Serves loaded models over OpenAI-compatible endpoints; chat 8080 / drawing 8081, fully independent |
 | **Local-first** | No telemetry, no account; no network needed except the manual LoRA download |
@@ -45,7 +45,7 @@ Two model formats are supported:
 | `.gguf` | llama.cpp | Multi-threaded CPU, in-session KV prefix reuse (no re-prefill on long chats) |
 
 - **Model management**: pick a model file from local storage; it is copied into the app's private directory and can be reused anytime. The Models/API page has a run-mode selector (CPU / GPU) on top and three sub-pages below (**Chat model / Draw model / Tagger**, swipe to switch); both the **Chat model** and **Draw model** pages split into **Model / API** sub-tabs, where each kind of model can be viewed, selected or deleted.
-  - What the run mode covers: **only three paths carry GPU code** - **drawing** (Vulkan), **tagging** (NNAPI) and **`.litertlm` chat** (LiteRT-LM GPU, i.e. OpenCL / Vulkan underneath); **GGUF chat always runs on CPU** (the binding has no GPU backend). All three GPU paths have **only been verified at build time and never on a real device** - they are expected to work in theory, but whether they do depends on the phone's drivers and VRAM; if the device does not support it or init fails, the app falls back to CPU automatically and the drawing status line shows the backend actually in use
+  - The CPU/GPU selector applies to chat and tagging only: **Hearth drawing always uses Burn/WGPU Vulkan** and has no C++ or CPU fallback drawing engine; tagging can use NNAPI and GGUF chat uses CPU. Hearth's Vulkan path still needs a real-device test on Exynos 2400e / Xclipse 940
 - **Multiple conversations**: create / switch / delete chats. History is persisted on-device (`sessions.json`).
 - **Separate thinking**: reasoning and answer are shown apart and collapsible; the thinking toggle works for both formats.
 - **Markdown rendering**: headings, bold/italic, strikethrough, ordered/unordered lists, inline code and code blocks, quotes, dividers, tables, tappable links.
@@ -65,29 +65,16 @@ Two model formats are supported:
 
 ## Drawing
 
-The engine is [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), reading **GGUF** Stable Diffusion models.
+The drawing engine has been fully replaced with [Hearth](https://github.com/jeff-hiner/hearth), a Rust inference engine using Burn/WGPU Vulkan. Ponko's drawing path no longer contains stable-diffusion.cpp, GGML, or a C ABI C++ bridge.
 
-> The sd.cpp source lives in `app/src/main/cpp/sd/` and is compiled **on the fly** by NDK + CMake during
-> the build (no prebuilt `.so` checked in), so after editing C++ you just run `assembleRelease` -
-> there is no way to ship a stale native library by accident.
+- **Models:** SD 1.5 and SDXL `.safetensors` checkpoints. SD 1.5 can use its embedded VAE or an imported VAE; SDXL requires a separate FP16-safe VAE.
+- **Tokenizer:** each model set needs `vocab.json` and `merges.txt` from the matching CLIP tokenizer.
+- **LoRA:** import `.safetensors` adapters, select up to four and tune their strengths independently. Hearth applies adapters to the supported CLIP and UNet layers.
+- **Samplers:** Euler, Euler a, DPM++ 2M and DPM++ SDE. Schedulers: Normal and Karras.
+- **GPU:** drawing uses Burn/WGPU Vulkan, with no sd.cpp CPU fallback. Initialization and performance depend on the Android Vulkan driver.
+- **Not ported yet:** drawing GGUF/quantization, img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion and LoRA fusion are not implemented in the current Hearth adapter, so their drawing UI entry points are hidden.
 
-- **Three modes**: the parameters area is split into **Text-to-Image / Image-to-Image / Tagger** sub-pages
-  - **Text to image**: enter a prompt and generate
-  - **Image to image**: pick a reference photo from your gallery as the base, then use the prompt and the "denoise strength" (0.05-0.99) to restyle / change background / refine; the output size auto-aligns to the reference (multiple of 64)
-  - **Tagger**: reverse an image into Danbooru-style tags (see below)
-- **Parameter defaults**: every parameter page has "Set as default" / "Restore defaults" (each asks for confirmation); Text-to-Image and Image-to-Image keep **separate default sets for LoRA on/off**, and toggling the LoRA switch applies the matching set
-- **Generation history**: the Result view keeps the last 30 images of this run - browse, delete one, or clear all. **In-memory only; gone when the app is closed.**
-- **Parameters**: width/height (multiples of 64), steps, CFG, seed, sampler, scheduler - all adjustable and **remembered across restarts** (prompts are not). The sampler list is now aligned 1:1 with sd.cpp (DPM++ 2M SDE / SDE B&T / LMS / Res Multistep, ...).
-- **Dark mode**: a three-position slider (**Light / Follow system / Dark**) in the Settings section of the About page; remembered across restarts and applied in place (no app restart - loaded models and chats are kept). Page background, cards, inputs, buttons, dialogs, the status bar and the navigation bar all follow it.
-- **LoRA**: one-tap in-app download of LCM-LoRA (official HuggingFace / hf-mirror), cutting 20 steps down to 4-8. You can also **import a local LoRA** (a single `.safetensors`), and switch between multiple LoRAs from the list.
-- **ADetailer**: optional YOLOv8 detection pass after generation to refine detected regions such as faces or hands, with separate prompts, confidence threshold, mask blur, inpaint size, steps, and denoising strength. Convert the detector to the compatible `.safetensors` format described by stable-diffusion.cpp first; raw Ultralytics `.pt` files are not accepted.
-- **Model import**: two ways - **single file** (one `.gguf`: all-in-one builds of SD1.x/2, SDXL, SD3/3.5, Flux, Qwen-Image, ...) and **multi-file** (fill in the slots for a family: SD3/3.5, Flux, Qwen-Image, HiDream, video models, ...). For multi-file, pick the type (family) and the main model first, then add the companion files one by one under "Model slots"; each model set keeps its files in its own folder and can be selected / long-pressed to delete in the list
-  - **SDXL is single-file only**: upstream sd.cpp only recognizes SDXL when the second text encoder sits in the same file as the main model, so a split unet + CLIP-L/CLIP-G SDXL fails to load - use a single-file SDXL (quantized single files around 2.5 GB exist)
-  - Multi-file is really meant for families that upstream ships split apart: Flux, SD3.5, Qwen-Image and friends; the smallest set for those is 8 GB+, which a phone can hardly run (the mechanism is there for big-memory devices / desktop use).
-- **GPU acceleration (optional; build-time-verified only, not tested on a real device)**: switch the run mode to **GPU** on the Models/API page and drawing uses the device's Vulkan backend (both text-to-image and image-to-image); if the device has no Vulkan or init fails it **falls back to CPU automatically**, and the backend actually in use is shown in the drawing status line
-- **Draw from chat**: when both a chat model and a draw model are loaded, just say "draw me ..." and the draw model is invoked.
-- **Drawing API (optional)**: exposes the loaded drawing model as an OpenAI-compatible `/v1/images/generations` endpoint for clients on the same network; off by default, toggled on the Models/API page -> Draw model -> API tab (see the API server section)
-- The "Parameters" / "Result" views can be swiped left/right; save images to the gallery from the Result view.
+To import a model, open Models/API → Drawing Models → Add Model Set, choose SD 1.5 or SDXL, then import the checkpoint, `vocab.json` and `merges.txt`. Import the required VAE as well for SDXL. Chat `.gguf` models continue to use the separate llama.cpp path and are unaffected by the drawing-engine replacement.
 
 ## API server (use the phone as a server)
 
@@ -162,44 +149,24 @@ The fourth tab is an **About** page with two collapsible sections: **Settings** 
 
 ## Building
 
-The standard build requires JDK 17+, Android SDK (compileSdk 36), **NDK 27.3**, **CMake 3.31.6**, Rust stable, and `cargo-ndk` for `aarch64-linux-android`. Install `ccache` or `sccache` to enable GGML's compiler cache; the build still works without either tool.
+The standard build requires JDK 17+, Android SDK (compileSdk 36), NDK 27.3, Rust stable (edition 2024), and `cargo-ndk` for `aarch64-linux-android`. Clone with recursive submodules so `rust/hearth` and Hearth's Burn, CubeCL and Cubek dependencies are available.
 
 ```bash
-rustup target add aarch64-linux-android
-cargo install cargo-ndk --locked
-gradle assembleRelease
+cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
+cargo test --manifest-path rust/ponko-native/Cargo.toml
+./gradlew :app:assembleRelease
 # Output: app/build/outputs/apk/release/app-release-unsigned.apk (unsigned)
-
-# Optional: CPU-only variant, excluding the Vulkan backend and shader toolchain
-gradle assembleRelease -PponkoEnableVulkan=OFF
-
-# Optional: generic ARM64 profile; the Exynos 2400e profile stays enabled by default
-gradle assembleRelease -PponkoExynosCpuProfile=OFF
-
-# The Rust + UniFFI facade is the default; no extra Gradle property is needed.
 ```
 
-Signing and delivery scripts are in `tools/`:
+Cargo builds Hearth inference and `libponko_native.so`, while Gradle generates the UniFFI Kotlin bindings. The drawing path needs no CMake target and does not compile or package `libstable-diffusion.so` or `libponko_sd.so`.
 
-```powershell
-# Sign with the keystore (v1 + v2 + v3)
-# Passwords are not in the script: it reads keystore.properties at the project root (gitignored), or PONKO_KS_PASS
-powershell -ExecutionPolicy Bypass -File tools/sign-apk.ps1 -Apk app\build\outputs\apk\release\app-release-unsigned.apk
-# All-in-one: build + sign + copy to share + upload
-powershell -File tools/build-release.ps1
-```
-
-- `minSdk 28` / `targetSdk 36`, **arm64-v8a only** (native library constraint; a real device is required, emulators won't run it)
-- A full sd.cpp + ggml compile takes about 8-9 minutes when the compiler cache is cold; with C++ unchanged, incremental builds take ~10 seconds. Keeping ccache warm can reduce the cost of later rebuilds
-- Main dependencies: `com.google.ai.edge.litertlm:litertlm-android:0.17.0`, `net.ladenthin:llama-android:5.1.0`, `com.microsoft.onnxruntime:onnxruntime-android:1.22.0`, `com.tom-roush:pdfbox-android:2.0.27.0`, `io.noties.markwon:*:4.6.2`
-- Built by CMake: `libstable-diffusion.so` (sd.cpp itself) and `libponko_sd.so` (a plain C ABI bridge). Cargo builds `libponko_native.so` and generates UniFFI Kotlin bindings; Kotlin no longer calls a hand-written JNI surface. Rust owns the app-facing native API, handle lifecycle and callbacks, while inference remains in stable-diffusion.cpp + GGML
-- The Vulkan backend (optional GPU drawing) needs **no Vulkan SDK**: `glslc` and the SPIRV headers come from the NDK, plus a **host compiler** to build the shader generator (MSVC on Windows - `tools/build-release.ps1` loads the `vcvars64` environment for you)
+Signing helpers are in `tools/`. `tools/sign-apk.ps1` reads the gitignored project-root `keystore.properties` or accepts the password from `PONKO_KS_PASS`.
 
 ## Where to get models
 
 - `.litertlm`: the `litert-community` / `google` organizations on HuggingFace (Gemma family, etc.)
 - `.gguf` (chat): any GGUF quantized model on HuggingFace; on a phone CPU, **1B-3B at Q4** is recommended
-- `.gguf` (drawing): SD1.5-family models in stable-diffusion.cpp format (e.g. Anything V5)
+- Drawing: SD 1.5 / SDXL `.safetensors` checkpoints, matching `vocab.json` / `merges.txt`, and an FP16-safe VAE for SDXL
 - **LoRA**: `lcm-lora-sdv1-5.safetensors` (~130 MB), downloadable in-app; a local `.safetensors` can also be imported directly
 - **Tagger**: the `.onnx` of a Danbooru-style tagger plus its matching tag-list CSV (the two must go together; e.g. WD14's `wd-v1-4-swinv2-tagger-v2` and `selected_tags.csv`)
 
@@ -208,10 +175,10 @@ powershell -File tools/build-release.ps1
 - Chat context defaults to 4096 tokens (adjustable on the Models/API page; on the LiteRT-LM side it cannot exceed the limit built into the model); beyond that it relies on llama.cpp's context-shift sliding window
 - The GGUF chat path currently uses CPU only (the binding used does not include GPU backends)
 - "Disable thinking" depends on the model's own chat template; some models may still emit reasoning
-- Drawing is CPU-only by default: 256×256 with LCM-LoRA at 6 steps takes about a minute; 512×512 is noticeably slower. Switch the run mode to GPU to try Vulkan acceleration; devices without it fall back to CPU (the backend in use is shown in the drawing status line)
-- **GPU support is "theoretical" for now and NOT verified on a real device**: only drawing (Vulkan), tagging (NNAPI) and `.litertlm` chat carry GPU code, and all three have only been verified at build time - none of them has been tested on an actual phone. When the driver is unstable or the VRAM is too small the app falls back to CPU automatically (the drawing status line shows the backend in use); GGUF chat has no GPU backend at all and is CPU-only
-- The quantization level is baked into the model file; the app only reads and displays it, never converts
-- The drawing native library is built with `-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4` (the Exynos profile is on by default and can be disabled through a Gradle property), requiring a 64-bit ARM device from 2019 or later
+- Drawing uses Hearth / Burn-WGPU Vulkan exclusively; real-device performance on Exynos 2400e has not yet been measured. Vulkan initialization errors are surfaced directly, without falling back to a C++ or CPU drawing engine
+- Hearth's Vulkan path still needs a real-device test on Exynos 2400e / Xclipse 940. GGUF chat continues to use the CPU-only llama.cpp binding
+- Hearth currently loads SafeTensors weights only; GGUF drawing models and in-app UNet quantization are not supported
+- Android targets arm64-v8a. Hearth GPU compute is managed by Burn/WGPU Vulkan and no longer uses Ponko's custom Exynos C++ compile profile
 - Tagging supports Danbooru-style ONNX taggers (WD14 and its derivatives; the tag list must be in `tag_id,name,category,count` format); the `.onnx` and the tag-list CSV must be imported as a matching pair
 - If tagging looks wrong (e.g. wrong colours or hair colour), try switching the **channel order** (BGR / RGB): BGR is the official WD-family preprocessing, but a few re-exported models already baked BGR into their weights and need RGB; threshold and tag count also change the output a lot
 - The tagger model is loaded lazily on first use (it holds hundreds of MB of memory) and can be unloaded manually from the Models/API page
@@ -232,10 +199,8 @@ powershell -File tools/build-release.ps1
 
 | Component | License | Distributed as |
 | --- | --- | --- |
-| [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) | MIT | source in this repo (`app/src/main/cpp/sd/`) |
-| [ggml](https://github.com/ggerganov/ggml) (also carries contributed files from Intel / Codeplay / Arm / Mozilla) | MIT / Apache-2.0 | source in this repo (`app/src/main/cpp/sd/ggml/`) |
-| [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) / [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | Apache-2.0 OR MIT | source in this repo (`app/src/main/cpp/thirdparty/include/`, needed by the Vulkan backend) |
-| Third-party files bundled with sd.cpp (stb / json.hpp / httplib / miniz / zip / darts_clone) | Public Domain / MIT / BSD-3-Clause | source in this repo (`app/src/main/cpp/sd/thirdparty/`) |
+| [Hearth](https://github.com/jeff-hiner/hearth) | MIT OR Apache-2.0 | Rust submodule (`rust/hearth/`) |
+| Burn / CubeCL / Cubek | Their MIT / Apache-2.0 licenses | Hearth Rust submodules (`rust/hearth/vendor/`) |
 | [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) | Apache-2.0 | Gradle dependency |
 | [llama.cpp](https://github.com/ggerganov/llama.cpp) (via java-llama.cpp binding) | MIT | Gradle dependency |
 | [Markwon](https://github.com/noties/Markwon) | Apache-2.0 | Gradle dependency |
@@ -252,8 +217,7 @@ powershell -File tools/build-release.ps1
 | Statically linked into ONNX Runtime's native library (XNNPACK, protobuf, ONNX, Abseil, flatbuffers, re2, cpuinfo, ...) | Apache-2.0 / BSD-3-Clause / BSD-2-Clause | built into `libonnxruntime.so` |
 | LLVM libc++ / libomp (from the Android NDK) | Apache-2.0 with LLVM Exceptions | `app/src/main/jniLibs/` |
 
-> The bundled stable-diffusion.cpp source has unused tokenizer vocabularies trimmed (CLIP only) to keep the repo small.
-> This project contains **no model weights**; the drawing model (SD1.5 GGUF), chat models (`.litertlm` / `.gguf`), LoRA and the tagging assets (`.onnx` + `selected_tags.csv`) are supplied by the user.
+> Drawing models (SafeTensors checkpoints, tokenizer files, VAE and LoRA), chat models (`.litertlm` / `.gguf`) and tagging assets (`.onnx` + `selected_tags.csv`) are supplied by the user; no model weights are included.
 > ONNX Runtime bundles additional third-party components; see [licenses/onnxruntime-ThirdPartyNotices.txt](licenses/onnxruntime-ThirdPartyNotices.txt).
 > commonmark / Jackson / Gson / SLF4J are **transitive dependencies** pulled in automatically by Markwon, the llama.cpp binding, and LiteRT-LM.
 > Components statically linked into the third-party native libraries (XNNPACK, protobuf, re2, cpuinfo, zlib, ...) and the full license texts are in [licenses/](licenses/) and [NOTICE](NOTICE).
@@ -262,8 +226,8 @@ powershell -File tools/build-release.ps1
 
 - [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) (Google)
 - [java-llama.cpp](https://github.com/kherud/java-llama.cpp) / llama.cpp
-- [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
-- [ggml](https://github.com/ggerganov/ggml)
+- [Hearth](https://github.com/jeff-hiner/hearth) (Rust diffusion engine)
+- [Burn](https://github.com/tracel-ai/burn) / [CubeCL](https://github.com/tracel-ai/cubecl)
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime) (Microsoft)
 - [Markwon](https://github.com/noties/Markwon)
 - [commonmark-java](https://github.com/commonmark/commonmark-java)

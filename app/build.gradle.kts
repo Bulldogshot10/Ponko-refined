@@ -3,17 +3,7 @@ plugins {
     id("com.android.application")
 }
 
-// Set -PponkoEnableVulkan=OFF for a CPU-only variant; default stays ON.
-// Keep the requested Exynos ISA profile enabled unless explicitly overridden.
-val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("ON").get()
-val ponkoExynosCpuProfile = providers.gradleProperty("ponkoExynosCpuProfile").orElse("ON").get()
-val ponkoCpuArchFlags = if (ponkoExynosCpuProfile.equals("ON", ignoreCase = true)) {
-    "-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4"
-} else {
-    "-march=armv8.2-a+dotprod+fp16"
-}
-val ponkoEnableCompilerCache = providers.gradleProperty("ponkoEnableCompilerCache").orElse("ON").get()
-// Rust/UniFFI is the required Kotlin-facing native API.
+// Hearth is the only diffusion engine; Kotlin calls it through Rust/UniFFI.
 val ponkoRustFacadeEnabled = true
 val ponkoRustDir = rootProject.file("rust/ponko-native")
 val ponkoRustJniLibsDir = layout.buildDirectory.dir("generated/ponkoRustJniLibs")
@@ -23,7 +13,7 @@ val ponkoCargoTargetDir = layout.buildDirectory.dir("ponko-cargo-target")
 android {
     namespace = "com.litertchat.app"
     compileSdk = 36
-    // 自编 stable-diffusion.cpp 所用的 NDK（须与 jniLibs 里的 libomp.so 同源）
+    // Android NDK for ARM64 native libraries; diffusion inference itself is Rust.
     ndkVersion = "27.3.13750724"
 
     defaultConfig {
@@ -35,15 +25,6 @@ android {
         ndk {
             // LiteRT-LM 与 llama.cpp 的 native 都只跑 arm64 真机，去掉 x86_64 可减小 APK
             abiFilters += "arm64-v8a"
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += listOf(
-                    "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
-                    "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
-                    "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
-                )
-            }
         }
     }
 
@@ -58,19 +39,10 @@ android {
         }
     }
 
-    // 自编 stable-diffusion.cpp：源码在 src/main/cpp（含内联 ggml），
-    // 每次 assembleRelease 由 NDK 现场编译，产物直接进 APK，不再手工往 jniLibs 拷贝。
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.31.6"
-        }
-    }
-
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            // 自编的 libstable-diffusion.so（+ libponko_sd.so / libomp.so）依赖它
+            // Chat runtimes may bundle libc++_shared.so.
             pickFirsts += "**/libc++_shared.so"
         }
     }
@@ -101,9 +73,7 @@ dependencies {
     // 打标（Tagger）：ONNX Runtime，运行用户导入的 WD14 类 .onnx 模型（arm64-v8a）
     // PDF 文本抽取（对话发送 PDF）：Tom Roush 的 PDFBox Android 移植
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-    // 绘图（文生图）：自编的 stable-diffusion.cpp（arm64-v8a），源码在 src/main/cpp，
-    // 由 NDK/CMake 现场编译出 libstable-diffusion.so + libponko_sd.so（C ABI bridge，由 Rust 调用）。
-    // 相比现成 AAR，这里能直接控制线程数 / 采样器 / 调度器 / LoRA / 量化类型 / 取消。
+    // Diffusion inference is implemented by the Rust Hearth crate and Burn/WGPU Vulkan.
     if (ponkoRustFacadeEnabled) {
         implementation("net.java.dev.jna:jna:5.17.0@aar")
     }
@@ -123,10 +93,9 @@ if (ponkoRustFacadeEnabled) {
         inputs.files(fileTree(ponkoRustDir) {
             include("Cargo.toml", "build.rs", "uniffi.toml", "src/**")
         })
+        inputs.dir(rootProject.file("rust/hearth"))
         outputs.file(rustNativeLibrary)
         environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
-        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
-        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
         doFirst {
             ponkoRustJniLibsDir.get().asFile.mkdirs()
             check(ponkoRustDir.resolve("Cargo.toml").isFile) {
@@ -149,8 +118,6 @@ if (ponkoRustFacadeEnabled) {
         inputs.file(ponkoRustDir.resolve("uniffi.toml"))
         outputs.dir(ponkoUniffiKotlinDir)
         environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
-        environment("PONKO_CPU_ARCH_FLAGS", ponkoCpuArchFlags)
-        environment("PONKO_VULKAN_ENABLED", ponkoEnableVulkan)
         doFirst {
             val library = rustNativeLibrary.get().asFile
             check(library.isFile) { "Rust library was not produced: $library" }

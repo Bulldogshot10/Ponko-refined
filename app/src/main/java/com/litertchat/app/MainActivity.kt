@@ -973,7 +973,7 @@ class MainActivity : Activity() {
         backendSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 // 运行方式实时同步给绘图页。
-                drawPage?.useGpu = (position == 1)
+                drawPage?.useGpu = true // Hearth uses the Vulkan backend.
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
@@ -1129,80 +1129,7 @@ class MainActivity : Activity() {
         drawModelStatus = dStatus
         drawCard.addView(dStatus, matchWrap().apply { topMargin = dp(6) })
 
-        val threadLimit = Runtime.getRuntime().availableProcessors().coerceIn(1, 12)
-        val threadOptions = (1..threadLimit).map { it.toString() }
-        val threadRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        threadRow.addView(TextView(this).apply {
-            text = getString(R.string.draw_cpu_threads)
-            textSize = 13f
-            setTextColor(C_TEXT)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val threadSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                threadOptions
-            )
-            val selectedThreads = (drawPage?.cpuThreads() ?: 4).coerceIn(1, threadLimit)
-            setSelection(selectedThreads - 1, false)
-        }
-        threadSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                drawPage?.setCpuThreads(threadOptions[position].toInt())
-            }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
-        }
-        threadRow.addView(threadSpinner, wrapWrap().apply { leftMargin = dp(8) })
-        drawCard.addView(threadRow, matchWrap().apply { topMargin = dp(10) })
-        drawCard.addView(
-            hintText(getString(R.string.draw_cpu_threads_hint)),
-            matchWrap().apply { topMargin = dp(3) }
-        )
-
-        val vaeConvDirectCheck = android.widget.CheckBox(this).apply {
-            text = getString(R.string.draw_vae_conv_direct_enable)
-            textSize = 13f
-            setTextColor(C_TEXT)
-        }
-        drawVaeConvDirectCheck = vaeConvDirectCheck
-        drawCard.addView(vaeConvDirectCheck, matchWrap().apply { topMargin = dp(10) })
-        drawCard.addView(
-            hintText(getString(R.string.draw_vae_conv_direct_hint)),
-            matchWrap().apply { topMargin = dp(3) }
-        )
-        refreshVaeConvDirectUi()
-
-        val taesdRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val taesdCheck = android.widget.CheckBox(this).apply {
-            text = getString(R.string.draw_taesd_enable)
-            textSize = 13f
-            setTextColor(C_TEXT)
-        }
-        drawTaesdCheck = taesdCheck
-        taesdRow.addView(
-            taesdCheck,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        taesdRow.addView(
-            smallButton(getString(R.string.draw_taesd_choose)) { pickTaesdWeights() },
-            wrapWrap().apply { leftMargin = dp(8) }
-        )
-        drawCard.addView(taesdRow, matchWrap().apply { topMargin = dp(10) })
-        drawTaesdFileTv = TextView(this).apply {
-            textSize = 11.5f
-            setTextColor(C_SUBTEXT)
-        }
-        drawCard.addView(drawTaesdFileTv, matchWrap().apply { topMargin = dp(2) })
-        drawCard.addView(
-            hintText(getString(R.string.draw_taesd_hint)),
-            matchWrap().apply { topMargin = dp(3) }
-        )
+        // Hearth drawing is Vulkan-only; legacy GGML thread, VAE-kernel and TAESD controls are removed.
 
         // 上次崩溃信息（自捕获，供排查）
         if (pendingDrawCrash) {
@@ -2946,21 +2873,10 @@ class MainActivity : Activity() {
         startActivityForResult(i, REQ_PICK_MMPROJ)
     }
 
-    /** 「选择绘图模型文件」→ 先挑类型（单文件 / 多文件 × 家族），再选文件。
-     *  单文件 = 一个 all-in-one .gguf；多文件 = 主模型 + 若干配套文件（按家族给槽位模板）。 */
+    /** Choose an all-in-one SafeTensors checkpoint family supported by Hearth. */
     private fun showDrawTypeMenu() {
-        val single = listOf("sd15", "sdxl", "sd3", "flux", "qwen", "video", "other")
-        val multi = listOf("sd3", "flux", "qwen", "hidream", "video", "other")
-        val labels = ArrayList<String>()
-        val picks = ArrayList<kotlin.Pair<String, String>>()
-        for (kind in listOf("single", "multi")) {
-            val fams = if (kind == "single") single else multi
-            val kindLabel = getString(if (kind == "single") R.string.s_345 else R.string.s_346)
-            for (fam in fams) {
-                labels.add(kindLabel + " · " + getString(DrawPage.familyLabelRes(fam)))
-                picks.add(kotlin.Pair(kind, fam))
-            }
-        }
+        val picks = listOf("sd15", "sdxl").map { family -> kotlin.Pair("single", family) }
+        val labels = picks.map { (_, family) -> "Hearth · " + getString(DrawPage.familyLabelRes(family)) }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.s_336))
             .setItems(labels.toTypedArray()) { _, which ->
@@ -3484,7 +3400,7 @@ class MainActivity : Activity() {
         }
         scope.launch {
             drawModelStatus?.text = getString(R.string.s_128)
-            dpg.useGpu = (backendSpinner.selectedItem.toString() == "GPU")
+            dpg.useGpu = true // Hearth uses the Vulkan backend.
             val err = dpg.loadSelectedSet()
             drawModelStatus?.text = if (err == null) dpg.modelSummary() else err
             if (err == null) {
@@ -3873,7 +3789,7 @@ class MainActivity : Activity() {
             stopRequested = true
             runCatching { conversation?.cancelProcess() }
             runCatching { ggufIterator?.cancel() }
-            // 绘图（MNN / sd.cpp）也要打断：否则 native 还在跑，界面已停
+            // Hearth Vulkan 绘图也要发出取消请求，否则 native 还在运行而界面已停止
             drawPage?.cancel()
             job.cancel()
             // 不能只依赖协程的 finally 来复位：native 推理不响应协程取消时 finally 会迟迟不执行，
@@ -4321,7 +4237,7 @@ class MainActivity : Activity() {
         markwonStream.setMarkdown(ai.answer, getString(R.string.s_202))
 
         genJob = scope.launch {
-            // 气泡里每秒刷新一次进度（sd.cpp 每步回调 + 本地计时），
+            // 气泡里每秒刷新一次进度（Hearth 每步回调 + 本地计时），
             // 否则整段生成期间只能看到静止的「🎨 正在生成图片…」
             var curStep = 0
             var totalStep = 0

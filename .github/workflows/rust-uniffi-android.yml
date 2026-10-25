@@ -1,21 +1,24 @@
-name: Ponko Rust-UniFFI Android APK
+name: Ponko Hearth Rust-UniFFI Android APK
 
 on:
   push:
-    branches: [feat/rust-uniffi-native-facade]
+    branches:
+      - feat/hearth-native-rewrite
+      - feat/rust-uniffi-native-facade
     paths:
       - "app/**"
       - "rust/**"
+      - ".gitmodules"
       - "gradle/**"
       - "build.gradle*"
       - "settings.gradle*"
       - "gradle.properties"
       - ".github/workflows/rust-uniffi-android.yml"
   pull_request:
-    branches: [feat/exynos2400e-vae-direct-conv-test]
     paths:
       - "app/**"
       - "rust/**"
+      - ".gitmodules"
       - "gradle/**"
       - "build.gradle*"
       - "settings.gradle*"
@@ -25,19 +28,21 @@ on:
 
 permissions:
   contents: read
-  statuses: write
 
 concurrency:
-  group: ponko-rust-uniffi-android-${{ github.ref }}
+  group: ponko-hearth-rust-vulkan-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   android-arm64:
-    name: Rust + UniFFI + C ABI + APK
+    name: Hearth + Burn/WGPU + UniFFI + APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -47,34 +52,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+          components: rustfmt
 
-      - name: Install cargo-ndk and C++ compiler cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ccache clang libclang-dev
-          cargo install cargo-ndk --locked
-          rustc --version
-          cargo --version
-          cargo ndk --version
-          ccache --version
-          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
 
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.cache/ccache
-            app/.cxx
-            app/build/intermediates/cxx
             app/build/ponko-cargo-target
-          key: ${{ runner.os }}-ponko-rust-ndk-${{ hashFiles('rust/ponko-native/Cargo.toml', 'rust/ponko-native/Cargo.lock', 'app/src/main/cpp/CMakeLists.txt') }}
+          key: ${{ runner.os }}-ponko-hearth-${{ hashFiles('rust/ponko-native/Cargo.toml', 'rust/ponko-native/Cargo.lock', 'rust/hearth/Cargo.toml', '.gitmodules') }}
           restore-keys: |
-            ${{ runner.os }}-ponko-rust-ndk-
+            ${{ runner.os }}-ponko-hearth-
 
-      - name: Install Android SDK and native dependencies
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -85,67 +78,43 @@ jobs:
           test -x "$SDKMANAGER"
           echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
           echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          printf 'y\n%.0s' {1..50} | "$SDKMANAGER" --licenses
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" --install \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;27.3.13750724" \
-            "cmake;3.31.6"
+            "ndk;27.3.13750724"
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Format Rust facade
-        id: format-rust
-        run: cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
+      - name: Format and test Hearth adapter
+        run: |
+          cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
+          cargo test --manifest-path rust/ponko-native/Cargo.toml
 
-      - name: Test Rust facade
-        id: test-rust
-        run: cargo test --manifest-path rust/ponko-native/Cargo.toml
-
-      - name: Build debug APK with Rust-UniFFI enabled
+      - name: Build debug APK
         id: assemble-apk
-        shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
-          mkdir -p app/build
           ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee app/build/ponko-gradle-build.log
 
-      - name: Inspect generated UniFFI Kotlin bindings
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Generated UniFFI Kotlin files:"
-          find app/build/generated/source/uniffi/main/java -type f -name '*.kt' -print 2>/dev/null || true
-          echo "Generated Kotlin package declarations:"
-          grep -R -n '^package ' app/build/generated/source/uniffi/main/java 2>/dev/null || true
-          echo "Generated facade declarations:"
-          grep -R -nE 'class NativeEngine|interface StepCallback|fun generateImage' app/build/generated/source/uniffi/main/java 2>/dev/null || true
-          echo "Configured Rust smoke source:"
-          find app/src/rust/java -type f -print 2>/dev/null || true
-
-      - name: Verify APK includes all drawing libraries
-        shell: bash
+      - name: Verify APK has no sd.cpp backend
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -f "$APK"
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libponko_native.so'
-          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libponko_sd.so'
-          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libstable-diffusion.so'
-          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libc++_shared.so'
-          if grep -Eq 'external fun native(Info|Create|Generate|Cancel|Free)' app/src/main/java/com/litertchat/app/draw/SdCppEngine.kt; then
-            echo "Legacy direct JNI methods still exist in SdCppEngine.kt" >&2
+          if unzip -l "$APK" | grep -Eq 'libponko_sd.so|libstable-diffusion.so'; then
+            echo "Legacy sd.cpp libraries found in the Hearth APK." >&2
             exit 1
           fi
-          ccache -s
+
 
       - name: Upload APK and build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ponko-rust-uniffi-build-${{ github.run_id }}
+          name: ponko-hearth-vulkan-build-${{ github.run_id }}
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/ponko-gradle-build.log
@@ -153,26 +122,3 @@ jobs:
             rust/ponko-native/Cargo.lock
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Publish queryable commit status
-        if: always()
-        uses: actions/github-script@v7
-        env:
-          JOB_STATUS: ${{ job.status }}
-          RUST_TEST_OUTCOME: ${{ steps.test-rust.outcome }}
-          APK_BUILD_OUTCOME: ${{ steps.assemble-apk.outcome }}
-        with:
-          script: |
-            const state = process.env.JOB_STATUS === 'success' ? 'success' : 'failure';
-            const description = ('rust=' + (process.env.RUST_TEST_OUTCOME || 'not-run') +
-              ', apk=' + (process.env.APK_BUILD_OUTCOME || 'not-run')).slice(0, 140);
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: context.sha,
-              state,
-              target_url: 'https://github.com/' + context.repo.owner + '/' +
-                context.repo.repo + '/actions/runs/' + context.runId,
-              description,
-              context: 'ponko/rust-uniffi-apk'
-            });

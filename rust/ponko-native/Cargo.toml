@@ -1,8 +1,8 @@
 [package]
 name = "ponko-native"
-version = "0.1.0"
-edition = "2021"
-description = "Ponko's Rust/UniFFI Android native facade for stable-diffusion.cpp"
+version = "0.2.0"
+edition = "2024"
+description = "Ponko's Hearth-based Rust diffusion engine and UniFFI Android API"
 license = "MIT"
 build = "build.rs"
 
@@ -15,7 +15,9 @@ default = []
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-libloading = "0.8"
+burn = { version = "0.20.0", default-features = false, features = ["std", "vulkan", "fusion", "autotune"] }
+hearth = { path = "../hearth" }
+half = "2.4"
 thiserror = "2"
 uniffi = "=0.32.2"
 
@@ -23,3 +25,31 @@ uniffi = "=0.32.2"
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 required-features = ["bindgen"]
+
+[patch.crates-io]
+cubek-matmul = { path = "../hearth/vendor/cubek/crates/cubek-matmul" }
+burn = { path = "../hearth/vendor/burn/crates/burn" }
+burn-backend = { path = "../hearth/vendor/burn/crates/burn-backend" }
+burn-core = { path = "../hearth/vendor/burn/crates/burn-core" }
+burn-cubecl = { path = "../hearth/vendor/burn/crates/burn-cubecl" }
+burn-cubecl-fusion = { path = "../hearth/vendor/burn/crates/burn-cubecl-fusion" }
+burn-fusion = { path = "../hearth/vendor/burn/crates/burn-fusion" }
+burn-ir = { path = "../hearth/vendor/burn/crates/burn-ir" }
+burn-nn = { path = "../hearth/vendor/burn/crates/burn-nn" }
+burn-optim = { path = "../hearth/vendor/burn/crates/burn-optim" }
+burn-std = { path = "../hearth/vendor/burn/crates/burn-std" }
+burn-tensor = { path = "../hearth/vendor/burn/crates/burn-tensor" }
+burn-wgpu = { path = "../hearth/vendor/burn/crates/burn-wgpu" }
+cubecl = { path = "../hearth/vendor/cubecl/crates/cubecl" }
+cubecl-common = { path = "../hearth/vendor/cubecl/crates/cubecl-common" }
+cubecl-core = { path = "../hearth/vendor/cubecl/crates/cubecl-core" }
+cubecl-ir = { path = "../hearth/vendor/cubecl/crates/cubecl-ir" }
+cubecl-macros = { path = "../hearth/vendor/cubecl/crates/cubecl-macros" }
+cubecl-macros-internal = { path = "../hearth/vendor/cubecl/crates/cubecl-macros-internal" }
+cubecl-opt = { path = "../hearth/vendor/cubecl/crates/cubecl-opt" }
+cubecl-runtime = { path = "../hearth/vendor/cubecl/crates/cubecl-runtime" }
+cubecl-spirv = { path = "../hearth/vendor/cubecl/crates/cubecl-spirv" }
+cubecl-std = { path = "../hearth/vendor/cubecl/crates/cubecl-std" }
+cubecl-wgpu = { path = "../hearth/vendor/cubecl/crates/cubecl-wgpu" }
+cubek = { path = "../hearth/vendor/cubek/crates/cubek" }
+cubek-attention = { path = "../hearth/vendor/cubek/crates/cubek-attention" }

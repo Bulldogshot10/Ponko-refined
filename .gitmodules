@@ -1,0 +1,3 @@
+[submodule "rust/hearth"]
+	path = rust/hearth
+	url = https://github.com/jeff-hiner/hearth.git

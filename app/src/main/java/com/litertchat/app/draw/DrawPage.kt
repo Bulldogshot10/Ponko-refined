@@ -42,8 +42,8 @@ class GenerationCancelledException : RuntimeException("Generation cancelled")
 /**
  * 绘图页（文生图）。
  *
- * 引擎为 **自编的 stable-diffusion.cpp**（libstable-diffusion.so + libponko_sd.so JNI 桥），直接读 `.gguf` 绘图模型
- * （Anything V5 / ChilloutMix / Pony 等 SD1.5 系；CivitAI 上几乎都有 GGUF 版）。
+ * 绘图引擎为 **Hearth + Burn/WGPU Vulkan**，读取支持的 SafeTensors checkpoint
+ * （支持 SD 1.5 与 SDXL；每个模型集需要 tokenizer 的 vocab.json / merges.txt）。
  *
  * 加速有两条**互相独立**的线，可以叠加：
  *  - **量化**：由模型文件本身决定（Q4_0 每步比 Q8_0 便宜不少）。App 只读取并展示，不能凭空转换。
@@ -156,8 +156,8 @@ class DrawPage(
             "diffusion" -> R.string.s_348
             "high_noise" -> R.string.s_349
             "uncond" -> R.string.s_350
-            "clip_l" -> R.string.s_351
-            "clip_g" -> R.string.s_352
+            "clip_l" -> R.string.draw_tokenizer_vocab
+            "clip_g" -> R.string.draw_tokenizer_merges
             "clip_vision" -> R.string.s_353
             "t5xxl" -> R.string.s_354
             "llm" -> R.string.s_355
@@ -171,30 +171,11 @@ class DrawPage(
          *  多文件模型的配套文件各家不一样，这里按家族给模板；用户选了类型就按模板列槽位。
          *  必填只是「加载前的检查」，不阻止用户尝试（可选槽位留空也允许加载）。 */
         fun familySlots(kind: String, family: String): List<Pair<String, Boolean>> = when {
-            kind == KIND_SINGLE && family == FAM_OTHER -> listOf(
-                "model" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
-                "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
-                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false, "taesd" to false)
-            kind == KIND_SINGLE && family == FAM_SD15 -> listOf("model" to true, "vae" to false, "taesd" to false)
-            kind == KIND_SINGLE -> listOf("model" to true, "vae" to false)
-            family == FAM_SDXL -> listOf(
-                "diffusion" to true, "clip_l" to true, "clip_g" to true, "vae" to true)
-            family == FAM_SD3 -> listOf(
-                "diffusion" to true, "clip_l" to true, "clip_g" to true, "t5xxl" to true, "vae" to true)
-            family == FAM_FLUX -> listOf(
-                "diffusion" to true, "clip_l" to true, "t5xxl" to true, "vae" to true)
-            family == FAM_QWEN -> listOf(
-                "diffusion" to true, "llm" to true, "llm_vision" to true, "vae" to true)
-            family == FAM_HIDREAM -> listOf(
-                "diffusion" to true, "high_noise" to false, "clip_l" to false, "clip_g" to false,
-                "t5xxl" to false, "llm" to false, "vae" to true)
-            family == FAM_VIDEO -> listOf(
-                "diffusion" to true, "clip_vision" to false, "t5xxl" to false, "llm" to false,
-                "vae" to true, "audio_vae" to false)
-            else -> listOf(
-                "diffusion" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
-                "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
-                "high_noise" to false, "uncond" to false, "audio_vae" to false)
+            kind == KIND_SINGLE && family == FAM_SD15 ->
+                listOf("model" to true, "clip_l" to true, "clip_g" to true, "vae" to false)
+            kind == KIND_SINGLE && family == FAM_SDXL ->
+                listOf("model" to true, "clip_l" to true, "clip_g" to true, "vae" to true)
+            else -> emptyList()
         }
 
         /** SharedPreferences 文件名与键（只存 UI 偏好） */
@@ -251,7 +232,7 @@ class DrawPage(
 
     private val c: Context get() = act
 
-    /** 自编 sd.cpp 的上下文句柄（0 = 未加载） */
+    /** Hearth inference context handle (0 = not loaded). */
     private var sdHandle: Long = 0L
     private var mainModel: File? = null
     private var vaeModel: File? = null
@@ -279,10 +260,10 @@ class DrawPage(
     var onStatus: ((String, Boolean) -> Unit)? = null
 
     /** 运行方式：true = 尝试 GPU（Vulkan），false = 纯 CPU。由模型页的「运行方式」决定。 */
-    var useGpu: Boolean = false
+    var useGpu: Boolean = true
 
     /** 当前绘图实际用的后端（"CPU" / "Vulkan0"），显示在状态行 */
-    private var activeBackend: String = "CPU"
+    private var activeBackend: String = "Vulkan"
     private var activeVulkanDiagnostic: String = ""
 
     /**
@@ -357,7 +338,7 @@ class DrawPage(
     private lateinit var progressText: TextView
     private lateinit var progressBar: ProgressBar
 
-    // 宽 / 高（可自由填，sd.cpp 要求 64 的倍数）
+    // Width and height are normalised to Hearth's latent-compatible multiples.
     private lateinit var widthEdit: EditText
     private lateinit var heightEdit: EditText
 
@@ -526,16 +507,19 @@ class DrawPage(
         modelCard.addView(quantText)
         quantizeUnetButton = Button(c).apply {
             text = c.getString(R.string.draw_quantize_unet)
+            visibility = View.GONE
             setOnClickListener { showUnetQuantizer() }
         }
         modelCard.addView(quantizeUnetButton, matchWrap(top = 8))
         resAdapterButton = Button(c).apply {
             text = c.getString(R.string.draw_resadapter_button)
+            visibility = View.GONE
             setOnClickListener { showResAdapterWizard() }
         }
         modelCard.addView(resAdapterButton, matchWrap(top = 4))
         fuseLoraButton = Button(c).apply {
             text = c.getString(R.string.draw_lora_fusion_button)
+            visibility = View.GONE
             setOnClickListener { showLoraFusionWizard() }
         }
         modelCard.addView(fuseLoraButton, matchWrap(top = 4))
@@ -548,8 +532,8 @@ class DrawPage(
             setPadding(dp(8), dp(2), dp(8), dp(2))
         }
         tabT2i = modeTab(c.getString(R.string.s_207))
-        tabI2i = modeTab(c.getString(R.string.s_208))
-        tabHiRes = modeTab(c.getString(R.string.draw_hires_tab))
+        tabI2i = modeTab(c.getString(R.string.s_208)).apply { visibility = View.GONE }
+        tabHiRes = modeTab(c.getString(R.string.draw_hires_tab)).apply { visibility = View.GONE }
         tabT2i.setOnClickListener { switchMode(0) }
         tabI2i.setOnClickListener { switchMode(1) }
         tabHiRes.setOnClickListener { switchMode(2) }
@@ -597,7 +581,7 @@ class DrawPage(
         val paramCard = card()
         paramCard.addView(title(c.getString(R.string.s_065)))
 
-        // 尺寸：宽 × 高，自由填（sd.cpp 要求 64 的倍数）——从上次的值恢复
+        // Dimensions are restored from the previous generation settings.
         widthEdit = smallNumber(loadParam(KEY_W, defOf("t2i", "w", "512")))
         heightEdit = smallNumber(loadParam(KEY_H, defOf("t2i", "h", "512")))
         paramCard.addView(whRow(c.getString(R.string.s_070),
@@ -605,10 +589,10 @@ class DrawPage(
 
         // 采样器 / 调度器
         samplerSpinner = choiceSpinner(
-            listOf(c.getString(R.string.s_169)) + SdCppEngine.Sampler.entries.map { it.label }
+            listOf(c.getString(R.string.s_169)) + HearthEngine.Sampler.HEARTH_SUPPORTED.map { it.label }
         )
         schedulerSpinner = choiceSpinner(
-            listOf(c.getString(R.string.s_168)) + SdCppEngine.Scheduler.entries.map { it.label }
+            listOf(c.getString(R.string.s_168)) + HearthEngine.Scheduler.HEARTH_SUPPORTED.map { it.label }
         )
         samplerSpinner.setSelection(loadInt(KEY_SAMPLER, defOfInt("t2i", "sampler", 0)).coerceIn(0, samplerSpinner.adapter.count - 1), false)
         schedulerSpinner.setSelection(loadInt(KEY_SCHEDULER, defOfInt("t2i", "scheduler", 0)).coerceIn(0, schedulerSpinner.adapter.count - 1), false)
@@ -683,7 +667,7 @@ class DrawPage(
         paramCard.addView(loraHint)
         t2iContent.addView(paramCard)
         t2iContent.addView(defaultButtonsRow("t2i"), matchWrap(top = 10))
-        t2iContent.addView(buildADetailerContent(), matchWrap(top = 10))
+        // ADetailer will be surfaced when its detector/inpaint path is ported to Hearth.
 
         // ---- 图生图页面 ----
         i2iContent = buildI2iContent()
@@ -947,10 +931,10 @@ class DrawPage(
         paramCard.addView(whRow(c.getString(R.string.s_070), c.getString(R.string.s_068), i2iWidthEdit, i2iHeightEdit))
 
         i2iSamplerSpinner = choiceSpinner(
-            listOf(c.getString(R.string.s_169)) + SdCppEngine.Sampler.entries.map { it.label }
+            listOf(c.getString(R.string.s_169)) + HearthEngine.Sampler.HEARTH_SUPPORTED.map { it.label }
         )
         i2iSchedulerSpinner = choiceSpinner(
-            listOf(c.getString(R.string.s_168)) + SdCppEngine.Scheduler.entries.map { it.label }
+            listOf(c.getString(R.string.s_168)) + HearthEngine.Scheduler.HEARTH_SUPPORTED.map { it.label }
         )
         i2iSamplerSpinner.setSelection(loadInt(KEY_I2I_SAMPLER, defOfInt("i2i", "sampler", 0)).coerceIn(0, i2iSamplerSpinner.adapter.count - 1), false)
         i2iSchedulerSpinner.setSelection(loadInt(KEY_I2I_SCHEDULER, defOfInt("i2i", "scheduler", 0)).coerceIn(0, i2iSchedulerSpinner.adapter.count - 1), false)
@@ -1028,19 +1012,14 @@ class DrawPage(
     /** 切换参数页：0=文生图 1=图生图 2=HiRes Fix */
     private fun switchMode(m: Int) {
         if (!::t2iContent.isInitialized) return
-        mode = m
-        t2iContent.visibility = if (m == 0) View.VISIBLE else View.GONE
-        i2iContent.visibility = if (m == 1) View.VISIBLE else View.GONE
-        if (::hiresContent.isInitialized) {
-            hiresContent.visibility = if (m == 2) View.VISIBLE else View.GONE
-        }
-        for ((tv, sel) in listOf(
-            tabT2i to (m == 0), tabI2i to (m == 1), tabHiRes to (m == 2)
-        )) {
-            tv.setTextColor(if (sel) primary else subText)
-            tv.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            tv.setBackgroundColor(if (sel) pal.primarySoft else pal.surface)
-        }
+        // The Hearth adapter currently supports text-to-image only.
+        mode = 0
+        t2iContent.visibility = View.VISIBLE
+        if (::i2iContent.isInitialized) i2iContent.visibility = View.GONE
+        if (::hiresContent.isInitialized) hiresContent.visibility = View.GONE
+        tabT2i.setTextColor(primary)
+        tabT2i.typeface = Typeface.DEFAULT_BOLD
+        tabT2i.setBackgroundColor(pal.primarySoft)
         refreshModelCard()
     }
 
@@ -1167,24 +1146,7 @@ class DrawPage(
         return true
     }
 
-    private fun currentADetailerSettings(): SdCppEngine.ADetailerSettings {
-        if (!::adetailerEnabledCheck.isInitialized || !adetailerEnabledCheck.isChecked) return SdCppEngine.ADetailerSettings()
-        val detector = adetailerModelFile?.takeIf { it.isFile }
-            ?: throw IllegalStateException(c.getString(R.string.draw_adetailer_model_missing))
-        val rawSize = adetailerResolutionEdit.text.toString().toIntOrNull() ?: 512
-        val size = ((rawSize / 64) * 64).coerceIn(128, 1024)
-        return SdCppEngine.ADetailerSettings(
-            enabled = true, detectorPath = detector.absolutePath,
-            prompt = adetailerPromptEdit.text.toString().trim(),
-            negativePrompt = adetailerNegativePromptEdit.text.toString().trim(),
-            confidence = adetailerConfidenceEdit.text.toString().toFloatOrNull()?.coerceIn(0.01f, 0.99f) ?: 0.3f,
-            inpaintSize = size,
-            padding = adetailerPaddingEdit.text.toString().toIntOrNull()?.coerceIn(0, 512) ?: 32,
-            maskBlur = adetailerMaskBlurEdit.text.toString().toIntOrNull()?.coerceIn(0, 64) ?: 4,
-            denoisingStrength = adetailerDenoiseEdit.text.toString().toFloatOrNull()?.coerceIn(0.01f, 1f) ?: 0.4f,
-            steps = adetailerStepsEdit.text.toString().toIntOrNull()?.coerceIn(0, 150) ?: 8,
-        )
-    }
+    private fun currentADetailerSettings(): HearthEngine.ADetailerSettings = HearthEngine.ADetailerSettings()
 
     // ================= HiRes Fix 页面 =================
     private fun buildHiresContent(): LinearLayout {
@@ -1204,9 +1166,9 @@ class DrawPage(
 
         val upscalerCard = card()
         upscalerCard.addView(title(c.getString(R.string.draw_hires_upscaler)))
-        hiresUpscalerSpinner = choiceSpinner(SdCppEngine.HiresUpscaler.entries.map { it.label })
-        hiresUpscalerSpinner.setSelection(loadInt(KEY_HIRES_UPSCALER, SdCppEngine.HiresUpscaler.LATENT.code)
-            .coerceIn(0, SdCppEngine.HiresUpscaler.entries.lastIndex), false)
+        hiresUpscalerSpinner = choiceSpinner(HearthEngine.HiresUpscaler.entries.map { it.label })
+        hiresUpscalerSpinner.setSelection(loadInt(KEY_HIRES_UPSCALER, HearthEngine.HiresUpscaler.LATENT.code)
+            .coerceIn(0, HearthEngine.HiresUpscaler.entries.lastIndex), false)
         hiresUpscalerSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 prefs().edit().putInt(KEY_HIRES_UPSCALER, pos).apply()
@@ -1255,9 +1217,9 @@ class DrawPage(
 
     private fun updateHiresModelControls() {
         if (!::hiresUpscalerSpinner.isInitialized || !::hiresModelButton.isInitialized || !::hiresModelStatus.isInitialized) return
-        val selected = SdCppEngine.HiresUpscaler.entries.getOrNull(hiresUpscalerSpinner.selectedItemPosition)
-            ?: SdCppEngine.HiresUpscaler.LATENT
-        val isModel = selected == SdCppEngine.HiresUpscaler.MODEL
+        val selected = HearthEngine.HiresUpscaler.entries.getOrNull(hiresUpscalerSpinner.selectedItemPosition)
+            ?: HearthEngine.HiresUpscaler.LATENT
+        val isModel = selected == HearthEngine.HiresUpscaler.MODEL
         hiresModelButton.visibility = if (isModel) View.VISIBLE else View.GONE
         hiresModelStatus.visibility = if (isModel) View.VISIBLE else View.GONE
         val model = hiresModelFile?.takeIf { it.isFile }
@@ -1310,25 +1272,7 @@ class DrawPage(
         return true
     }
 
-    private fun currentHiresSettings(): SdCppEngine.HiResSettings {
-        if (!::hiresEnabledCheck.isInitialized || !::hiresUpscalerSpinner.isInitialized) return SdCppEngine.HiResSettings()
-        val upscaler = SdCppEngine.HiresUpscaler.entries.getOrNull(hiresUpscalerSpinner.selectedItemPosition)
-            ?: SdCppEngine.HiresUpscaler.LATENT
-        val modelPath = hiresModelFile?.takeIf { it.isFile }?.absolutePath
-        val enabled = hiresEnabledCheck.isChecked
-        if (enabled && upscaler == SdCppEngine.HiresUpscaler.MODEL && modelPath.isNullOrBlank()) {
-            throw IllegalStateException(c.getString(R.string.draw_hires_model_missing))
-        }
-        return SdCppEngine.HiResSettings(
-            enabled = enabled, upscaler = upscaler, modelPath = modelPath,
-            scale = hiresScaleEdit.text.toString().toFloatOrNull()?.coerceIn(0.25f, 8f) ?: 2f,
-            targetWidth = hiresTargetWidthEdit.text.toString().toIntOrNull()?.coerceIn(0, 8192) ?: 0,
-            targetHeight = hiresTargetHeightEdit.text.toString().toIntOrNull()?.coerceIn(0, 8192) ?: 0,
-            steps = hiresStepsEdit.text.toString().toIntOrNull()?.coerceIn(0, 150) ?: 0,
-            denoisingStrength = hiresDenoiseEdit.text.toString().toFloatOrNull()?.coerceIn(0.0001f, 1f) ?: 0.7f,
-            tileSize = hiresTileEdit.text.toString().toIntOrNull()?.coerceIn(0, 2048) ?: 128,
-        )
-    }
+    private fun currentHiresSettings(): HearthEngine.HiResSettings = HearthEngine.HiResSettings()
 
     private fun sendResultToI2i() {
         val b = lastImage
@@ -1469,7 +1413,7 @@ class DrawPage(
     }
 
     /** Selected LoRAs with independent multipliers, bounded to four unique files. */
-    private fun selectedLoras(page: String): List<SdCppEngine.Lora> {
+    private fun selectedLoras(page: String): List<HearthEngine.Lora> {
         if (!useLora) return emptyList()
         val spinners = if (page == "i2i") i2iLoraSpinners else t2iLoraSpinners
         val weights = if (page == "i2i") i2iLoraWeights else t2iLoraWeights
@@ -1483,7 +1427,7 @@ class DrawPage(
             if (!seen.add(file.absolutePath)) return@mapIndexedNotNull null
             val scale = weights.getOrNull(slot)?.text?.toString()
                 ?.toFloatOrNull()?.coerceIn(0f, 2f) ?: 1.0f
-            if (scale <= 0f) null else SdCppEngine.Lora(file.absolutePath, scale)
+            if (scale <= 0f) null else HearthEngine.Lora(file.absolutePath, scale)
         }
     }
 
@@ -1820,9 +1764,13 @@ class DrawPage(
         try {
             val name = queryDisplayName(uri) ?: return@withContext c.getString(R.string.s_106)
             val ext = name.substringAfterLast('.', "").lowercase()
-            if (ext !in listOf("gguf", "safetensors", "ckpt", "pt")) {
-                return@withContext c.getString(R.string.s_368)
+            val requestedKey = slotKey ?: if (pendingKind == KIND_SINGLE) "model" else "diffusion"
+            val accepted = when (requestedKey) {
+                "clip_l" -> ext == "json"
+                "clip_g" -> ext == "txt"
+                else -> ext == "safetensors"
             }
+            if (!accepted) return@withContext c.getString(R.string.draw_hearth_file_type)
             val key = slotKey ?: if (pendingKind == KIND_SINGLE) "model" else "diffusion"
             val cur = activeSet
             val useSet: ModelSet = when {
@@ -1958,7 +1906,7 @@ class DrawPage(
     fun currentMainName(): String? = activeSetOrSelected()?.name
 
     /** 某个文件的量化等级（Q4_0 / Q8_0 / …），读不出来返回 null */
-    fun quantOf(f: File): String? = GgufProbe.quantType(f)
+    fun quantOf(f: File): String? = if (f.extension.equals("safetensors", ignoreCase = true)) "SafeTensors" else null
 
     /** 删除单个已复制的模型文件（旧接口，保留给兼容用） */
     fun deleteModel(f: File): Boolean = runCatching { f.delete() }.getOrDefault(false)
@@ -1966,7 +1914,7 @@ class DrawPage(
     /** 私有目录里散落的 gguf（旧版遗留；新式模型请用 listSets） */
     fun listModels(): List<File> =
         File(c.filesDir, DIR_NAME)
-            .listFiles { f -> f.isFile && f.name.endsWith(".gguf", ignoreCase = true) }
+            .listFiles { f -> f.isFile && f.name.endsWith(".safetensors", ignoreCase = true) }
             ?.sortedByDescending { it.lastModified() } ?: emptyList()
 
     private suspend fun loadSet(set: ModelSet?): String? {
@@ -1974,119 +1922,67 @@ class DrawPage(
             statusText.post { statusText.text = c.getString(R.string.s_114) }
             return c.getString(R.string.s_114)
         }
-        // 槽位表 → sd.cpp 的路径参数
+
         val slots = LinkedHashMap<String, String>()
-        set.files.forEach { (k, f) -> slots[k] = f.absolutePath }
-        if (!taesdEnabled()) slots.remove("taesd")
-        val useVaeConvDirect = vaeConvDirectEnabled()
+        set.files.forEach { (key, file) -> slots[key] = file.absolutePath }
         val missing = slotMissingIds(set).map { c.getString(slotLabelRes(it)) }
         if (missing.isNotEmpty()) {
-            val msg = c.getString(R.string.s_363, missing.joinToString("、"))
-            statusText.post { statusText.text = msg }
-            return msg
+            val message = c.getString(R.string.s_363, missing.joinToString("、"))
+            statusText.post { statusText.text = message }
+            return message
         }
 
-        // 崩溃追踪：逐步把阶段写进文件。native 段错误会直接杀死进程，
-        // 但只要事先写进了磁盘，下次启动就能看到崩在哪一步。
         val root = File(c.filesDir, DIR_NAME)
         val stageFile = File(root, ".loadstage")
-        fun stage(s: String) {
-            runCatching { stageFile.appendText("$s\n") }
-        }
+        fun stage(message: String) { runCatching { stageFile.appendText("$message\n") } }
         runCatching { stageFile.writeText("") }
-        stage("2 模型集：${set.id}（${set.kind}/${set.family}，${set.slotCount()} 个文件）")
-        slots.forEach { (k, v) -> stage("   槽位 $k = ${File(v).name}（${File(v).length() / 1048576} MB）") }
-        stage("VAE direct-conv: ${if (useVaeConvDirect) "enabled" else "disabled"}")
-        activeLora()?.let { stage(c.getString(R.string.v_058, (it.name), (it.length() / 1048576))) }
-        stage(c.getString(R.string.v_041, (android.os.Build.SUPPORTED_ABIS.firstOrNull()), (android.os.Build.VERSION.SDK_INT), (android.os.Build.MANUFACTURER), (android.os.Build.MODEL)))
-        stage(c.getString(R.string.v_042, (Runtime.getRuntime().maxMemory() / 1048576), (root.usableSpace / 1048576)))
+        stage("Hearth / Burn-WGPU Vulkan")
+        stage("Family: ${set.family}; model set: ${set.name}")
+        slots.forEach { (key, path) -> stage("$key = ${File(path).name} (${File(path).length() / 1048576} MB)") }
+        stage("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}; ABI: ${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
+        stage("Heap: ${Runtime.getRuntime().maxMemory() / 1048576} MB; storage: ${root.usableSpace / 1048576} MB")
 
-        // 分步探测：每步都先落盘，后执行
-        stage(c.getString(R.string.s_009))
-        try {
-            SdCppEngine.info().let { stage("3 native OK：$it") }
-        } catch (t: Throwable) {
-            stage(c.getString(R.string.v_043, (t.message ?: t.javaClass.simpleName)))
-            runCatching { stageFile.delete() }
-            return c.getString(R.string.v_044, (t.message ?: t.javaClass.simpleName))
-        }
-
-        stage(c.getString(R.string.v_045, (nThreads)))
         return try {
-            if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
+            if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
             sdHandle = 0L
-            // 后端：选了 GPU 且设备有 Vulkan 就用它，否则 CPU。
-            // 显式传后端名会关掉 sd.cpp 的 auto_fit，避免「选 CPU 却悄悄跑 GPU」。
-            val gpuDev = if (useGpu) SdCppEngine.vulkanDevice() else null
-            if (useGpu && gpuDev == null) {
-                stage("4a no vulkan device -> CPU")
-                toast(c.getString(R.string.s_332))
-            }
-            fun createWith(b: String) = SdCppEngine.create(
+            stage(HearthEngine.info())
+            val handle = HearthEngine.create(
                 modelPath = slots["model"].orEmpty(),
                 vaePath = slots["vae"],
                 nThreads = nThreads,
-                wtype = SdCppEngine.WTYPE_KEEP,
-                flashAttn = flashAttn,
-                vaeConvDirect = useVaeConvDirect,
-                backend = b,
-                slots = SdCppEngine.buildSlots(slots),
+                wtype = HearthEngine.WTYPE_KEEP,
+                flashAttn = false,
+                vaeConvDirect = false,
+                backend = "Vulkan",
+                slots = HearthEngine.buildSlots(slots),
+                family = set.family,
             )
-            var used = gpuDev ?: "CPU"
-            var h = createWith(used)
-            if (h == 0L && used != "CPU") {
-                // Vulkan 初始化失败（驱动/显存）→ 退回 CPU，别让用户因此用不了绘图
-                stage("4b vulkan init failed -> CPU")
-                used = "CPU"
-                h = createWith(used)
-                if (h != 0L) toast(c.getString(R.string.s_333))
-            }
-            activeBackend = used
-            if (h == 0L) {
-                stage(c.getString(R.string.s_012))
-                runCatching { stage(c.getString(R.string.s_010) + SdCppEngine.lastParams().replace("\n", "  |  ")) }
+            if (handle == 0L) {
+                stage(HearthEngine.lastParams())
                 runCatching { stageFile.delete() }
                 return c.getString(R.string.s_059)
             }
-            sdHandle = h
-            activeVulkanDiagnostic = if (used.contains("vulkan", ignoreCase = true)) {
-                SdCppEngine.vulkanDiagnostics()
-            } else {
-                ""
-            }
-            if (activeVulkanDiagnostic.isNotBlank()) {
-                stage("4c Vulkan capabilities: " + activeVulkanDiagnostic.replace("\n", " | "))
-            }
+
+            sdHandle = handle
+            activeBackend = "Vulkan"
+            activeVulkanDiagnostic = HearthEngine.vulkanDiagnostics()
             mainModel = set.mainFile()
             vaeModel = set.files["vae"]
-            // 登记到进程级单例：API 的绘图接口要复用同一个句柄（界面重建/换主题都不影响）
-            DrawCore.attach(h, mainModel?.name ?: set.name, used)
-            stage(c.getString(R.string.s_011))
-            runCatching {
-                stage(c.getString(R.string.s_010) + SdCppEngine.lastParams().replace("\n", "  |  "))
-            }
-
-            val vkMode = when {
-                !activeBackend.contains("vulkan", ignoreCase = true) -> ""
-                activeVulkanDiagnostic.contains("cooperative matrix 1") -> " · Xclipse coopmat"
-                activeVulkanDiagnostic.contains("Xclipse 940 profile detected") -> " · Xclipse generic"
-                else -> " · Vulkan caps n/a"
-            }
+            DrawCore.attach(handle, mainModel?.name ?: set.name, "Vulkan")
+            stage("Hearth context ready")
+            stage(activeVulkanDiagnostic)
             val summary = buildString {
                 append(c.getString(R.string.s_094)).append(set.name)
-                append(" · ").append(activeBackend).append(" · ").append(nThreads).append(c.getString(R.string.s_001)).append(if (flashAttn) "FA" else c.getString(R.string.s_110)).append(" · sd.cpp")
-                append(" · ").append(c.getString(if (useVaeConvDirect) R.string.draw_vae_conv_direct_status else R.string.draw_vae_conv_standard_status))
-                append(vkMode)
+                append(" · Hearth · Burn/WGPU Vulkan")
             }
             statusText.post { statusText.text = summary }
             statusText.post { refreshQuantText() }
-            // 参数快照同步给 API（此时控件都已建好）
             statusText.post { runCatching { syncDrawCore() } }
             runCatching { stageFile.delete() }
             onPipelineReady?.invoke()
             null
         } catch (e: Throwable) {
-            stage(c.getString(R.string.v_046, (e.javaClass.name), (e.message)))
+            stage("${e.javaClass.name}: ${e.message}")
             runCatching { stageFile.appendText(android.util.Log.getStackTraceString(e) + "\n") }
             c.getString(R.string.v_047, (e.message ?: e.javaClass.simpleName))
         }
@@ -2094,7 +1990,7 @@ class DrawPage(
 
     fun unloadModel() {
         DrawCore.release()   // 先清引用，别让 API 拿到已经 free 的句柄
-        if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
+        if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
         sdHandle = 0L
         activeBackend = "CPU"
         activeVulkanDiagnostic = ""
@@ -2108,10 +2004,10 @@ class DrawPage(
 
     fun modelSummary(): String = when {
         sdHandle != 0L -> {
-            val q = mainModel?.let { GgufProbe.quantType(it) }
+            val q = mainModel?.let { quantOf(it) }
             c.getString(R.string.s_094) + (mainModel?.name ?: c.getString(R.string.s_155)) +
                 (if (q != null) "（$q）" else "") +
-                " · CPU · " + nThreads + c.getString(R.string.s_002)
+                " · Hearth / Burn-WGPU Vulkan"
         }
         hasModel() -> (activeSetOrSelected()?.name?.let { it + " · " } ?: "") + c.getString(R.string.s_088)
         else -> c.getString(R.string.s_115)
@@ -2124,10 +2020,9 @@ class DrawPage(
     /** 顶部模型卡片跟随子页切换：显示当前绘图模型 */
     private fun refreshModelCard() {
         if (!::modelCardTitle.isInitialized) return
-        if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
-        if (::resAdapterButton.isInitialized) {
-            resAdapterButton.visibility = if (activeSetOrSelected()?.family == FAM_SDXL) View.VISIBLE else View.GONE
-        }
+        if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.GONE
+        if (::resAdapterButton.isInitialized) resAdapterButton.visibility = View.GONE
+        if (::fuseLoraButton.isInitialized) fuseLoraButton.visibility = View.GONE
         modelCardTitle.text = c.getString(R.string.s_164)
         try { statusText.text = modelSummary() } catch (_: Throwable) {}
         refreshQuantText()
@@ -2141,7 +2036,7 @@ class DrawPage(
             quantText.text = if (m == null) {
                 c.getString(R.string.s_103)
             } else {
-                val q = GgufProbe.quantType(m) ?: c.getString(R.string.s_119)
+                val q = quantOf(m) ?: c.getString(R.string.s_119)
                 c.getString(R.string.v_048, (q), (m.name))
             }
         } catch (_: Throwable) {}
@@ -2229,7 +2124,7 @@ class DrawPage(
                 // Release mapped weights first so the converter has more room on low-RAM phones.
                 unloadModel()
                 val success = withContext(Dispatchers.IO) {
-                    SdCppEngine.nativeQuantizeUnet(
+                    HearthEngine.nativeQuantizeUnet(
                         source.absolutePath,
                         outputFile.absolutePath,
                         quantType,
@@ -2536,7 +2431,7 @@ class DrawPage(
                 // source tensor-by-tensor and publishes a new file without editing its inputs.
                 unloadModel()
                 val success = withContext(Dispatchers.IO) {
-                    SdCppEngine.nativeFuseLoras(
+                    HearthEngine.nativeFuseLoras(
                         inputPath = source.absolutePath,
                         loraPaths = loras.map { it.absolutePath },
                         loraScales = scales,
@@ -2759,7 +2654,7 @@ class DrawPage(
                 // Free model mappings before streaming the full SDXL checkpoint through the converter.
                 unloadModel()
                 val ok = withContext(Dispatchers.IO) {
-                    SdCppEngine.nativeApplyResAdapter(
+                    HearthEngine.nativeApplyResAdapter(
                         inputModelPath = source.absolutePath,
                         vaePath = baseSet.files["vae"]?.takeIf { it.isFile }?.absolutePath,
                         normalizationPath = stagedNorm.absolutePath,
@@ -2870,7 +2765,7 @@ class DrawPage(
                     delay(1000)
                     val sec = (System.currentTimeMillis() - startedAt) / 1000
                     progressText.post {
-                        // sd.cpp reuses the progress callback for lazy tensor loading. Keep the
+                        // Hearth reports denoising progress through the sampler callback. Keep the
                         // UI in Loading model until a callback matches this request's sample-step count.
                         val phase = if (denoisingStarted) c.getString(R.string.s_129) else c.getString(R.string.s_127)
                         val displayStep = if (previewFrameSeen && totalStep > 0) {
@@ -2970,7 +2865,7 @@ class DrawPage(
         val clipSkip = clipSkipSeekBar.progress + 1
         val seed = seedEdit.text.toString().toLongOrNull() ?: -1L
         val useSeed = if (seed < 0) System.currentTimeMillis() else seed
-        // 宽高：sd.cpp 要求 64 的倍数，向下取整；夹到 64~2048 防止手滑
+        // Keep dimensions divisible by 8 and clamp them to a practical range.
         val w = (widthEdit.text.toString().toIntOrNull() ?: 512).let { (it / 64) * 64 }.coerceIn(64, 2048)
         val hgt = (heightEdit.text.toString().toIntOrNull() ?: 512).let { (it / 64) * 64 }.coerceIn(64, 2048)
         onProgress(0, steps)
@@ -2980,7 +2875,7 @@ class DrawPage(
         if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
         if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
 
-        // LoRA 列表按槽位逐个传给 sd.cpp，支持每个 adapter 独立权重。
+        // Pass each selected LoRA with its own strength to Hearth.
         val loras = selectedLoras("t2i")
         val hires = currentHiresSettings()
         val adetailer = currentADetailerSettings()
@@ -2998,7 +2893,7 @@ class DrawPage(
             // 推理是同步阻塞的 native 调用（一张几百秒），绝不能跟调用方同线程——
             // 调用方基本都在 Dispatchers.Main，否则整个 UI 会卡死到出图为止。
             val bmp = withContext(Dispatchers.IO) {
-                SdCppEngine.render(
+                HearthEngine.render(
                     handle = h,
                     prompt = prompt,
                     negative = negative,
@@ -3016,7 +2911,7 @@ class DrawPage(
                     adetailer = adetailer,
                     cb = { cur, total -> onProgress(cur, total) },
                     onPreview = onPreview?.let { f ->
-                        SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
+                        HearthEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
                     },
                 )
             } ?: throw IllegalStateException(c.getString(R.string.s_147))
@@ -3027,11 +2922,11 @@ class DrawPage(
         }
     }
 
-    /** 采样器选择：索引 0 = 自动；其余按 SdCppEngine.Sampler 顺序 */
-    private fun pickSampler(hasLora: Boolean): SdCppEngine.Sampler {
+    /** 采样器选择：索引 0 = 自动；其余按 HearthEngine.Sampler 顺序 */
+    private fun pickSampler(hasLora: Boolean): HearthEngine.Sampler {
         val idx = samplerSpinner.selectedItemPosition
-        if (idx <= 0) return if (hasLora) SdCppEngine.Sampler.LCM else SdCppEngine.Sampler.EULER_A
-        return SdCppEngine.Sampler.entries.getOrElse(idx - 1) { SdCppEngine.Sampler.EULER_A }
+        if (idx <= 0) return HearthEngine.Sampler.EULER_A
+        return HearthEngine.Sampler.HEARTH_SUPPORTED.getOrElse(idx - 1) { HearthEngine.Sampler.EULER_A }
     }
 
     /** -1 keeps the sampler-specific native ETA default; explicit values are clamped to 0..1. */
@@ -3041,26 +2936,26 @@ class DrawPage(
     }
 
     /** 调度器选择：索引 0 = 自动 */
-    private fun pickScheduler(hasLora: Boolean): SdCppEngine.Scheduler {
+    private fun pickScheduler(hasLora: Boolean): HearthEngine.Scheduler {
         val idx = schedulerSpinner.selectedItemPosition
-        if (idx <= 0) return if (hasLora) SdCppEngine.Scheduler.LCM else SdCppEngine.Scheduler.DISCRETE
-        return SdCppEngine.Scheduler.entries.getOrElse(idx - 1) { SdCppEngine.Scheduler.DISCRETE }
+        if (idx <= 0) return HearthEngine.Scheduler.DISCRETE
+        return HearthEngine.Scheduler.HEARTH_SUPPORTED.getOrElse(idx - 1) { HearthEngine.Scheduler.DISCRETE }
     }
 
     // ================= 图生图生成 =================
 
     /** 图生图采样器（对应图生图页的 spinner） */
-    private fun pickI2iSampler(hasLora: Boolean): SdCppEngine.Sampler {
+    private fun pickI2iSampler(hasLora: Boolean): HearthEngine.Sampler {
         val idx = i2iSamplerSpinner.selectedItemPosition
-        if (idx <= 0) return if (hasLora) SdCppEngine.Sampler.LCM else SdCppEngine.Sampler.EULER_A
-        return SdCppEngine.Sampler.entries.getOrElse(idx - 1) { SdCppEngine.Sampler.EULER_A }
+        if (idx <= 0) return HearthEngine.Sampler.EULER_A
+        return HearthEngine.Sampler.HEARTH_SUPPORTED.getOrElse(idx - 1) { HearthEngine.Sampler.EULER_A }
     }
 
     /** 图生图调度器 */
-    private fun pickI2iScheduler(hasLora: Boolean): SdCppEngine.Scheduler {
+    private fun pickI2iScheduler(hasLora: Boolean): HearthEngine.Scheduler {
         val idx = i2iSchedulerSpinner.selectedItemPosition
-        if (idx <= 0) return if (hasLora) SdCppEngine.Scheduler.LCM else SdCppEngine.Scheduler.DISCRETE
-        return SdCppEngine.Scheduler.entries.getOrElse(idx - 1) { SdCppEngine.Scheduler.DISCRETE }
+        if (idx <= 0) return HearthEngine.Scheduler.DISCRETE
+        return HearthEngine.Scheduler.HEARTH_SUPPORTED.getOrElse(idx - 1) { HearthEngine.Scheduler.DISCRETE }
     }
 
     /** 点图生图页的「生成」按钮 */
@@ -3208,8 +3103,8 @@ class DrawPage(
         val adetailer = currentADetailerSettings()
 
         val bmp = withContext(Dispatchers.IO) {
-            val rgb = SdCppEngine.bitmapToRgb888(src)
-            SdCppEngine.render(
+            val rgb = HearthEngine.bitmapToRgb888(src)
+            HearthEngine.render(
                 handle = h,
                 prompt = prompt,
                 negative = negative,
@@ -3227,7 +3122,7 @@ class DrawPage(
                 adetailer = adetailer,
                 cb = { cur, total -> onProgress(cur, total) },
                 onPreview = onPreview?.let { f ->
-                    SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
+                    HearthEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
                 },
                 initImage = rgb,
                 initWidth = src.width,
@@ -3268,7 +3163,7 @@ class DrawPage(
 
     fun cancel() {
         cancelRequested = true
-        if (sdHandle != 0L) runCatching { SdCppEngine.nativeCancel(sdHandle) }
+        if (sdHandle != 0L) runCatching { HearthEngine.nativeCancel(sdHandle) }
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
@@ -3288,7 +3183,7 @@ class DrawPage(
 
     fun release() {
         DrawCore.release()   // 顺序不能反：先断开 API 侧的引用，再真正释放 native 句柄
-        if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
+        if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
         sdHandle = 0L
     }
 
@@ -3474,7 +3369,7 @@ class DrawPage(
     private fun onPreviewFrame(step: Int, w: Int, h: Int, rgb: ByteArray) {
         if (!::previewImg.isInitialized) return
         denoisingStarted = true
-        val bmp = SdCppEngine.rgbToBitmap(w, h, rgb) ?: return
+        val bmp = HearthEngine.rgbToBitmap(w, h, rgb) ?: return
         val frame = ProcessPreviewFrame(kotlin.math.abs(step), bmp)
         var post = false
         synchronized(processPreviewLock) {
@@ -3663,18 +3558,18 @@ class DrawPage(
         syncDrawCore()   // 参数一改就同步给 API 侧（下一次请求即生效）
     }
 
-    private fun samplerAt(spinner: android.widget.Spinner): SdCppEngine.Sampler? {
+    private fun samplerAt(spinner: android.widget.Spinner): HearthEngine.Sampler? {
         val position = spinner.selectedItemPosition
-        return if (position <= 0) null else SdCppEngine.Sampler.entries.getOrNull(position - 1)
+        return if (position <= 0) null else HearthEngine.Sampler.HEARTH_SUPPORTED.getOrNull(position - 1)
     }
 
-    private fun karrasSchedulerPosition(): Int = SdCppEngine.Scheduler.entries.indexOf(SdCppEngine.Scheduler.KARRAS) + 1
+    private fun karrasSchedulerPosition(): Int = HearthEngine.Scheduler.HEARTH_SUPPORTED.indexOf(HearthEngine.Scheduler.KARRAS) + 1
 
-    private fun tcdSchedulerPosition(): Int = SdCppEngine.Scheduler.entries.indexOf(SdCppEngine.Scheduler.TCD) + 1
+    private fun tcdSchedulerPosition(): Int = -1
 
-    private fun tcdSamplerPosition(): Int = SdCppEngine.Sampler.entries.indexOf(SdCppEngine.Sampler.TCD) + 1
+    private fun tcdSamplerPosition(): Int = -1
 
-    /** Restore TCD as a combined scheduler/update rule in the split sd.cpp API. */
+    /** Hearth exposes samplers and sigma schedules as separate choices. */
     private fun syncTcdPresetOnRestore(
         sampler: android.widget.Spinner,
         scheduler: android.widget.Spinner,
@@ -3696,7 +3591,7 @@ class DrawPage(
         scheduler: android.widget.Spinner,
         schedulerKey: String,
     ) {
-        if (samplerAt(sampler) == SdCppEngine.Sampler.DPMPP_SDE_KARRAS) {
+        if (samplerAt(sampler) == HearthEngine.Sampler.DPMPP_SDE_KARRAS) {
             val position = karrasSchedulerPosition()
             scheduler.setSelection(position, false)
             prefs().edit().putInt(schedulerKey, position).apply()
@@ -3710,7 +3605,7 @@ class DrawPage(
     ) = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
             prefs().edit().putInt(key, pos).apply()
-            if (samplerAt(sampler) == SdCppEngine.Sampler.DPMPP_SDE_KARRAS) {
+            if (samplerAt(sampler) == HearthEngine.Sampler.DPMPP_SDE_KARRAS) {
                 val karrasPosition = karrasSchedulerPosition()
                 if (scheduler.selectedItemPosition != karrasPosition) {
                     scheduler.setSelection(karrasPosition)
@@ -3737,8 +3632,8 @@ class DrawPage(
             }
             val current = samplerAt(sampler)
             val isKarrasPosition = pos == karrasSchedulerPosition()
-            if (current == SdCppEngine.Sampler.DPMPP_SDE_KARRAS && !isKarrasPosition) {
-                val standardSdePosition = SdCppEngine.Sampler.entries.indexOf(SdCppEngine.Sampler.DPMPP_SDE) + 1
+            if (current == HearthEngine.Sampler.DPMPP_SDE_KARRAS && !isKarrasPosition) {
+                val standardSdePosition = HearthEngine.Sampler.HEARTH_SUPPORTED.indexOf(HearthEngine.Sampler.DPMPP_SDE) + 1
                 if (standardSdePosition > 0 && sampler.selectedItemPosition != standardSdePosition) {
                     sampler.setSelection(standardSdePosition)
                 }

@@ -2,7 +2,7 @@
 package com.litertchat.app
 
 import android.graphics.Bitmap
-import com.litertchat.app.draw.SdCppEngine
+import com.litertchat.app.draw.HearthEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -32,9 +32,9 @@ object DrawCore {
         val width: Int = 512,
         val height: Int = 512,
         val negative: String = "",
-        val sampler: SdCppEngine.Sampler = SdCppEngine.Sampler.EULER_A,
-        val scheduler: SdCppEngine.Scheduler = SdCppEngine.Scheduler.DISCRETE,
-        val loras: List<SdCppEngine.Lora> = emptyList(),
+        val sampler: HearthEngine.Sampler = HearthEngine.Sampler.EULER_A,
+        val scheduler: HearthEngine.Scheduler = HearthEngine.Scheduler.DISCRETE,
+        val loras: List<HearthEngine.Lora> = emptyList(),
     )
 
     class Result(val bitmap: Bitmap, val seed: Long)
@@ -87,7 +87,7 @@ object DrawCore {
     fun requestCancel() {
         cancelFlag = true
         val h = handle
-        if (h != 0L) runCatching { SdCppEngine.nativeCancel(h) }
+        if (h != 0L) runCatching { HearthEngine.nativeCancel(h) }
     }
 
     /**
@@ -107,8 +107,8 @@ object DrawCore {
         width: Int? = null,
         height: Int? = null,
         negative: String? = null,
-        sampler: SdCppEngine.Sampler? = null,
-        scheduler: SdCppEngine.Scheduler? = null,
+        sampler: HearthEngine.Sampler? = null,
+        scheduler: HearthEngine.Scheduler? = null,
         onStep: ((Int, Int) -> Unit)? = null,
     ): List<Result> {
         if (!lock.tryLock()) throw IllegalStateException("绘图引擎正忙")
@@ -131,7 +131,7 @@ object DrawCore {
                 // 给了 seed 就让第 i 张 = seed+i，保证 n>1 时不是同一张图
                 val useSeed = if (seed < 0) System.currentTimeMillis() % 1_000_000_000L else seed + i
                 val bmp = withContext(Dispatchers.IO) {
-                    SdCppEngine.render(
+                    HearthEngine.render(
                         handle = h,
                         prompt = prompt,
                         negative = negative ?: p.negative,

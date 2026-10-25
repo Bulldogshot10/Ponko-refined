@@ -72,7 +72,7 @@
     <string name="s_071">复制</string>
     <string name="s_072">复制失败</string>
     <string name="s_074">对话</string>
-    <string name="s_075">对话与绘图共用。绘图在设备支持 Vulkan 时走 GPU，不支持会自动回退 CPU；打标走 NNAPI；GGUF 对话始终用 CPU。</string>
+    <string name="s_075">对话/打标后端选择。Hearth 绘图固定走 Vulkan；打标走 NNAPI；GGUF 对话使用 CPU。</string>
     <string name="s_076">对话模型</string>
     <string name="s_077">对话模型加载完成。绘图模型也已加载时，直接说「画一张…」就会调它出图；否则请到「绘图」页。</string>
     <string name="s_078">对话模型已加载（llama.cpp · CPU · KV 复用）</string>
@@ -471,6 +471,9 @@
     <string name="draw_taesd_need_model">请先导入或选择绘图模型，再添加 TAESD 权重。</string>
     <string name="draw_taesd_reload_hint">卸载并重新加载绘图模型后，TAESD 设置才会生效。</string>
     <string name="draw_taesd_hint">请选择兼容 sd.cpp 的 TAESD .safetensors 或 .gguf 权重。madebyollin/taesd 的 diffusion_pytorch_model.safetensors 可用；键名为 decoder.layers.* 的 decoder-only 文件也可用。ComfyUI 的 taesd_decoder.pth 不能直接使用。TAESD 会替代标准 VAE 解码器，输出可能有所不同。</string>
+    <string name="draw_tokenizer_vocab">Tokenizer 词表（vocab.json）</string>
+    <string name="draw_tokenizer_merges">Tokenizer 合并表（merges.txt）</string>
+    <string name="draw_hearth_file_type">Hearth 绘图模型请按槽位导入 .safetensors 权重、vocab.json 或 merges.txt。</string>
     <string name="draw_cpu_threads">CPU 线程数</string>
     <string name="draw_cpu_threads_hint">下次加载绘图模型时生效。</string>
     <string name="draw_vae_conv_direct_enable">使用 VAE 直接 Conv2D（基准测试）</string>

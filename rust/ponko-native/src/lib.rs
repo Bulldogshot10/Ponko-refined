@@ -1,186 +1,56 @@
-//! Rust/UniFFI boundary for Ponko's Android drawing engine.
-//!
-//! Kotlin calls this module through generated UniFFI bindings. The C++ inference
-//! implementation remains stable-diffusion.cpp + GGML, reached through the
-//! explicit Ponko C ABI bridge. No Kotlin-facing JNI entry points are required.
+//! Ponko native inference engine: Hearth (Rust) + Burn/WGPU Vulkan.
+//! The diffusion path is fully Rust. No sd.cpp/GGML/C ABI loader is kept.
 
-use libloading::Library;
 use std::{
     collections::HashMap,
-    ffi::{CStr, CString, NulError},
-    os::raw::{c_char, c_void},
-    panic::{catch_unwind, AssertUnwindSafe},
-    ptr,
-    slice,
-    sync::{Arc, Mutex, RwLock},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+};
+
+use burn::{
+    backend::wgpu::{graphics::AutoGraphicsApi, init_setup, RuntimeOptions, WgpuDevice},
+    prelude::Backend as _,
+    tensor::{Device, Distribution, Tensor},
+};
+use hearth::{
+    clip::{
+        ClipTokenizer, OpenClipTextEncoder, Sd15ClipTextEncoder, Sd15Conditioning,
+        SdxlClipLTextEncoder, SdxlConditioning,
+    },
+    lora::LoraFile,
+    model_loader::SafeTensorsFile,
+    sampling::{
+        DpmPp2mSampler, DpmPpSdeSampler, EulerASampler, EulerSampler, NoiseSchedule,
+        SchedulerKind,
+    },
+    types::Backend,
+    unet::{Sd15Unet2D, SdxlUnet2D},
+    vae::{Sd15VaeDecoder, SdxlVaeDecoder},
 };
 
 uniffi::setup_scaffolding!();
 
-pub const FACADE_API_VERSION: u32 = 3;
+const FACADE_API_VERSION: i32 = 4;
+static RUNTIME_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
-type StepFn = unsafe extern "C" fn(*mut c_void, i32, i32);
-type PreviewFn = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *const u8, usize);
-
-#[repr(C)]
-struct CGenerationParams {
-    prompt: *const c_char,
-    negative_prompt: *const c_char,
-    lora_paths: *const *const c_char,
-    lora_scales: *const f32,
-    lora_count: usize,
-    width: i32,
-    height: i32,
-    steps: i32,
-    cfg: f32,
-    seed: i64,
-    sample_method: i32,
-    scheduler: i32,
-    eta: f32,
-    hires_enabled: i32,
-    hires_upscaler: i32,
-    hires_model_path: *const c_char,
-    hires_scale: f32,
-    hires_target_width: i32,
-    hires_target_height: i32,
-    hires_steps: i32,
-    hires_denoising_strength: f32,
-    hires_tile_size: i32,
-    clip_skip: i32,
-    init_image_rgb888: *const u8,
-    init_image_length: usize,
-    init_image_width: i32,
-    init_image_height: i32,
-    strength: f32,
-    adetailer_enabled: i32,
-    adetailer_detector_path: *const c_char,
-    adetailer_prompt: *const c_char,
-    adetailer_negative_prompt: *const c_char,
-    adetailer_extra_args: *const c_char,
+fn native_error(error: impl std::fmt::Display) -> PonkoError {
+    PonkoError::Native { details: error.to_string() }
 }
 
-type LastErrorFn = unsafe extern "C" fn() -> *const c_char;
-type CreateFn = unsafe extern "C" fn(
-    *const c_char, *const c_char, i32, i32, i32, i32, *const c_char, *const *const c_char, usize,
-) -> *mut c_void;
-type GenerateFn = unsafe extern "C" fn(
-    *mut c_void, *const CGenerationParams, Option<StepFn>, Option<PreviewFn>, *mut c_void,
-    *mut *mut u8, *mut usize, *mut i32, *mut i32,
-) -> i32;
-type CancelFn = unsafe extern "C" fn(*mut c_void) -> i32;
-type FreeHandleFn = unsafe extern "C" fn(*mut c_void);
-type FreeBufferFn = unsafe extern "C" fn(*mut c_void);
-type TextFn = unsafe extern "C" fn(*mut c_char, usize) -> usize;
-type ListDevicesFn = TextFn;
-type QuantizeFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, i32, i32) -> i32;
-type FuseLorasFn = unsafe extern "C" fn(
-    *const c_char, *const *const c_char, *const f32, usize, *const c_char, *const c_char, i32,
-) -> i32;
-type ResAdapterFn = unsafe extern "C" fn(
-    *const c_char, *const c_char, *const c_char, *const c_char, *const c_char, i32,
-) -> i32;
-
-struct NativeApi {
-    // Keep the shared library loaded for as long as any function pointer/context is alive.
-    _library: Library,
-    last_error: LastErrorFn,
-    create: CreateFn,
-    generate: GenerateFn,
-    cancel: CancelFn,
-    free_handle: FreeHandleFn,
-    free_buffer: FreeBufferFn,
-    info: TextFn,
-    vulkan_diagnostics: TextFn,
-    last_params: TextFn,
-    list_devices: ListDevicesFn,
-    quantize_unet: QuantizeFn,
-    fuse_loras: FuseLorasFn,
-    apply_resadapter: ResAdapterFn,
-}
-
-impl NativeApi {
-    fn load() -> Result<Self, PonkoError> {
-        let library_name = std::env::var("PONKO_NATIVE_BRIDGE_PATH")
-            .unwrap_or_else(|_| "libponko_sd.so".to_owned());
-        // SAFETY: The library is the in-app native bridge, packaged by Gradle in this APK.
-        let library = unsafe { Library::new(&library_name) }.map_err(|error| PonkoError::Native {
-            details: format!("could not load {library_name}: {error}"),
-        })?;
-        unsafe fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, PonkoError> {
-            // SAFETY: Each symbol name and function type matches ponko_sd_c_api.h.
-            unsafe { library.get::<T>(name) }
-                .map(|symbol| *symbol)
-                .map_err(|error| PonkoError::Native {
-                    details: format!("native bridge symbol {} is unavailable: {error}",
-                        String::from_utf8_lossy(&name[..name.len().saturating_sub(1)])),
-                })
-        }
-        // SAFETY: All function signatures correspond to the exported C ABI header.
-        let api = unsafe {
-            Self {
-                last_error: symbol(&library, b"ponko_sd_last_error\0")?,
-                create: symbol(&library, b"ponko_sd_create\0")?,
-                generate: symbol(&library, b"ponko_sd_generate\0")?,
-                cancel: symbol(&library, b"ponko_sd_cancel\0")?,
-                free_handle: symbol(&library, b"ponko_sd_free\0")?,
-                free_buffer: symbol(&library, b"ponko_sd_free_buffer\0")?,
-                info: symbol(&library, b"ponko_sd_info\0")?,
-                vulkan_diagnostics: symbol(&library, b"ponko_sd_vulkan_diagnostics\0")?,
-                last_params: symbol(&library, b"ponko_sd_last_params\0")?,
-                list_devices: symbol(&library, b"ponko_sd_list_devices\0")?,
-                quantize_unet: symbol(&library, b"ponko_sd_quantize_unet\0")?,
-                fuse_loras: symbol(&library, b"ponko_sd_fuse_loras\0")?,
-                apply_resadapter: symbol(&library, b"ponko_sd_apply_resadapter\0")?,
-                _library: library,
-            }
-        };
-        Ok(api)
-    }
-
-    fn last_error_message(&self) -> String {
-        // SAFETY: The bridge returns a thread-local, NUL-terminated string valid on this thread.
-        unsafe {
-            let pointer = (self.last_error)();
-            if pointer.is_null() {
-                "native bridge returned no error detail".to_owned()
-            } else {
-                CStr::from_ptr(pointer).to_string_lossy().into_owned()
-            }
-        }
-    }
-
-    fn text(&self, function: TextFn) -> Result<String, PonkoError> {
-        // First call asks for the number of bytes excluding the NUL terminator.
-        let length = unsafe { function(ptr::null_mut(), 0) };
-        let capacity = length.checked_add(1).ok_or_else(|| PonkoError::Native {
-            details: "native text result length overflowed".to_owned(),
-        })?;
-        let mut bytes = vec![0u8; capacity];
-        let written = unsafe { function(bytes.as_mut_ptr().cast::<c_char>(), bytes.len()) };
-        if written > length {
-            return Err(PonkoError::Native {
-                details: "native text result changed size while being copied".to_owned(),
-            });
-        }
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
-        Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
-    }
-
-    fn cstring(value: &str, field: &str) -> Result<CString, PonkoError> {
-        CString::new(value).map_err(|error: NulError| PonkoError::InvalidArgument {
-            details: format!("{field} contains an embedded NUL byte: {error}"),
+fn init_runtime() -> Result<(), PonkoError> {
+    let result = RUNTIME_INIT.get_or_init(|| {
+        std::panic::catch_unwind(|| {
+            init_setup::<AutoGraphicsApi>(
+                &WgpuDevice::DefaultDevice,
+                RuntimeOptions { tasks_max: 512, ..Default::default() },
+            );
         })
-    }
-
-    fn check_native(&self, success: i32, operation: &str) -> Result<(), PonkoError> {
-        if success != 0 {
-            Ok(())
-        } else {
-            Err(PonkoError::Native {
-                details: format!("{operation}: {}", self.last_error_message()),
-            })
-        }
-    }
+        .map_err(|_| "Hearth could not initialise Burn/WGPU Vulkan. Check Android Vulkan driver support.".to_owned())
+    });
+    result.clone().map_err(|details| PonkoError::Native { details })
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -202,13 +72,15 @@ pub struct BuildProfile {
     pub native_engine: String,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Record, Default)]
 pub struct ModelSlots {
     pub model: Option<String>,
     pub diffusion: Option<String>,
     pub high_noise: Option<String>,
     pub uncond: Option<String>,
+    /// Hearth convention in Ponko: CLIP-L slot holds tokenizer vocab.json.
     pub clip_l: Option<String>,
+    /// Hearth convention in Ponko: CLIP-G slot holds tokenizer merges.txt.
     pub clip_g: Option<String>,
     pub clip_vision: Option<String>,
     pub t5xxl: Option<String>,
@@ -222,18 +94,10 @@ pub struct ModelSlots {
 impl ModelSlots {
     fn ordered(&self) -> [Option<&str>; 13] {
         [
-            self.model.as_deref(),
-            self.diffusion.as_deref(),
-            self.high_noise.as_deref(),
-            self.uncond.as_deref(),
-            self.clip_l.as_deref(),
-            self.clip_g.as_deref(),
-            self.clip_vision.as_deref(),
-            self.t5xxl.as_deref(),
-            self.llm.as_deref(),
-            self.llm_vision.as_deref(),
-            self.vae.as_deref(),
-            self.audio_vae.as_deref(),
+            self.model.as_deref(), self.diffusion.as_deref(), self.high_noise.as_deref(),
+            self.uncond.as_deref(), self.clip_l.as_deref(), self.clip_g.as_deref(),
+            self.clip_vision.as_deref(), self.t5xxl.as_deref(), self.llm.as_deref(),
+            self.llm_vision.as_deref(), self.vae.as_deref(), self.audio_vae.as_deref(),
             self.taesd.as_deref(),
         ]
     }
@@ -244,12 +108,12 @@ pub struct ModelLoadRequest {
     pub model_path: String,
     pub vae_path: Option<String>,
     pub n_threads: i32,
-    /// -1 preserves the checkpoint's original type.
     pub wtype: i32,
     pub flash_attn: bool,
     pub vae_conv_direct: bool,
     pub backend: Option<String>,
     pub slots: Option<ModelSlots>,
+    pub family: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -265,7 +129,6 @@ pub struct GenerationRequest {
     pub seed: i64,
     pub sample_method: i32,
     pub scheduler: i32,
-    /// Negative values select the sampler's automatic ETA, matching the old JNI contract.
     pub eta: f32,
     pub hires_enabled: bool,
     pub hires_upscaler: i32,
@@ -292,7 +155,6 @@ pub struct GenerationRequest {
 pub struct GeneratedImage {
     pub width: i32,
     pub height: i32,
-    /// Output is row-major RGB888, three bytes per pixel.
     pub rgb888: Vec<u8>,
 }
 
@@ -327,7 +189,6 @@ pub struct LoraFusionRequest {
     pub lora_paths: Vec<String>,
     pub lora_scales: Vec<f32>,
     pub output_path: String,
-    /// "f16", "q4_0", "q5_0", or "q8_0" (quantizes UNet tensors only).
     pub quant_type: String,
     pub n_threads: i32,
 }
@@ -342,48 +203,22 @@ pub trait PreviewCallback: Send + Sync {
     fn on_preview(&self, step: i32, width: i32, height: i32, rgb888: Vec<u8>);
 }
 
-struct CallbackState {
-    step: Option<Arc<dyn StepCallback>>,
-    preview: Option<Arc<dyn PreviewCallback>>,
-}
-
-unsafe extern "C" fn step_trampoline(user_data: *mut c_void, step: i32, steps: i32) {
-    if user_data.is_null() { return; }
-    let state = unsafe { &*(user_data.cast::<CallbackState>()) };
-    if let Some(callback) = &state.step {
-        let _ = catch_unwind(AssertUnwindSafe(|| callback.on_step(step.max(0), steps.max(0))));
-    }
-}
-
-unsafe extern "C" fn preview_trampoline(
-    user_data: *mut c_void,
-    step: i32,
-    width: i32,
-    height: i32,
-    rgb: *const u8,
-    length: usize,
-) {
-    if user_data.is_null() || rgb.is_null() || width <= 0 || height <= 0 { return; }
-    let state = unsafe { &*(user_data.cast::<CallbackState>()) };
-    if let Some(callback) = &state.preview {
-        // The C++ callback owns this preview buffer only for the duration of this call.
-        let bytes = unsafe { slice::from_raw_parts(rgb, length) }.to_vec();
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            callback.on_preview(step.max(0), width, height, bytes)
-        }));
-    }
-}
-
-struct NativeHandle {
-    // Read locks allow generation and cancellation together. Free obtains a write lock,
-    // so a native context can't be destroyed while any call is using its pointer.
-    state: RwLock<usize>,
+#[derive(Clone)]
+struct HearthContext {
+    family: String,
+    model_path: PathBuf,
+    vae_path: Option<PathBuf>,
+    vocab_path: PathBuf,
+    merges_path: PathBuf,
 }
 
 #[derive(uniffi::Object)]
 pub struct NativeEngine {
-    api: Arc<NativeApi>,
-    handles: Mutex<HashMap<i64, Arc<NativeHandle>>>,
+    next_id: AtomicI64,
+    handles: Mutex<HashMap<i64, HearthContext>>,
+    cancel_flags: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    generation_lock: Mutex<()>,
+    last_params: Mutex<String>,
 }
 
 #[uniffi::export]
@@ -391,8 +226,11 @@ impl NativeEngine {
     #[uniffi::constructor]
     pub fn new() -> Result<Arc<Self>, PonkoError> {
         Ok(Arc::new(Self {
-            api: Arc::new(NativeApi::load()?),
+            next_id: AtomicI64::new(1),
             handles: Mutex::new(HashMap::new()),
+            cancel_flags: Mutex::new(HashMap::new()),
+            generation_lock: Mutex::new(()),
+            last_params: Mutex::new("Hearth not yet loaded".to_owned()),
         }))
     }
 
@@ -401,166 +239,101 @@ impl NativeEngine {
         if !report.valid {
             return Err(PonkoError::InvalidArgument { details: report.message });
         }
-        let model = NativeApi::cstring(&request.model_path, "model_path")?;
-        let vae = request.vae_path.as_deref()
-            .map(|value| NativeApi::cstring(value, "vae_path"))
-            .transpose()?;
-        let backend = request.backend.as_deref()
-            .map(|value| NativeApi::cstring(value, "backend"))
-            .transpose()?;
+        init_runtime()?;
 
-        let slot_values = request.slots.as_ref().map(ModelSlots::ordered);
-        let slot_storage: Vec<Option<CString>> = if let Some(values) = slot_values.as_ref() {
-            values.iter().map(|value| match value {
-                Some(text) => NativeApi::cstring(text, "model slot").map(Some),
-                None => Ok(None),
-            }).collect::<Result<Vec<_>, PonkoError>>()?
-        } else {
-            vec![None; 13]
-        };
-        let slot_pointers: Vec<*const c_char> = slot_storage.iter()
-            .map(|item| item.as_ref().map_or(ptr::null(), |value| value.as_ptr()))
-            .collect();
-        let slots_ptr = if request.slots.is_some() { slot_pointers.as_ptr() } else { ptr::null() };
-        let slot_count = if request.slots.is_some() { slot_pointers.len() } else { 0 };
+        let slots = request.slots.as_ref();
+        let vocab = slots.and_then(|s| s.clip_l.as_deref()).unwrap_or_default();
+        let merges = slots.and_then(|s| s.clip_g.as_deref()).unwrap_or_default();
+        let model_path = PathBuf::from(&request.model_path);
+        let vae_path = request.vae_path.as_ref()
+            .or_else(|| slots.and_then(|s| s.vae.as_ref()))
+            .map(PathBuf::from);
 
-        let pointer = unsafe {
-            (self.api.create)(
-                model.as_ptr(),
-                vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                request.n_threads,
-                request.wtype,
-                request.flash_attn as i32,
-                request.vae_conv_direct as i32,
-                backend.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                slots_ptr,
-                slot_count,
-            )
+        if !model_path.is_file() {
+            return Err(PonkoError::InvalidArgument { details: format!("Checkpoint not found: {}", model_path.display()) });
+        }
+        if model_path.extension().and_then(|v| v.to_str()).is_none_or(|v| !v.eq_ignore_ascii_case("safetensors")) {
+            return Err(PonkoError::InvalidArgument { details: "Hearth expects a SafeTensors checkpoint (.safetensors), not GGUF/CKPT.".to_owned() });
+        }
+        if vocab.trim().is_empty() || !Path::new(vocab).is_file() {
+            return Err(PonkoError::InvalidArgument { details: "Choose tokenizer vocab.json in the Tokenizer vocab slot.".to_owned() });
+        }
+        if merges.trim().is_empty() || !Path::new(merges).is_file() {
+            return Err(PonkoError::InvalidArgument { details: "Choose tokenizer merges.txt in the Tokenizer merges slot.".to_owned() });
+        }
+        if request.family == "sdxl" && vae_path.is_none() {
+            return Err(PonkoError::InvalidArgument { details: "SDXL requires the FP16-safe VAE checkpoint in the VAE slot.".to_owned() });
+        }
+        if let Some(ref path) = vae_path {
+            if !path.is_file() || path.extension().and_then(|v| v.to_str()).is_none_or(|v| !v.eq_ignore_ascii_case("safetensors")) {
+                return Err(PonkoError::InvalidArgument { details: format!("VAE must be an existing .safetensors file: {}", path.display()) });
+            }
+        }
+
+        let context = HearthContext {
+            family: request.family.to_ascii_lowercase(),
+            model_path,
+            vae_path,
+            vocab_path: PathBuf::from(vocab),
+            merges_path: PathBuf::from(merges),
         };
-        if pointer.is_null() {
-            return Err(PonkoError::Native {
-                details: format!("model context creation failed: {}", self.api.last_error_message()),
-            });
-        }
-        let id = pointer as usize as i64;
-        let handle = Arc::new(NativeHandle { state: RwLock::new(pointer as usize) });
-        let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
-            details: "native handle registry lock poisoned".to_owned(),
-        })?;
-        if handles.insert(id, handle).is_some() {
-            unsafe { (self.api.free_handle)(pointer) };
-            return Err(PonkoError::Native { details: "native handle identifier collision".to_owned() });
-        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.handles.lock().map_err(|_| native_error("Hearth handle registry lock poisoned"))?
+            .insert(id, context);
+        self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
+            .insert(id, Arc::new(AtomicBool::new(false)));
+        *self.last_params.lock().map_err(|_| native_error("Hearth status lock poisoned"))? =
+            format!("Hearth context {id}: family={}, checkpoint={}", request.family, request.model_path);
         Ok(id)
     }
 
     pub fn cancel(&self, handle_id: i64) -> Result<(), PonkoError> {
-        let handle = self.lookup_handle(handle_id)?;
-        let pointer = handle.state.read().map_err(|_| PonkoError::Native {
-            details: "native handle state lock poisoned".to_owned(),
-        })?;
-        if *pointer == 0 {
-            return Err(PonkoError::InvalidHandle { details: "model handle has already been freed".to_owned() });
-        }
-        let success = unsafe { (self.api.cancel)(*pointer as *mut c_void) };
-        self.api.check_native(success, "cancel generation")
+        let flag = self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
+            .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
+                details: format!("unknown or unloaded Hearth handle {handle_id}"),
+            })?;
+        flag.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn free_context(&self, handle_id: i64) -> Result<(), PonkoError> {
-        let handle = {
-            let mut handles = self.handles.lock().map_err(|_| PonkoError::Native {
-                details: "native handle registry lock poisoned".to_owned(),
-            })?;
-            handles.remove(&handle_id).ok_or_else(|| PonkoError::InvalidHandle {
-                details: "unknown or already freed model handle".to_owned(),
-            })?
-        };
-        let mut pointer = handle.state.write().map_err(|_| PonkoError::Native {
-            details: "native handle state lock poisoned".to_owned(),
-        })?;
-        if *pointer != 0 {
-            unsafe { (self.api.free_handle)(*pointer as *mut c_void) };
-            *pointer = 0;
+        let removed = self.handles.lock().map_err(|_| native_error("Hearth handle registry lock poisoned"))?
+            .remove(&handle_id);
+        if removed.is_none() {
+            return Err(PonkoError::InvalidHandle { details: format!("unknown or already freed Hearth handle {handle_id}") });
         }
+        self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
+            .remove(&handle_id);
         Ok(())
     }
 
     pub fn info(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.info)
+        Ok("Hearth Rust inference · Burn · WGPU Vulkan · SD 1.5 / SDXL".to_owned())
     }
 
     pub fn vulkan_diagnostics(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.vulkan_diagnostics)
+        Ok("Burn/WGPU compiled with Vulkan backend. Adapter selection is performed by wgpu at runtime; Android/Xclipse adapter details are reported by the platform driver.".to_owned())
     }
 
     pub fn last_params(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.last_params)
+        Ok(self.last_params.lock().map_err(|_| native_error("Hearth status lock poisoned"))?.clone())
     }
 
     pub fn list_devices(&self) -> Result<String, PonkoError> {
-        self.api.text(self.api.list_devices)
+        Ok("Vulkan\tHearth / Burn-WGPU Vulkan adapter (runtime-selected)".to_owned())
     }
 
-    pub fn quantize_unet(&self, request: QuantizeUnetRequest) -> Result<(), PonkoError> {
-        let report = validate_unet_quantization_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { details: report.message }); }
-        let input = NativeApi::cstring(&request.input_path, "input_path")?;
-        let output = NativeApi::cstring(&request.output_path, "output_path")?;
-        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
-        let result = unsafe {
-            (self.api.quantize_unet)(
-                input.as_ptr(), output.as_ptr(), kind.as_ptr(), request.diffusion_slot as i32,
-                request.n_threads,
-            )
-        };
-        self.api.check_native(result, "UNet quantization")
+    pub fn quantize_unet(&self, _request: QuantizeUnetRequest) -> Result<(), PonkoError> {
+        Err(native_error("UNet quantization is not implemented in Hearth; import a supported SafeTensors checkpoint."))
     }
 
-    pub fn fuse_loras(&self, request: LoraFusionRequest) -> Result<(), PonkoError> {
-        let report = validate_lora_fusion_request(request.clone());
-        if !report.valid {
-            return Err(PonkoError::InvalidArgument { details: report.message });
-        }
-        let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
-        let output = NativeApi::cstring(&request.output_path, "output_path")?;
-        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
-        let lora_paths = request.lora_paths.iter()
-            .map(|path| NativeApi::cstring(path, "lora_path"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let lora_pointers: Vec<*const c_char> = lora_paths.iter().map(|path| path.as_ptr()).collect();
-        let result = unsafe {
-            (self.api.fuse_loras)(
-                input.as_ptr(),
-                lora_pointers.as_ptr(),
-                request.lora_scales.as_ptr(),
-                lora_pointers.len(),
-                output.as_ptr(),
-                kind.as_ptr(),
-                request.n_threads,
-            )
-        };
-        self.api.check_native(result, "LoRA fusion")
+    pub fn fuse_loras(&self, _request: LoraFusionRequest) -> Result<(), PonkoError> {
+        Err(native_error("LoRA fusion/export is not implemented in Hearth; adapters are applied at inference time."))
     }
 
-    pub fn apply_resadapter(&self, request: ResAdapterRequest) -> Result<(), PonkoError> {
-        let report = validate_res_adapter_request(request.clone());
-        if !report.valid { return Err(PonkoError::InvalidArgument { details: report.message }); }
-        let input = NativeApi::cstring(&request.input_model_path, "input_model_path")?;
-        let vae = request.vae_path.as_deref().map(|value| NativeApi::cstring(value, "vae_path")).transpose()?;
-        let normalization = NativeApi::cstring(&request.normalization_path, "normalization_path")?;
-        let output = NativeApi::cstring(&request.output_path, "output_path")?;
-        let kind = NativeApi::cstring(&request.quant_type, "quant_type")?;
-        let result = unsafe {
-            (self.api.apply_resadapter)(
-                input.as_ptr(),
-                vae.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                normalization.as_ptr(), output.as_ptr(), kind.as_ptr(),
-                request.n_threads,
-            )
-        };
-        self.api.check_native(result, "ResAdapter")
+    pub fn apply_resadapter(&self, _request: ResAdapterRequest) -> Result<(), PonkoError> {
+        Err(native_error("ResAdapter checkpoint conversion is not implemented in Hearth."))
     }
-
 }
 
 impl NativeEngine {
@@ -575,126 +348,27 @@ impl NativeEngine {
         if !report.valid {
             return Err(PonkoError::InvalidArgument { details: report.message });
         }
-        let handle = self.lookup_handle(handle_id)?;
-        let pointer_guard = handle.state.read().map_err(|_| PonkoError::Native {
-            details: "native handle state lock poisoned".to_owned(),
-        })?;
-        if *pointer_guard == 0 {
-            return Err(PonkoError::InvalidHandle { details: "model handle has already been freed".to_owned() });
-        }
+        let context = self.handles.lock().map_err(|_| native_error("Hearth handle registry lock poisoned"))?
+            .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
+                details: format!("unknown or unloaded Hearth handle {handle_id}"),
+            })?;
+        let cancel = self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
+            .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
+                details: format!("unknown or unloaded Hearth handle {handle_id}"),
+            })?;
 
-        let prompt = NativeApi::cstring(&request.prompt, "prompt")?;
-        let negative = NativeApi::cstring(&request.negative_prompt, "negative_prompt")?;
-        let hires_path = request.hires_model_path.as_deref()
-            .map(|value| NativeApi::cstring(value, "hires_model_path"))
-            .transpose()?;
-        let adetailer_detector_path = request.adetailer_detector_path.as_deref()
-            .filter(|path| !path.trim().is_empty())
-            .map(|value| NativeApi::cstring(value, "adetailer_detector_path"))
-            .transpose()?;
-        let adetailer_prompt = NativeApi::cstring(&request.adetailer_prompt, "adetailer_prompt")?;
-        let adetailer_negative_prompt = NativeApi::cstring(
-            &request.adetailer_negative_prompt, "adetailer_negative_prompt")?;
-        let adetailer_extra_args = NativeApi::cstring(&request.adetailer_extra_args, "adetailer_extra_args")?;
-        let lora_paths = request.lora_paths.iter()
-            .map(|path| NativeApi::cstring(path, "lora_path"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let lora_pointers: Vec<*const c_char> = lora_paths.iter().map(|path| path.as_ptr()).collect();
-        let image = request.init_image_rgb888.as_deref();
-        let params = CGenerationParams {
-            prompt: prompt.as_ptr(),
-            negative_prompt: negative.as_ptr(),
-            lora_paths: if lora_pointers.is_empty() { ptr::null() } else { lora_pointers.as_ptr() },
-            lora_scales: if request.lora_scales.is_empty() { ptr::null() } else { request.lora_scales.as_ptr() },
-            lora_count: request.lora_paths.len().min(request.lora_scales.len()),
-            width: request.width,
-            height: request.height,
-            steps: request.steps,
-            cfg: request.cfg,
-            seed: request.seed,
-            sample_method: request.sample_method,
-            scheduler: request.scheduler,
-            eta: request.eta,
-            hires_enabled: i32::from(request.hires_enabled),
-            hires_upscaler: request.hires_upscaler,
-            hires_model_path: hires_path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-            hires_scale: request.hires_scale,
-            hires_target_width: request.hires_target_width,
-            hires_target_height: request.hires_target_height,
-            hires_steps: request.hires_steps,
-            hires_denoising_strength: request.hires_denoising_strength,
-            hires_tile_size: request.hires_tile_size,
-            clip_skip: request.clip_skip,
-            init_image_rgb888: image.map_or(ptr::null(), |bytes| bytes.as_ptr()),
-            init_image_length: image.map_or(0, |bytes| bytes.len()),
-            init_image_width: request.init_image_width,
-            init_image_height: request.init_image_height,
-            strength: request.strength,
-            adetailer_enabled: i32::from(request.adetailer_enabled),
-            adetailer_detector_path: adetailer_detector_path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-            adetailer_prompt: adetailer_prompt.as_ptr(),
-            adetailer_negative_prompt: adetailer_negative_prompt.as_ptr(),
-            adetailer_extra_args: adetailer_extra_args.as_ptr(),
-        };
-        let mut callbacks = CallbackState { step: step_callback, preview: preview_callback };
-        let callbacks_ptr = (&mut callbacks as *mut CallbackState).cast::<c_void>();
-        let mut output: *mut u8 = ptr::null_mut();
-        let mut output_length = 0usize;
-        let mut width = 0i32;
-        let mut height = 0i32;
-        let success = unsafe {
-            (self.api.generate)(
-                (*pointer_guard) as *mut c_void,
-                &params,
-                if callbacks.step.is_some() { Some(step_trampoline) } else { None },
-                if callbacks.preview.is_some() { Some(preview_trampoline) } else { None },
-                callbacks_ptr,
-                &mut output,
-                &mut output_length,
-                &mut width,
-                &mut height,
-            )
-        };
-        self.api.check_native(success, "image generation")?;
-        if output.is_null() || width <= 0 || height <= 0 {
-            if !output.is_null() { unsafe { (self.api.free_buffer)(output.cast::<c_void>()) }; }
-            return Err(PonkoError::Native { details: "generation returned an empty image".to_owned() });
-        }
-        let expected = (width as usize).checked_mul(height as usize).and_then(|pixels| pixels.checked_mul(3));
-        if expected != Some(output_length) {
-            unsafe { (self.api.free_buffer)(output.cast::<c_void>()) };
-            return Err(PonkoError::Native {
-                details: "native RGB888 output length does not match the reported dimensions".to_owned(),
-            });
-        }
-        let rgb888 = unsafe { slice::from_raw_parts(output, output_length) }.to_vec();
-        unsafe { (self.api.free_buffer)(output.cast::<c_void>()) };
-        Ok(GeneratedImage { width, height, rgb888 })
-    }
+        let _generation = self.generation_lock.lock().map_err(|_| native_error("Hearth generation lock poisoned"))?;
+        cancel.store(false, Ordering::Relaxed);
+        *self.last_params.lock().map_err(|_| native_error("Hearth status lock poisoned"))? = format!(
+            "Hearth generate: family={}, {}x{}, steps={}, cfg={}, sampler={}, scheduler={}, LoRAs={}",
+            context.family, request.width, request.height, request.steps, request.cfg,
+            request.sample_method, request.scheduler, request.lora_paths.len()
+        );
 
-
-    fn lookup_handle(&self, handle_id: i64) -> Result<Arc<NativeHandle>, PonkoError> {
-        self.handles.lock().map_err(|_| PonkoError::Native {
-            details: "native handle registry lock poisoned".to_owned(),
-        })?.get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
-            details: format!("unknown or already freed model handle {handle_id}"),
-        })
-    }
-}
-
-impl Drop for NativeEngine {
-    fn drop(&mut self) {
-        let handles = match self.handles.get_mut() {
-            Ok(handles) => std::mem::take(handles),
-            Err(_) => return,
-        };
-        for (_, handle) in handles {
-            if let Ok(mut pointer) = handle.state.write() {
-                if *pointer != 0 {
-                    unsafe { (self.api.free_handle)(*pointer as *mut c_void) };
-                    *pointer = 0;
-                }
-            }
+        match context.family.as_str() {
+            "sd15" => render_sd15(&context, &request, step_callback.as_ref(), preview_callback.as_ref(), &cancel),
+            "sdxl" => render_sdxl(&context, &request, step_callback.as_ref(), preview_callback.as_ref(), &cancel),
+            other => Err(PonkoError::InvalidArgument { details: format!("Hearth backend supports SD 1.5 and SDXL; unsupported family '{other}'.") }),
         }
     }
 }
@@ -710,32 +384,224 @@ pub fn generate_image(
     engine.generate_internal(handle_id, request, step_callback, preview_callback)
 }
 
-#[uniffi::export]
-pub fn engine_api_version() -> i32 {
-    FACADE_API_VERSION as i32
+fn render_sd15(
+    context: &HearthContext,
+    request: &GenerationRequest,
+    step_callback: Option<&Arc<dyn StepCallback>>,
+    preview_callback: Option<&Arc<dyn PreviewCallback>>,
+    cancel: &AtomicBool,
+) -> Result<GeneratedImage, PonkoError> {
+    init_runtime()?;
+    let device: Device<Backend> = Default::default();
+    let checkpoint = SafeTensorsFile::open(&context.model_path).map_err(native_error)?;
+    let tensors = checkpoint.tensors().map_err(native_error)?;
+    let tokenizer = ClipTokenizer::from_files(&context.vocab_path, &context.merges_path).map_err(native_error)?;
+
+    let lora_files = request.lora_paths.iter().map(|path| LoraFile::open(path).map_err(native_error))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut clip = Sd15ClipTextEncoder::load(&tensors, &device).map_err(native_error)?;
+    for (i, lora_file) in lora_files.iter().enumerate() {
+        let lora = lora_file.tensors().map_err(native_error)?;
+        let strength = request.lora_scales[i];
+        clip.apply_lora("text_model", "lora_te", &lora, strength, &device).map_err(native_error)?;
+    }
+    let positive_tokens = tokenizer.encode(&request.prompt, &device);
+    let negative_tokens = tokenizer.encode(&request.negative_prompt, &device);
+    let positive = Sd15Conditioning::new(clip.forward(positive_tokens));
+    let negative = Sd15Conditioning::new(clip.forward(negative_tokens));
+    drop(clip);
+
+    let mut unet = Sd15Unet2D::load(&tensors, &device).map_err(native_error)?;
+    for (i, lora_file) in lora_files.iter().enumerate() {
+        let lora = lora_file.tensors().map_err(native_error)?;
+        unet.apply_lora("lora_unet", &lora, request.lora_scales[i], &device).map_err(native_error)?;
+    }
+
+    let noise_schedule = NoiseSchedule::load(&tensors, &device).map_err(native_error)?;
+    let schedule = if request.scheduler == 1 {
+        SchedulerKind::Karras.schedule(&noise_schedule, request.steps as usize)
+    } else {
+        SchedulerKind::Normal.schedule(&noise_schedule, request.steps as usize)
+    };
+    Backend::seed(&device, request.seed as u64);
+    let sigma_max = schedule.sigmas[0];
+    let latent: Tensor<Backend, 4> = Tensor::random(
+        [1, 4, (request.height / 8) as usize, (request.width / 8) as usize],
+        Distribution::Normal(0.0, sigma_max as f64), &device,
+    );
+    let progress = |step: usize, total: usize| -> bool {
+        if let Some(callback) = step_callback {
+            callback.on_step(step.min(i32::MAX as usize) as i32, total.min(i32::MAX as usize) as i32);
+        }
+        !cancel.load(Ordering::Relaxed)
+    };
+    let denoised = match request.sample_method {
+        0 => EulerSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        1 => EulerASampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        5 | 6 => DpmPp2mSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        18 | 21 => DpmPpSdeSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        _ => return Err(PonkoError::InvalidArgument { details: "Hearth supports Euler, Euler a, DPM++ 2M and DPM++ SDE samplers.".to_owned() }),
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err(native_error("Generation cancelled."));
+    }
+    drop(unet);
+    drop(positive);
+    drop(negative);
+    let _ = Backend::sync(&device);
+    Backend::memory_cleanup(&device);
+
+    let decoded = if let Some(vae_path) = context.vae_path.as_ref() {
+        let vae_file = SafeTensorsFile::open(vae_path).map_err(native_error)?;
+        let vae_tensors = vae_file.tensors().map_err(native_error)?;
+        let vae = Sd15VaeDecoder::load(&vae_tensors, None, &device).map_err(native_error)?;
+        vae.forward(denoised)
+    } else {
+        let vae = Sd15VaeDecoder::load(&tensors, Some("first_stage_model"), &device).map_err(native_error)?;
+        vae.forward(denoised)
+    };
+    tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback)
 }
+
+fn render_sdxl(
+    context: &HearthContext,
+    request: &GenerationRequest,
+    step_callback: Option<&Arc<dyn StepCallback>>,
+    preview_callback: Option<&Arc<dyn PreviewCallback>>,
+    cancel: &AtomicBool,
+) -> Result<GeneratedImage, PonkoError> {
+    init_runtime()?;
+    let device: Device<Backend> = Default::default();
+    let checkpoint = SafeTensorsFile::open(&context.model_path).map_err(native_error)?;
+    let tensors = checkpoint.tensors().map_err(native_error)?;
+    let tokenizer = ClipTokenizer::from_files(&context.vocab_path, &context.merges_path).map_err(native_error)?;
+    let lora_files = request.lora_paths.iter().map(|path| LoraFile::open(path).map_err(native_error))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut clip_l = SdxlClipLTextEncoder::load_with_prefix(&tensors, hearth::model_loader::prefix::SDXL_CLIP_L, &device).map_err(native_error)?;
+    let mut clip_g = OpenClipTextEncoder::load(&tensors, hearth::model_loader::prefix::SDXL_CLIP_G, &device).map_err(native_error)?;
+    for (i, lora_file) in lora_files.iter().enumerate() {
+        let lora = lora_file.tensors().map_err(native_error)?;
+        let strength = request.lora_scales[i];
+        clip_l.apply_lora("text_model", "lora_te", &lora, strength, &device).map_err(native_error)?;
+        clip_g.apply_lora("lora_te2", &lora, strength, &device).map_err(native_error)?;
+    }
+
+    let pos_l = tokenizer.encode(&request.prompt, &device);
+    let neg_l = tokenizer.encode(&request.negative_prompt, &device);
+    let pos_g = tokenizer.encode_open_clip(&request.prompt, &device);
+    let neg_g = tokenizer.encode_open_clip(&request.negative_prompt, &device);
+    let pos_l_hidden = clip_l.forward_hidden_layer(pos_l, Some(10));
+    let neg_l_hidden = clip_l.forward_hidden_layer(neg_l, Some(10));
+    let (pos_g_hidden, pos_pooled) = clip_g.forward(pos_g);
+    let (neg_g_hidden, neg_pooled) = clip_g.forward(neg_g);
+    let h = request.height as f32;
+    let w = request.width as f32;
+    let positive = SdxlConditioning::new(pos_l_hidden, pos_g_hidden, pos_pooled, (h, w), (0.0, 0.0), (h, w), &device);
+    let negative = SdxlConditioning::new(neg_l_hidden, neg_g_hidden, neg_pooled, (h, w), (0.0, 0.0), (h, w), &device);
+    drop(clip_l);
+    drop(clip_g);
+
+    let mut unet = SdxlUnet2D::load(&tensors, &device).map_err(native_error)?;
+    for (i, lora_file) in lora_files.iter().enumerate() {
+        let lora = lora_file.tensors().map_err(native_error)?;
+        unet.apply_lora("lora_unet", &lora, request.lora_scales[i], &device).map_err(native_error)?;
+    }
+
+    let noise_schedule = NoiseSchedule::linear(1000, 0.00085, 0.012);
+    let schedule = if request.scheduler == 1 {
+        SchedulerKind::Karras.schedule(&noise_schedule, request.steps as usize)
+    } else {
+        SchedulerKind::Normal.schedule(&noise_schedule, request.steps as usize)
+    };
+    Backend::seed(&device, request.seed as u64);
+    let sigma_max = schedule.sigmas[0];
+    let latent: Tensor<Backend, 4> = Tensor::random(
+        [1, 4, (request.height / 8) as usize, (request.width / 8) as usize],
+        Distribution::Normal(0.0, sigma_max as f64), &device,
+    );
+    let progress = |step: usize, total: usize| -> bool {
+        if let Some(callback) = step_callback {
+            callback.on_step(step.min(i32::MAX as usize) as i32, total.min(i32::MAX as usize) as i32);
+        }
+        !cancel.load(Ordering::Relaxed)
+    };
+    let denoised = match request.sample_method {
+        0 => EulerSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        1 => EulerASampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        5 | 6 => DpmPp2mSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        18 | 21 => DpmPpSdeSampler::new(noise_schedule).sample_with_schedule(&unet, latent, &positive, &negative, &schedule, request.cfg, Some(&progress)),
+        _ => return Err(PonkoError::InvalidArgument { details: "Hearth supports Euler, Euler a, DPM++ 2M and DPM++ SDE samplers.".to_owned() }),
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err(native_error("Generation cancelled."));
+    }
+    drop(unet);
+    drop(positive);
+    drop(negative);
+    let _ = Backend::sync(&device);
+    Backend::memory_cleanup(&device);
+
+    let vae_path = context.vae_path.as_ref().ok_or_else(|| PonkoError::InvalidArgument {
+        details: "SDXL requires a separate FP16-safe VAE SafeTensors file.".to_owned(),
+    })?;
+    let vae_file = SafeTensorsFile::open(vae_path).map_err(native_error)?;
+    let vae_tensors = vae_file.tensors().map_err(native_error)?;
+    let vae = SdxlVaeDecoder::load(&vae_tensors, None, &device).map_err(native_error)?;
+    let decoded = vae.forward_tiled(denoised, 64, 8);
+    tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback)
+}
+
+fn tensor_to_rgb(
+    image: Tensor<Backend, 4>,
+    width: i32,
+    height: i32,
+    steps: i32,
+    step_callback: Option<&Arc<dyn StepCallback>>,
+    preview_callback: Option<&Arc<dyn PreviewCallback>>,
+) -> Result<GeneratedImage, PonkoError> {
+    let data: Vec<f32> = image.into_data().convert::<f32>().to_vec().map_err(native_error)?;
+    let pixels = (width as usize).checked_mul(height as usize)
+        .ok_or_else(|| native_error("Image dimensions overflowed"))?;
+    if data.len() != pixels * 3 {
+        return Err(native_error(format!("Hearth returned {} values for a {width}x{height} RGB image.", data.len())));
+    }
+    let mut rgb888 = vec![0u8; pixels * 3];
+    let to_byte = |v: f32| ((v.clamp(-1.0, 1.0) + 1.0) * 127.5).round() as u8;
+    // Burn tensor is NCHW. Convert each planar channel to row-major RGB888.
+    for i in 0..pixels {
+        rgb888[3 * i] = to_byte(data[i]);
+        rgb888[3 * i + 1] = to_byte(data[pixels + i]);
+        rgb888[3 * i + 2] = to_byte(data[2 * pixels + i]);
+    }
+    if let Some(callback) = step_callback {
+        callback.on_step(steps, steps);
+    }
+    if let Some(callback) = preview_callback {
+        callback.on_preview(steps, width, height, rgb888.clone());
+    }
+    Ok(GeneratedImage { width, height, rgb888 })
+}
+
+#[uniffi::export]
+pub fn engine_api_version() -> i32 { FACADE_API_VERSION }
 
 #[uniffi::export]
 pub fn build_profile() -> BuildProfile {
     BuildProfile {
-        api_version: FACADE_API_VERSION as i32,
+        api_version: FACADE_API_VERSION,
         abi: "arm64-v8a".to_owned(),
-        cpu_arch_flags: option_env!("PONKO_CPU_ARCH_FLAGS")
-            .unwrap_or("-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4")
-            .to_owned(),
-        vulkan_build_default: !matches!(
-            option_env!("PONKO_VULKAN_ENABLED"),
-            Some("OFF") | Some("off") | Some("FALSE") | Some("false") | Some("0")
-        ),
-        native_engine: "Rust/UniFFI -> Ponko C ABI -> stable-diffusion.cpp + GGML".to_owned(),
+        cpu_arch_flags: "Rust stable · ARM64 · WGPU Vulkan".to_owned(),
+        vulkan_build_default: true,
+        native_engine: "Ponko Rust/UniFFI -> Hearth -> Burn/WGPU Vulkan".to_owned(),
     }
 }
 
 #[uniffi::export]
 pub fn validate_model_slots(slots: ModelSlots) -> ValidationReport {
-    let has_path = slots.ordered().iter().flatten().any(|path| !path.trim().is_empty());
-    if has_path {
-        ValidationReport { valid: true, message: "At least one model slot is configured.".to_owned() }
+    if slots.ordered().iter().flatten().any(|path| !path.trim().is_empty()) {
+        valid("At least one model slot is configured.")
     } else {
         invalid("At least one model file path is required.")
     }
@@ -743,270 +609,104 @@ pub fn validate_model_slots(slots: ModelSlots) -> ValidationReport {
 
 #[uniffi::export]
 pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationReport {
-    let has_base_path = !request.model_path.trim().is_empty();
-    let has_slot_path = request.slots.as_ref().map(|slots| {
-        slots.model.as_deref().is_some_and(|path| !path.trim().is_empty())
-            || slots.diffusion.as_deref().is_some_and(|path| !path.trim().is_empty())
-    }).unwrap_or(false);
-    if has_base_path || has_slot_path {
-        ValidationReport { valid: true, message: "A base model path is configured.".to_owned() }
-    } else {
-        invalid("A base model or diffusion-model slot is required.")
+    if !["sd15", "sdxl"].contains(&request.family.to_ascii_lowercase().as_str()) {
+        return invalid("Hearth supports only SD 1.5 and SDXL checkpoints.");
     }
+    if request.model_path.trim().is_empty() {
+        return invalid("A SafeTensors checkpoint path is required.");
+    }
+    if Path::new(&request.model_path).extension().and_then(|v| v.to_str()).is_none_or(|v| !v.eq_ignore_ascii_case("safetensors")) {
+        return invalid("The diffusion checkpoint must be .safetensors.");
+    }
+    let slots = request.slots.as_ref();
+    if slots.and_then(|s| s.clip_l.as_deref()).is_none_or(|v| v.trim().is_empty()) {
+        return invalid("Tokenizer vocab.json path is required in the CLIP-L slot.");
+    }
+    if slots.and_then(|s| s.clip_g.as_deref()).is_none_or(|v| v.trim().is_empty()) {
+        return invalid("Tokenizer merges.txt path is required in the CLIP-G slot.");
+    }
+    if request.family.eq_ignore_ascii_case("sdxl") && request.vae_path.as_deref()
+        .or_else(|| slots.and_then(|s| s.vae.as_deref())).is_none_or(|v| v.trim().is_empty()) {
+        return invalid("SDXL requires a separate FP16-safe VAE .safetensors file.");
+    }
+    valid("Hearth checkpoint and tokenizer paths are configured.")
 }
 
 #[uniffi::export]
 pub fn validate_generation_request(request: GenerationRequest) -> ValidationReport {
-    if request.width <= 0 || request.height <= 0 {
-        return invalid("Width and height must be greater than zero.");
+    if request.width < 64 || request.height < 64 || request.width % 8 != 0 || request.height % 8 != 0 {
+        return invalid("Width and height must be >=64 and divisible by 8.");
     }
-    if !(1..=150).contains(&request.steps) {
-        return invalid("Steps must be in the supported range 1..=150.");
+    if !(1..=150).contains(&request.steps) { return invalid("Steps must be in 1..=150."); }
+    if !request.cfg.is_finite() || request.cfg < 0.0 { return invalid("CFG must be finite and >=0."); }
+    if request.lora_paths.len() != request.lora_scales.len() { return invalid("LoRA paths and scales must have equal lengths."); }
+    if request.lora_scales.iter().any(|v| !v.is_finite()) { return invalid("Every LoRA scale must be finite."); }
+    if ![0, 1, 5, 6, 18, 21].contains(&request.sample_method) {
+        return invalid("Hearth supports Euler, Euler a, DPM++ 2M, and DPM++ SDE samplers.");
     }
-    if !request.cfg.is_finite() || request.cfg < 0.0 {
-        return invalid("CFG must be finite and greater than or equal to zero.");
-    }
-    if !request.eta.is_finite() {
-        return invalid("ETA must be finite; negative values select automatic ETA.");
-    }
-    if !(0..22).contains(&request.sample_method) {
-        return invalid("Sampler code is not present in Ponko's current native sampler enum.");
-    }
-    if !(0..17).contains(&request.scheduler) {
-        return invalid("Scheduler code is not present in Ponko's current native scheduler enum.");
-    }
-    if !(0..10).contains(&request.hires_upscaler) {
-        return invalid("HiRes upscaler code is not present in Ponko's current native enum.");
-    }
-    if request.lora_paths.len() != request.lora_scales.len() {
-        return invalid("LoRA paths and scales must have the same number of entries.");
-    }
-    if request.lora_scales.iter().any(|scale| !scale.is_finite()) {
-        return invalid("Every LoRA scale must be finite.");
-    }
-    if request.adetailer_enabled && !request.adetailer_detector_path.as_deref()
-        .is_some_and(|path| !path.trim().is_empty()) {
-        return invalid("ADetailer requires a YOLOv8 detection .safetensors detector path.");
-    }
-    if !request.hires_scale.is_finite() || !request.hires_denoising_strength.is_finite()
-        || !request.strength.is_finite() {
-        return invalid("HiRes and img2img strength parameters must be finite.");
-    }
-    if let Some(rgb) = request.init_image_rgb888 {
-        if request.init_image_width <= 0 || request.init_image_height <= 0 {
-            return invalid("An img2img input requires non-zero image dimensions.");
-        }
-        let expected = (request.init_image_width as usize).checked_mul(request.init_image_height as usize)
-            .and_then(|pixels| pixels.checked_mul(3));
-        if expected != Some(rgb.len()) {
-            return invalid("The img2img buffer must contain exactly width * height * 3 RGB888 bytes.");
-        }
-    }
-    ValidationReport { valid: true, message: "Request fields are internally consistent.".to_owned() }
+    if ![0, 1].contains(&request.scheduler) { return invalid("Hearth supports Normal and Karras schedulers."); }
+    if request.hires_enabled { return invalid("HiRes Fix is not implemented in the Hearth backend yet."); }
+    if request.init_image_rgb888.is_some() { return invalid("Img2img is not implemented in the Ponko Hearth adapter yet."); }
+    if request.adetailer_enabled { return invalid("ADetailer is not implemented in the Hearth backend yet."); }
+    valid("Generation request is valid for Hearth.")
 }
 
 #[uniffi::export]
-pub fn validate_quantization_type(quant_type: String) -> ValidationReport {
-    match quant_type.as_str() {
-        "q4_0" | "q5_0" | "q8_0" => ValidationReport {
-            valid: true, message: "Quantization type is supported by the current native converter.".to_owned(),
-        },
-        _ => invalid("Supported UNet quantization types are q4_0, q5_0, and q8_0."),
-    }
+pub fn validate_quantization_type(_quant_type: String) -> ValidationReport {
+    invalid("Hearth currently loads SafeTensors checkpoints and has no in-app quantization converter.")
 }
 
 #[uniffi::export]
-pub fn validate_unet_quantization_request(request: QuantizeUnetRequest) -> ValidationReport {
-    if request.input_path.trim().is_empty() || request.output_path.trim().is_empty() {
-        return invalid("Quantization input and output paths must not be empty.");
-    }
-    if request.input_path == request.output_path {
-        return invalid("Quantization input and output paths must be different.");
-    }
-    validate_quantization_type(request.quant_type)
+pub fn validate_unet_quantization_request(_request: QuantizeUnetRequest) -> ValidationReport {
+    invalid("UNet quantization is not implemented by the Hearth backend.")
 }
 
 #[uniffi::export]
-pub fn validate_res_adapter_request(request: ResAdapterRequest) -> ValidationReport {
-    if request.input_model_path.trim().is_empty() || request.normalization_path.trim().is_empty()
-        || request.output_path.trim().is_empty() {
-        return invalid("ResAdapter base, normalization, and output paths must not be empty.");
-    }
-    if request.output_path == request.input_model_path || request.output_path == request.normalization_path {
-        return invalid("ResAdapter output path must not overwrite either input file.");
-    }
-    validate_quantization_type(request.quant_type)
+pub fn validate_res_adapter_request(_request: ResAdapterRequest) -> ValidationReport {
+    invalid("ResAdapter conversion is not implemented by the Hearth backend.")
 }
 
 #[uniffi::export]
-pub fn validate_lora_fusion_request(request: LoraFusionRequest) -> ValidationReport {
-    if request.input_model_path.trim().is_empty() || request.output_path.trim().is_empty() {
-        return invalid("LoRA fusion input and output paths must not be empty.");
-    }
-    if request.output_path == request.input_model_path || request.lora_paths.iter().any(|path| path == &request.output_path) {
-        return invalid("LoRA fusion output must not overwrite the source checkpoint or an adapter.");
-    }
-    if request.lora_paths.is_empty() {
-        return invalid("Select at least one LoRA adapter to fuse.");
-    }
-    if request.lora_paths.len() != request.lora_scales.len() {
-        return invalid("LoRA paths and scales must have the same number of entries.");
-    }
-    if request.lora_paths.iter().any(|path| path.trim().is_empty()) {
-        return invalid("LoRA adapter paths must not be empty.");
-    }
-    if request.lora_scales.iter().any(|scale| !scale.is_finite()) {
-        return invalid("Every LoRA strength must be finite.");
-    }
-    match request.quant_type.as_str() {
-        "f16" | "q4_0" | "q5_0" | "q8_0" => ValidationReport {
-            valid: true,
-            message: "LoRA fusion request is valid.".to_owned(),
-        },
-        _ => invalid("Supported LoRA fusion outputs are f16, q4_0, q5_0, and q8_0."),
-    }
+pub fn validate_lora_fusion_request(_request: LoraFusionRequest) -> ValidationReport {
+    invalid("LoRA fusion/export is not implemented by the Hearth backend.")
 }
 
-fn invalid(message: &str) -> ValidationReport {
-    ValidationReport { valid: false, message: message.to_owned() }
-}
+fn valid(message: &str) -> ValidationReport { ValidationReport { valid: true, message: message.to_owned() } }
+fn invalid(message: &str) -> ValidationReport { ValidationReport { valid: false, message: message.to_owned() } }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn request() -> GenerationRequest {
-        GenerationRequest {
-            prompt: "test".into(), negative_prompt: String::new(),
-            lora_paths: vec!["one.safetensors".into()], lora_scales: vec![1.0],
-            width: 512, height: 512, steps: 6, cfg: 0.0, seed: 42,
-            sample_method: 11, scheduler: 16, eta: -1.0,
-            hires_enabled: false, hires_upscaler: 1, hires_model_path: None,
-            hires_scale: 2.0, hires_target_width: 0, hires_target_height: 0,
-            hires_steps: 0, hires_denoising_strength: 0.7, hires_tile_size: 128,
-            clip_skip: 1, init_image_rgb888: None, init_image_width: 0,
-            init_image_height: 0, strength: 1.0,
-            adetailer_enabled: false, adetailer_detector_path: None,
-            adetailer_prompt: String::new(), adetailer_negative_prompt: String::new(),
-            adetailer_extra_args: String::new(),
-        }
-    }
-
-    fn empty_slots() -> ModelSlots {
-        ModelSlots {
-            model: None, diffusion: None, high_noise: None, uncond: None, clip_l: None,
-            clip_g: None, clip_vision: None, t5xxl: None, llm: None, llm_vision: None,
-            vae: None, audio_vae: None, taesd: None,
-        }
-    }
-
     #[test]
-    fn preserves_zero_cfg_tcd_requests() { assert!(validate_generation_request(request()).valid); }
-
-    #[test]
-    fn adetailer_requires_a_detector_only_when_enabled() {
-        let mut input = request();
-        input.adetailer_enabled = true;
-        assert!(!validate_generation_request(input.clone()).valid);
-        input.adetailer_detector_path = Some("/models/yolov8-face.safetensors".into());
-        assert!(validate_generation_request(input).valid);
-    }
-
-    #[test]
-    fn rejects_mismatched_lora_arrays() {
-        let mut input = request(); input.lora_scales.clear();
-        assert!(!validate_generation_request(input).valid);
-    }
-
-    #[test]
-    fn validates_rgb888_img2img_buffer() {
-        let mut input = request();
-        input.init_image_width = 2; input.init_image_height = 2;
-        input.init_image_rgb888 = Some(vec![0; 12]);
-        assert!(validate_generation_request(input.clone()).valid);
-        input.init_image_rgb888 = Some(vec![0; 11]);
-        assert!(!validate_generation_request(input).valid);
-    }
-
-    #[test]
-    fn does_not_impose_a_lora_count_limit() {
-        let mut input = request();
-        input.lora_paths = (0..8).map(|i| format!("{i}.safetensors")).collect();
-        input.lora_scales = vec![0.5; 8];
-        assert!(validate_generation_request(input).valid);
-    }
-
-    #[test]
-    fn model_load_requires_a_model_or_diffusion_slot() {
-        let request = ModelLoadRequest {
-            model_path: String::new(), vae_path: None, n_threads: 4, wtype: -1,
-            flash_attn: true, vae_conv_direct: true, backend: None, slots: Some(empty_slots()),
+    fn backend_family_validation_is_limited_to_hearth_families() {
+        let mut request = ModelLoadRequest {
+            model_path: "model.safetensors".into(), vae_path: None, n_threads: 1,
+            wtype: -1, flash_attn: false, vae_conv_direct: false, backend: Some("Vulkan".into()),
+            slots: Some(ModelSlots { clip_l: Some("vocab.json".into()), clip_g: Some("merges.txt".into()), ..Default::default() }),
+            family: "sd15".into(),
         };
-        assert!(!validate_model_load_request(request.clone()).valid);
-        let mut valid_request = request;
-        valid_request.slots.as_mut().unwrap().diffusion = Some("unet.gguf".into());
-        assert!(validate_model_load_request(valid_request).valid);
+        assert!(validate_model_load_request(request.clone()).valid);
+        request.family = "flux".into();
+        assert!(!validate_model_load_request(request).valid);
     }
 
     #[test]
-    fn quantization_request_validates_paths_and_type() {
-        let request = QuantizeUnetRequest {
-            input_path: "input.gguf".into(), output_path: "output.gguf".into(),
-            quant_type: "q5_0".into(), diffusion_slot: true, n_threads: 4,
+    fn generation_validation_rejects_non_hearth_sampler_and_dual_backend_features() {
+        let base = GenerationRequest {
+            prompt: "test".into(), negative_prompt: String::new(), lora_paths: vec![],
+            lora_scales: vec![], width: 512, height: 512, steps: 6, cfg: 7.0, seed: 42,
+            sample_method: 1, scheduler: 0, eta: -1.0, hires_enabled: false,
+            hires_upscaler: 1, hires_model_path: None, hires_scale: 2.0, hires_target_width: 0,
+            hires_target_height: 0, hires_steps: 0, hires_denoising_strength: 0.7,
+            hires_tile_size: 128, clip_skip: 1, init_image_rgb888: None, init_image_width: 0,
+            init_image_height: 0, strength: 1.0, adetailer_enabled: false,
+            adetailer_detector_path: None, adetailer_prompt: String::new(),
+            adetailer_negative_prompt: String::new(), adetailer_extra_args: String::new(),
         };
-        assert!(validate_unet_quantization_request(request.clone()).valid);
-        let mut bad = request; bad.quant_type = "q6_k".into();
-        assert!(!validate_unet_quantization_request(bad).valid);
-    }
-
-    #[test]
-    fn res_adapter_requires_normalization_and_output_paths() {
-        let request = ResAdapterRequest {
-            input_model_path: "base.gguf".into(), vae_path: None,
-            normalization_path: "norm.safetensors".into(), output_path: "merged.gguf".into(),
-            quant_type: "q4_0".into(), n_threads: 4,
-        };
-        assert!(validate_res_adapter_request(request.clone()).valid);
-        let mut bad = request; bad.normalization_path.clear();
-        assert!(!validate_res_adapter_request(bad).valid);
-    }
-
-    #[test]
-    fn validates_lora_fusion_paths_scales_and_output_mode() {
-        let request = LoraFusionRequest {
-            input_model_path: "base.safetensors".into(),
-            lora_paths: vec!["style.safetensors".into(), "detail.safetensors".into()],
-            lora_scales: vec![0.7, 0.4],
-            output_path: "fused.gguf".into(),
-            quant_type: "q5_0".into(),
-            n_threads: 4,
-        };
-        assert!(validate_lora_fusion_request(request.clone()).valid);
-        let mut no_adapters = request.clone();
-        no_adapters.lora_paths.clear();
-        no_adapters.lora_scales.clear();
-        assert!(!validate_lora_fusion_request(no_adapters).valid);
-        let mut mismatch = request.clone();
-        mismatch.lora_scales.pop();
-        assert!(!validate_lora_fusion_request(mismatch).valid);
-        let mut overwrite = request.clone();
-        overwrite.output_path = overwrite.input_model_path.clone();
-        assert!(!validate_lora_fusion_request(overwrite).valid);
-        let mut unsupported = request;
-        unsupported.quant_type = "q6_k".into();
-        assert!(!validate_lora_fusion_request(unsupported).valid);
-    }
-
-    #[test]
-    fn supports_only_current_converter_types() {
-        assert!(validate_quantization_type("q4_0".into()).valid);
-        assert!(validate_quantization_type("q5_0".into()).valid);
-        assert!(validate_quantization_type("q8_0".into()).valid);
-        assert!(!validate_quantization_type("q6_k".into()).valid);
-    }
-
-    #[test]
-    fn backend_profile_preserves_exynos_2400e_flags() {
-        assert!(build_profile().cpu_arch_flags.contains("-march=armv8.6-a+dotprod+i8mm+fp16"));
+        assert!(validate_generation_request(base.clone()).valid);
+        let mut unsupported = base;
+        unsupported.sample_method = 11;
+        assert!(!validate_generation_request(unsupported).valid);
     }
 }

@@ -1,37 +1,37 @@
-# Ponko Rust / UniFFI native facade
+# Ponko Hearth native engine
 
-Kotlin now calls the drawing engine through generated UniFFI bindings into Rust. Rust owns the app-facing API, validation, callback routing, model-handle registry, and lifecycle synchronization. The inference implementation remains stable-diffusion.cpp + GGML, exposed by the plain C ABI in `app/src/main/cpp/ponko_sd_c_api.h` and `ponko_sd_c_api.cpp`.
+This branch fully replaces the drawing inference path with Hearth. There is no stable-diffusion.cpp engine, GGML drawing backend, C ABI C++ bridge, or alternate diffusion backend in the Android build.
 
-## Native API coverage
+## Current inference scope
 
-The facade covers model context creation and release, text-to-image and img2img, all existing sampler/scheduler/ETA controls, caller-provided LoRA sets, HiRes settings, CLIP skip, progress/preview callbacks, cancellation, Vulkan diagnostics, last-parameter logging, backend device enumeration, UNet quantization, and ResAdapter conversion. Existing Kotlin call sites keep their `SdCppEngine` wrapper names, but those wrappers now call the generated UniFFI API rather than hand-written JNI methods.
+- SD 1.5 and SDXL checkpoints in SafeTensors format.
+- Matching CLIP tokenizer assets: `vocab.json` and `merges.txt`.
+- SD 1.5 VAE embedded in the checkpoint or imported separately.
+- SDXL with a separate FP16-safe VAE.
+- LoRA application to the supported CLIP and UNet layers, with per-adapter strength.
+- Euler, Euler a, DPM++ 2M and DPM++ SDE samplers; Normal and Karras schedules.
+- Progress callbacks and cancellation between denoising steps.
+- Burn/WGPU Vulkan as the only drawing execution backend.
 
-The native handle registry blocks context destruction while generate/cancel calls are using a context. Generation remains single-flight because stable-diffusion.cpp's progress and preview callbacks are registered globally.
+Chat GGUF remains on the independent llama.cpp chat runtime. That is not a second drawing backend.
 
-See [API_PARITY.md](API_PARITY.md) for the explicit mapping between the old API and the new Rust/C ABI implementation.
+## Not implemented in this Hearth adapter yet
 
-## Tooling
+Drawing GGUF/quantization, img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion, and LoRA fusion. These are deliberately not exposed by the drawing UI until their actual Hearth implementations are available.
 
-Install Rust stable and the Android ARM64 target, plus cargo-ndk:
+## Build requirements
 
-```sh
-rustup update stable
-rustup target add aarch64-linux-android
-cargo install cargo-ndk --locked
-```
+- Rust stable with the 2024 edition.
+- `aarch64-linux-android` Rust target and `cargo-ndk`.
+- Android NDK 27.3.13750724, Android SDK 36, JDK 21.
+- Recursive submodule checkout: `rust/hearth`, plus Hearth's Burn, CubeCL and Cubek source submodules.
 
-The Android SDK/NDK must be installed and discoverable. Ponko currently uses NDK `27.3.13750724`, CMake `3.31.6`, and builds only `arm64-v8a`.
+## Build
 
-## Build and test
-
-From the repository root:
-
-```sh
-cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check
+```bash
+cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
 cargo test --manifest-path rust/ponko-native/Cargo.toml
 ./gradlew :app:assembleDebug
 ```
 
-On Windows, use `gradlew.bat`. Gradle builds `libponko_native.so` for Android, generates UniFFI Kotlin bindings, and packages them with `libponko_sd.so` and `libstable-diffusion.so`. Install cargo-ndk before building.
-
-The app-facing JNI bridge has been removed from the CMake target. `libponko_sd.so` is a C ABI adapter loaded by Rust, not a library of Java native methods.
+Gradle compiles the Hearth adapter into `libponko_native.so` and generates UniFFI Kotlin bindings. Drawing inference does not use CMake and does not emit or package `libponko_sd.so` or `libstable-diffusion.so`.

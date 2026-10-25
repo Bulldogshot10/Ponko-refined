@@ -49,57 +49,19 @@ components. Copyright in each component is owned by its respective authors,
 and each is distributed under its own license. Full license texts are
 available in the corresponding source directories or license files.
 
-A. Bundled source code (distributed with this repository, under app/src/main/cpp/)
+A. Rust source submodules used by the diffusion engine
 
-  - stable-diffusion.cpp
-      License: MIT License
-      Copyright: Copyright (c) 2023 leejet
-      Source: https://github.com/leejet/stable-diffusion.cpp
-      License text: app/src/main/cpp/sd/LICENSE
-      Note: To reduce size, this project trims the parts of its source code
-            that are not used here (only the CLIP tokenizer vocabulary is
-            kept) and applies minor adaptations for the Android/CMake build.
-            The trimmed and adapted source is still distributed under the
-            MIT License.
+  - Hearth
+      License: MIT License OR Apache License 2.0
+      Source: https://github.com/jeff-hiner/hearth
+      Distributed as: rust/hearth/ git submodule
+      Note: Hearth supplies Rust diffusion inference using Burn/WGPU Vulkan.
 
-  - ggml
-      License: MIT License
-      Copyright: Copyright (c) 2023-2024 The ggml authors
-      Source: https://github.com/ggerganov/ggml
-      License text: app/src/main/cpp/sd/ggml/LICENSE
-      Note: The vendored ggml tree also carries files contributed by other
-            projects, each under a permissive license:
-              - Intel Corporation / Codeplay Software Ltd. (ggml-sycl,
-                ggml-openvino): MIT License, and Apache License 2.0 with
-                LLVM Exceptions for the parts derived from the LLVM Project
-              - Arm Limited - KleidiAI (ggml-cpu/kleidiai): MIT License
-              - Mozilla Foundation - llamafile sgemm
-                (ggml-cpu/llamafile/sgemm.cpp): MIT License
-              - nlohmann/json (thirdparty/json.hpp) embeds SIMDe
-                (MIT, Evan Nemerson) and Abseil (Apache License 2.0)
-            The GPU backends (CUDA / Metal / OpenCL / SYCL / OpenVINO) are kept
-            as source only and are not compiled into the app.
-
-  - Vulkan-Hpp (vulkan.hpp) and Vulkan-Headers (vulkan.h, vk_video/*)
-      License: Apache License 2.0 OR MIT (SPDX: Apache-2.0 OR MIT)
-      Copyright: Copyright 2015-2024 The Khronos Group Inc.
-      Source: https://github.com/KhronosGroup/Vulkan-Hpp ,
-              https://github.com/KhronosGroup/Vulkan-Headers
-      License text: licenses/apache-2.0.txt
-      Note: Header-only Vulkan C++ bindings, vendored at
-            app/src/main/cpp/thirdparty/include/ (version 1.3.275, matching the
-            NDK's Vulkan headers). Only needed to compile the optional Vulkan
-            backend for drawing.
-
-  - Third-party files bundled with stable-diffusion.cpp (thirdparty/)
-      - stb_image.h / stb_image_write.h / stb_image_resize.h: Public Domain or MIT
-      - json.hpp (JSON for Modern C++): MIT License
-      - httplib.h (cpp-httplib): MIT License
-      - miniz.h: MIT License
-      - zip.c / zip.h (kuba--/zip): MIT License
-        License text: licenses/zip-LICENSE.txt
-      - darts_clone: BSD 3-Clause License
-        License text: app/src/main/cpp/sd/thirdparty/LICENSE.darts_clone.txt
+  - Burn, CubeCL and Cubek
+      License: Each project provides its own license terms (MIT and/or Apache License 2.0).
+      Source: rust/hearth/vendor/ git submodules
+      Note: These are Hearth's GPU tensor / shader / kernel dependencies. Their
+            LICENSE files are retained in the corresponding source submodules.
 
 B. Binary dependencies (fetched by Gradle from trusted repositories; not
    distributed with this repository)
@@ -152,8 +114,8 @@ C. NDK runtime libraries distributed with this repository
   - libc++_shared.so (LLVM libc++ runtime)
       License: Apache License 2.0 with LLVM Exceptions
       Copyright: Copyright (c) The LLVM Project
-      Note: Taken from the Android NDK (android-ndk-r27). The build output of
-            stable-diffusion.cpp requires the OpenMP runtime. Distribution
+      Note: Taken from the Android NDK (android-ndk-r27). The library is
+            retained in the existing ARM64 native-library set; distribution
             follows the terms of the LLVM license.
 
 D. Components statically linked into third-party native libraries
@@ -181,8 +143,8 @@ D. Components statically linked into third-party native libraries
   protobuf, ONNX (Apache License 2.0), Abseil, flatbuffers, re2 and cpuinfo.
       Full notices: licenses/onnxruntime-ThirdPartyNotices.txt
 
-  The native libraries of stable-diffusion.cpp and of the llama.cpp binding
-  bundle ggml, stb, miniz, json.hpp, httplib, zip and darts_clone (see section A).
+  The Android llama.cpp binding includes GGML and related native components;
+  those are covered by the binding's upstream notices.
 
   The Apache License 2.0 full text is available at licenses/apache-2.0.txt.
 
@@ -199,10 +161,10 @@ E. Build tooling distributed with this repository (not part of the app)
 Note
 --------------------------------------------------------------------------
 
-This project does not include any Stable Diffusion model weights.
-Drawing models (.gguf), chat models (.litertlm / .gguf) and LoRA files are
-obtained by the user and loaded at runtime; their licensing and terms of use
-are governed by their respective distributors.
+This project does not include any model weights. Drawing models (SafeTensors
+checkpoints, tokenizer files, VAE and LoRA), chat models (.litertlm / .gguf),
+and tagging models (.onnx + selected_tags.csv) are obtained by the user and
+loaded at runtime; their licensing and terms are governed by their distributors.
 
 The same applies to the tagging/Tagger assets: the ONNX tagger model (.onnx)
 and its tag list (selected_tags.csv) are imported by the user and are not
@@ -250,53 +212,19 @@ distributed with this project.
 本项目包含或链接以下第三方开源组件。各组件的著作权归其各自作者所有，
 按各自许可证分发。完整许可证文本见对应的源码目录或许可证文件。
 
-A. 内置源码（随本仓库分发，源码位于 app/src/main/cpp/）
+A. 绘图引擎使用的 Rust 源码子模块
 
-  - stable-diffusion.cpp
-      许可证：MIT License
-      著作权：Copyright (c) 2023 leejet
-      来源：https://github.com/leejet/stable-diffusion.cpp
-      许可证文本：app/src/main/cpp/sd/LICENSE
-      说明：为减小体积，本项目对其源码做了裁剪，剔除了本项目未使用的
-            分词器词表（仅保留 CLIP）；同时按 Android/CMake 构建需要做了
-            少量适配。裁剪与适配后的源码仍按 MIT 许可分发。
+  - Hearth
+      许可证：MIT License OR Apache License 2.0
+      来源：https://github.com/jeff-hiner/hearth
+      分发方式：rust/hearth/ git submodule
+      说明：Hearth 提供基于 Rust、Burn/WGPU Vulkan 的 diffusion inference。
 
-  - ggml
-      许可证：MIT License
-      著作权：Copyright (c) 2023-2024 The ggml authors
-      来源：https://github.com/ggerganov/ggml
-      许可证文本：app/src/main/cpp/sd/ggml/LICENSE
-      说明：裁剪后的 ggml 目录里还包含其他项目贡献的文件，均为宽松许可：
-            - Intel Corporation / Codeplay Software Ltd.（ggml-sycl、
-              ggml-openvino）：MIT License；其中源自 LLVM Project 的部分为
-              Apache License 2.0 with LLVM Exceptions
-            - Arm Limited - KleidiAI（ggml-cpu/kleidiai）：MIT License
-            - Mozilla Foundation - llamafile sgemm
-              （ggml-cpu/llamafile/sgemm.cpp）：MIT License
-            - nlohmann/json（thirdparty/json.hpp）内嵌 SIMDe
-              （MIT，Evan Nemerson）与 Abseil（Apache License 2.0）
-            各 GPU 后端（CUDA / Metal / OpenCL / SYCL / OpenVINO）仅保留源码，
-            不参与 App 编译。
-
-  - Vulkan-Hpp（vulkan.hpp）与 Vulkan-Headers（vulkan.h、vk_video/*）
-      许可证：Apache License 2.0 OR MIT（SPDX：Apache-2.0 OR MIT）
-      著作权：Copyright 2015-2024 The Khronos Group Inc.
-      来源：https://github.com/KhronosGroup/Vulkan-Hpp ，
-            https://github.com/KhronosGroup/Vulkan-Headers
-      许可证文本：licenses/apache-2.0.txt
-      说明：仅头文件的 Vulkan C++ 绑定，随仓库分发在
-            app/src/main/cpp/thirdparty/include/（版本 1.3.275，与 NDK 的
-            Vulkan 头版本对应）。只有编译可选的绘图 Vulkan 后端时需要。
-
-  - stable-diffusion.cpp 附带的第三方文件（thirdparty/）
-      - stb_image.h / stb_image_write.h：公有领域（Public Domain）或 MIT
-      - json.hpp（JSON for Modern C++）：MIT License
-      - httplib.h（cpp-httplib）：MIT License
-      - miniz.h：MIT License
-      - zip.c / zip.h（kuba--/zip）：MIT License
-        许可证文本：licenses/zip-LICENSE.txt
-      - darts_clone：BSD 3-Clause License
-        许可证文本：app/src/main/cpp/sd/thirdparty/LICENSE.darts_clone.txt
+  - Burn、CubeCL 与 Cubek
+      许可证：各项目自己的许可证条款（MIT 和/或 Apache License 2.0）。
+      来源：rust/hearth/vendor/ git submodules
+      说明：这些是 Hearth 使用的 GPU tensor、shader 与 kernel 依赖；
+            相应 LICENSE 文件保留在各源码子模块中。
 
 B. 二进制依赖（由 Gradle 从可信仓库拉取，不随本仓库分发）
 
@@ -345,8 +273,8 @@ C. 随仓库分发的 NDK 运行时库（app/src/main/jniLibs/arm64-v8a/）
   - libc++_shared.so（LLVM libc++ 运行时）
       许可证：Apache License 2.0 with LLVM Exceptions
       著作权：Copyright (c) The LLVM Project
-      说明：来自 Android NDK（android-ndk-r27），stable-diffusion.cpp 的
-            编译产物依赖 OpenMP 运行时。分发遵循 LLVM 许可证条款。
+      说明：来自 Android NDK（android-ndk-r27），保留在现有 ARM64
+            原生库集合中。分发遵循 LLVM 许可证条款。
 
 D. 静态链入第三方原生库的组件（打包在 APK 的 .so 里）
 
@@ -372,8 +300,8 @@ D. 静态链入第三方原生库的组件（打包在 APK 的 .so 里）
   Abseil、flatbuffers、re2、cpuinfo 等。
       完整声明：licenses/onnxruntime-ThirdPartyNotices.txt
 
-  stable-diffusion.cpp 与 llama.cpp 绑定的原生库内含 ggml、stb、miniz、
-  json.hpp、httplib、zip、darts_clone（见 A 段）。
+  llama.cpp Android 绑定的原生库包含 GGML 及相关组件；其许可证与声明
+  由该绑定项目自己的上游 notices 覆盖。
 
   Apache License 2.0 全文见 licenses/apache-2.0.txt。
 
@@ -389,9 +317,7 @@ E. 随本仓库分发的构建工具（不属于 App 本体）
 说明
 --------------------------------------------------------------------------
 
-本项目不包含任何 Stable Diffusion 模型权重文件。绘图模型（.gguf）、
-对话模型（.litertlm / .gguf）与 LoRA 均由使用者自行获取并在运行时载入，
-其许可与使用条款以各自发布方为准。
-
-打标（Tagger）用的资产同样如此：ONNX 打标模型（.onnx）与其标签表
-（selected_tags.csv）由使用者自行导入，不随本项目分发。
+本项目不包含任何模型权重。绘图模型（SafeTensors checkpoint、tokenizer
+文件、VAE 和 LoRA）、聊天模型（.litertlm / .gguf）以及打标模型（.onnx +
+selected_tags.csv）由用户自行获取并在运行时加载；其许可与使用条款由
+相应的分发方决定。

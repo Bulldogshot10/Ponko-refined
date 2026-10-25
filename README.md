@@ -15,7 +15,7 @@
 | 模块 | 一句话 |
 |---|---|
 | **对话** | `.litertlm` / `.gguf` 双后端；可发图片、文件与文档；思考分离、流式 Markdown |
-| **绘图** | stable-diffusion.cpp；文生图 / 图生图 / LCM-LoRA 加速；可选 Vulkan |
+| **绘图** | Rust Hearth + Burn/WGPU Vulkan；SD 1.5 / SDXL SafeTensors；LoRA |
 | **打标** | 本机离线 ONNX（WD14 系）；标签可发送至文生图 / 图生图 |
 | **API 服务端** | 把已加载的模型开放成 OpenAI 兼容接口；对话 8080 / 绘图 8081，两套独立 |
 | **本地优先** | 无遥测、无账号；除手动下载 LoRA 外全程无需联网 |
@@ -45,7 +45,7 @@
 | `.gguf` | llama.cpp | CPU 多线程、会话内 KV 前缀复用（长对话不重复 prefill）|
 
 - **模型管理**：从本地存储选择模型文件，复制到 App 私有目录后可反复选用；「模型/API」页顶部选运行方式（CPU / GPU），下面分「对话模型 / 绘图模型 / 打标（Tagger）」三个子页（左右滑动切换），其中「对话模型」与「绘图模型」页内各自再分「模型 / API」两个子页；各类模型均可查看 / 选择 / 删除
-  - 运行方式（CPU / GPU）的作用范围：**只有三条路径带 GPU 代码**——**绘图**（Vulkan）、**打标**（NNAPI）、**对话 `.litertlm`**（LiteRT-LM 的 GPU，底层是 OpenCL / Vulkan）；**对话 GGUF 始终 CPU**（所用绑定未含 GPU 后端）。这三条 GPU 路径**目前都只在构建侧验证过，均未经真机实测**——理论上可用，实际能不能用取决于机型的驱动与显存；设备不支持或初始化失败会自动回退 CPU，绘图页状态行会显示实际使用的后端
+  - 运行方式（CPU / GPU）仅影响对话与打标：**Hearth 绘图固定使用 Burn/WGPU Vulkan**，不提供 C++ 或 CPU 备用绘图引擎；打标在可用时走 NNAPI；GGUF 对话使用 CPU。Hearth 的 Vulkan 路径需要在 Exynos 2400e / Xclipse 940 真机上验证
 - **多对话**：新建 / 切换 / 删除对话，记录持久化在设备本地（`sessions.json`），互不干扰
 - **思考分离**：思考过程与正文分开显示、可折叠；思考开关对两种格式都生效
 - **Markdown 渲染**：标题、粗斜体、删除线、有序/无序列表、行内代码与代码块、引用、分隔线、表格、可点击链接
@@ -65,28 +65,16 @@
 
 ## 绘图
 
-引擎是 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，读取 **GGUF 格式**的 Stable Diffusion 模型。
+绘图引擎已完整替换为 [Hearth](https://github.com/jeff-hiner/hearth)，使用 Rust + Burn/WGPU Vulkan。Ponko 的绘图路径不再包含 stable-diffusion.cpp、GGML 或 C ABI C++ bridge。
 
-> sd.cpp 源码在 `app/src/main/cpp/sd/`，构建时由 NDK + CMake **现场编译**（不再手工塞预编译 `.so`），
-> 所以改了 C++ 直接 `assembleRelease` 即可，不存在「源码改了但包内是旧库」的情况。
+- **支持的模型**：SD 1.5 与 SDXL 的 `.safetensors` checkpoint。SD 1.5 可使用 checkpoint 内置 VAE，或额外导入 VAE；SDXL 需要单独的 FP16-safe VAE。
+- **Tokenizer**：每个模型集需要 `vocab.json` 和 `merges.txt`，从对应 CLIP tokenizer 文件导入。
+- **LoRA**：导入 `.safetensors` LoRA，可选择最多 4 份并分别调整权重；Hearth 会在 CLIP 与 UNet 支持的层上应用 adapter。
+- **采样器**：Euler、Euler a、DPM++ 2M、DPM++ SDE；调度器为 Normal 与 Karras。
+- **GPU**：绘图走 Burn/WGPU Vulkan，不再提供 sd.cpp CPU fallback。GPU 初始化与生成效果由具体 Android Vulkan 驱动决定。
+- **暂未移植的功能**：绘图 GGUF/量化、img2img、HiRes Fix、ADetailer、UNet 量化转换、ResAdapter 转换和 LoRA fusion 当前不在 Hearth adapter 中，因此界面不会提供这些入口。
 
-- **三种模式**：参数区分「文生图 / 图生图 / Tagger」三个子页
-  - **文生图**：填提示词直接生成
-  - **图生图**：从相册选一张参考图当底稿，配合提示词与「重绘强度」（0.05~0.99）改风格 / 换背景 / 精修；选图后自动把输出尺寸对齐参考图（64 的倍数）
-  - **Tagger**：把图片反推成 Danbooru 风格标签（详见下节）
-- **参数默认值**：每个参数页都有「设为默认值 / 恢复默认」（点击后需确认）；文生图与图生图**按 LoRA 开/关各存一套默认**，切换 LoRA 开关会自动套用对应那套
-- **生成历史**：结果页保留本次运行最近 30 张，可翻看 / 单张删除 / 一键清空；**只存在内存里，关掉 App 即清空**
-- **参数**：宽高（64 的倍数）、步数、CFG、种子、采样器、调度器都能调，**重启后自动记住**（提示词不保留）。可选采样器已与 sd.cpp 完全对齐（含 DPM++ 2M SDE / SDE B&T / LMS / Res Multistep 等）
-- **深色模式**：「关于」页的「设置」分区里是三档滑块（**亮 / 跟随系统 / 暗**），重启后记住；切换**就地换色**、不重启 App，已加载的模型与会话都保留；页面底、卡片、输入框、按钮、对话框、状态栏与导航栏全部跟随
-- **LoRA**：App 内一键下载 LCM-LoRA（HuggingFace 官方 / hf-mirror 双源），可把 20 步压到 4~8 步；也可**导入本地 LoRA**（`.safetensors` 单文件），多份 LoRA 可在列表里点选切换
-- **ADetailer**：可选 YOLOv8 detection 检测器，生成后自动修复人脸、手部等局部区域；支持独立 prompt、confidence、mask blur、inpaint 尺寸、steps 和 denoising strength。检测器需先按 stable-diffusion.cpp 上游说明转换成兼容的 `.safetensors`，原始 Ultralytics `.pt` 文件不能直接使用。
-- **模型导入**：两种方式——**单文件**（一个 `.gguf`；SD1.x/2、SDXL、SD3/3.5、Flux、Qwen-Image 的 all-in-one 版都走这条）与**多文件**（按家族补齐槽位：SD3/3.5、Flux、Qwen-Image、HiDream、视频等）。多文件时先选类型（家族）与主模型，再在「模型槽位」里逐个补配套文件；每个模型集的文件存在各自子目录里，列表里可点选 / 长按删除
-  - **SDXL 只支持单文件**：上游 sd.cpp 要在「第二个文本编码器与主模型在同一个文件里」才能认出 SDXL，拆成 unet + CLIP-L/CLIP-G 多个文件的 SDXL 加载会直接失败——请用单文件 SDXL（有 2.5GB 级的量化单文件）
-  - 多文件真正适用的是「官方本来就拆开分发」的家族：Flux、SD3.5、Qwen-Image 等；这类模型最小组合也在 8GB 以上，手机上基本跑不动（机制已支持，留给大内存设备 / 桌面端使用）
-- **GPU 加速（可选，⚠️ 仅构建侧验证、未真机实测）**：在「模型/API」页把运行方式切到 **GPU**，绘图会使用设备的 Vulkan 后端（文生图 / 图生图都生效）；设备没有 Vulkan 或初始化失败会**自动回退 CPU**，实际用的是哪个后端会显示在绘图页状态行
-- **对话页出图**：语言模型与绘图模型都加载时，直接说「画一张…」就会调用绘图模型生成
-- **绘图接口（可选）**：把已加载的绘图模型开放成 OpenAI 兼容的 `/v1/images/generations`，供局域网内的客户端出图；默认不开放，开关在「模型/API」页 · 绘图模型 · 「API」子页（详见「API 服务端」一节）
-- 顶部「参数 / 结果」两个视图可左右滑动切换；结果页可把图片保存到相册
+模型导入流程：进入「模型/API」→「绘图模型」→ 添加模型集，选择 SD 1.5 或 SDXL，然后依次导入 checkpoint、`vocab.json`、`merges.txt`；SDXL 再导入所需 VAE。聊天页的 `.gguf` 仍由独立的 llama.cpp 路径处理，不受绘图引擎替换影响。
 
 ## API 服务端（把手机当服务器）
 
@@ -158,42 +146,24 @@
 
 ## 构建
 
-基础构建需要 JDK 17+、Android SDK（compileSdk 36）、**NDK 27.3**、**CMake 3.31.6**，以及 Rust stable + `cargo-ndk`（目标 ABI：`aarch64-linux-android`）。Rust/UniFFI 现在是 Kotlin 侧默认 native API。安装 `ccache` 或 `sccache` 后，GGML 会自动使用编译缓存；未安装时仍可正常构建。
+基础构建需要 JDK 17+、Android SDK（compileSdk 36）、NDK 27.3、Rust stable（edition 2024）与 `cargo-ndk`，目标 ABI 为 `aarch64-linux-android`。Git checkout 必须递归初始化 `rust/hearth` 以及 Hearth 的 Burn、CubeCL、Cubek 子模块。
 
 ```bash
-gradle assembleRelease
+cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all
+cargo test --manifest-path rust/ponko-native/Cargo.toml
+./gradlew :app:assembleRelease
 # 产物：app/build/outputs/apk/release/app-release-unsigned.apk（未签名）
-
-# 可选：CPU-only variant，不编译 Vulkan backend / shader toolchain
-gradle assembleRelease -PponkoEnableVulkan=OFF
-
-# 可选：通用 ARM64 profile；默认保留 Exynos 2400e 指令集优化
-gradle assembleRelease -PponkoExynosCpuProfile=OFF
-
-# Rust + UniFFI 是默认路径，上面的 assembleRelease 会自动编译
 ```
 
-签名与交付脚本见 `tools/`：
+Rust/Cargo 直接构建 Hearth inference 和 `libponko_native.so`，Gradle 同时生成 UniFFI Kotlin bindings。绘图路径不需要 CMake，也不会编译或打包 `libstable-diffusion.so` / `libponko_sd.so`。
 
-```powershell
-# 用 keystore 签名（v1 + v2 + v3 全方案）
-# 口令不在脚本里：读项目根 keystore.properties（已 gitignore），或环境变量 PONKO_KS_PASS
-powershell -ExecutionPolicy Bypass -File tools/sign-apk.ps1 -Apk app\build\outputs\apk\release\app-release-unsigned.apk
-# 一键：构建 + 签名 + 拷共享盘 + 上传网盘
-powershell -File tools/build-release.ps1
-```
-
-- `minSdk 28` / `targetSdk 36`，**仅 arm64-v8a**（原生库限制，需真机，模拟器跑不了）
-- 未命中编译缓存的首次全量编译 sd.cpp + ggml 约 8~9 分钟；C++ 未改动时增量约 10 秒。安装并保留 ccache 缓存可减少之后的重编耗时
-- 主要依赖：`com.google.ai.edge.litertlm:litertlm-android:0.17.0`、`net.ladenthin:llama-android:5.1.0`、`com.microsoft.onnxruntime:onnxruntime-android:1.22.0`、`com.tom-roush:pdfbox-android:2.0.27.0`、`io.noties.markwon:*:4.6.2`
-- CMake 现场产出：`libstable-diffusion.so`（sd.cpp 本体）与 `libponko_sd.so`（plain C ABI bridge）。Rust/Cargo 产出 `libponko_native.so` 和 UniFFI Kotlin bindings；Kotlin 不再直接调用手写 drawing JNI，Rust 负责 native API、句柄生命周期和回调，推理仍由 stable-diffusion.cpp + GGML 执行
-- Vulkan 后端（可选 GPU 绘图）不需要安装 Vulkan SDK：`glslc` 与 SPIRV 头文件都用 NDK 自带的；交叉编译时还需要一个**宿主编译器**来构建着色器生成工具（Windows 上是 MSVC，`tools/build-release.ps1` 会自动载入 `vcvars64` 环境）
+签名脚本见 `tools/`。`tools/sign-apk.ps1` 可以使用项目根目录中被 gitignore 的 `keystore.properties`，也可通过 `PONKO_KS_PASS` 环境变量提供密码。
 
 ## 模型从哪来
 
 - `.litertlm`：HuggingFace 上的 `litert-community` / `google` 组织（Gemma 系列等）
 - `.gguf`（对话）：HuggingFace 上任意 GGUF 量化模型；手机 CPU 上建议 **1B~3B、Q4 量化**
-- `.gguf`（绘图）：stable-diffusion.cpp 格式的 SD1.5 系模型（如 Anything V5）
+- 绘图模型：SD 1.5 / SDXL 的 `.safetensors` checkpoint、匹配的 `vocab.json` / `merges.txt`，以及 SDXL 所需的 FP16-safe VAE
 - **LoRA**：`lcm-lora-sdv1-5.safetensors`（约 130 MB），App 内可直接下载；本地 `.safetensors` 也可直接导入
 - **打标模型**：Danbooru 系 tagger 的 `.onnx` + 配套标签表 CSV（两者必须成对；如 WD14 的 `wd-v1-4-swinv2-tagger-v2` 与 `selected_tags.csv`）
 
@@ -202,10 +172,10 @@ powershell -File tools/build-release.ps1
 - 对话上下文默认 4096 tokens（可在「模型/API」页调整；LiteRT-LM 侧不能超过模型自带的上限），超出后依赖 llama.cpp 的 context shift 滑动窗口
 - 对话用的 GGUF 目前仅走 CPU（所用绑定未包含 GPU 后端）
 - 「关闭思考」依赖模型自带的对话模板，个别模型可能仍会输出思考内容
-- 绘图默认是纯 CPU 推理：256×256 + LCM-LoRA 6 步约 1 分钟，512×512 明显更慢；把运行方式切到 GPU 可尝试 Vulkan 加速，设备不支持会自动回退 CPU（实际后端显示在绘图页状态行）
-- **GPU 支持目前只是「理论上可用」，未经真机验证**：只有绘图（Vulkan）、打标（NNAPI）、对话 `.litertlm` 这三条路径带 GPU 代码，三者都只在构建侧验证过，**未在任何手机上实测**；机型驱动不稳 / 显存不足时自动回退 CPU（绘图页状态行会显示实际后端）；对话 GGUF 没有任何 GPU 后端，只能 CPU
-- 绘图量化等级写死在模型文件里，App 只读取并显示，不会转换
-- 绘图原生库用 `-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4`（Exynos profile 默认开启；可通过 Gradle property 关闭该 profile）编译，需要 2019 年后的 64 位 ARM 设备
+- 绘图后端固定为 Hearth / Burn-WGPU Vulkan，当前未经 Exynos 2400e 真机性能验证；Vulkan 初始化失败时会报告错误，不会切换到 C++ 或 CPU 备用 engine
+- Hearth 的 Vulkan 路径目前仍需在 Exynos 2400e / Xclipse 940 真机上测试；对话 GGUF 使用的 llama.cpp 绑定仍是 CPU 路径
+- Hearth 当前只读取 SafeTensors 权重，不支持 GGUF 绘图模型或在 App 内进行 UNet 量化
+- Android 构建目标为 arm64-v8a；Hearth 的 GPU 计算由 Burn/WGPU Vulkan 管理，不再使用 Ponko 自定义的 Exynos C++ 编译 profile
 - 打标支持 Danbooru 系的 ONNX 打标模型（WD14 及其衍生版本等；标签表需为 `tag_id,name,category,count` 格式）；`.onnx` 与标签表 CSV 必须配套导入
 - 打标结果离谱（例如发色 / 颜色认错）时先试切换「通道顺序」（BGR / RGB）：BGR 是 WD 系官方预处理，个别重导出模型已把 BGR 烘进权重、需要切 RGB；阈值与标签数也会明显影响结果
 - 打标首次运行时才加载模型（常驻数百 MB 内存），可在「模型/API」页手动卸载
@@ -226,10 +196,8 @@ powershell -File tools/build-release.ps1
 
 | 组件 | 许可证 | 分发方式 |
 | --- | --- | --- |
-| [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) | MIT | 源码随仓库分发（`app/src/main/cpp/sd/`） |
-| [ggml](https://github.com/ggerganov/ggml)（另含 Intel / Codeplay / Arm / Mozilla 的贡献文件） | MIT / Apache-2.0 | 源码随仓库分发（`app/src/main/cpp/sd/ggml/`） |
-| [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) / [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | Apache-2.0 OR MIT | 源码随仓库分发（`app/src/main/cpp/thirdparty/include/`，Vulkan 后端编译需要） |
-| sd.cpp 附带第三方文件（stb / json.hpp / httplib / miniz / zip / darts_clone） | Public Domain / MIT / BSD-3-Clause | 源码随仓库分发（`app/src/main/cpp/sd/thirdparty/`） |
+| [Hearth](https://github.com/jeff-hiner/hearth) | MIT OR Apache-2.0 | Rust submodule（`rust/hearth/`） |
+| Burn / CubeCL / Cubek | 各自的 MIT / Apache-2.0 许可证 | Hearth 的 Rust 子模块（`rust/hearth/vendor/`） |
 | [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) | Apache-2.0 | Gradle 依赖 |
 | [llama.cpp](https://github.com/ggerganov/llama.cpp)（经 java-llama.cpp 绑定） | MIT | Gradle 依赖 |
 | [Markwon](https://github.com/noties/Markwon) | Apache-2.0 | Gradle 依赖 |
@@ -246,8 +214,7 @@ powershell -File tools/build-release.ps1
 | 静态链入 ONNX Runtime 原生库（XNNPACK、protobuf、ONNX、Abseil、flatbuffers、re2、cpuinfo 等） | Apache-2.0 / BSD-3-Clause / BSD-2-Clause | 编入 `libonnxruntime.so` |
 | LLVM libc++ / libomp（来自 Android NDK） | Apache-2.0 with LLVM Exceptions | `app/src/main/jniLibs/` |
 
-> stable-diffusion.cpp 源码为随仓库分发的副本，为减小体积剔除了本项目用不到的分词器词表（仅保留 CLIP）。
-> 本项目**不含任何模型权重文件**；绘图模型（SD1.5 GGUF）、对话模型（`.litertlm` / `.gguf`）、LoRA 以及打标模型（`.onnx` + `selected_tags.csv`）均由使用者自行获取。
+> 绘图模型（SafeTensors checkpoint、tokenizer 文件、VAE 和 LoRA）、聊天模型（`.litertlm` / `.gguf`）以及打标模型（`.onnx` + `selected_tags.csv`）均由使用者自行获取，仓库不含模型权重。
 > ONNX Runtime 自身还打包了若干第三方组件，其声明见 [licenses/onnxruntime-ThirdPartyNotices.txt](licenses/onnxruntime-ThirdPartyNotices.txt)。
 > commonmark / Jackson / Gson / SLF4J 等为**传递依赖**，由所选的 Markwon、llama.cpp 绑定、LiteRT-LM 自动引入。
 > 第三方原生库里静态链入的组件（XNNPACK、protobuf、re2、cpuinfo、zlib 等）与各类许可证全文见 [licenses/](licenses/) 与 [NOTICE](NOTICE)。
@@ -256,8 +223,8 @@ powershell -File tools/build-release.ps1
 
 - [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)（Google）
 - [java-llama.cpp](https://github.com/kherud/java-llama.cpp) / llama.cpp
-- [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
-- [ggml](https://github.com/ggerganov/ggml)
+- [Hearth](https://github.com/jeff-hiner/hearth)（Rust diffusion engine）
+- [Burn](https://github.com/tracel-ai/burn) / [CubeCL](https://github.com/tracel-ai/cubecl)
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime)（Microsoft）
 - [Markwon](https://github.com/noties/Markwon)
 - [commonmark-java](https://github.com/commonmark/commonmark-java)
