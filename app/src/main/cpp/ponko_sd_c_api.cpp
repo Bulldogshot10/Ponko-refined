@@ -102,6 +102,26 @@ void ponkoLogCallback(enum ggml_log_level level, const char* text, void*) {
     }
 }
 
+// Forward stable-diffusion.cpp's LOG_INFO/LOG_WARN stream to Logcat as well as stderr.
+// Without this callback, fusion-stage and RSS diagnostics are silently dropped.
+void ponkoSdLogCallback(enum sd_log_level_t level, const char* text, void*) {
+    if (text == nullptr || text[0] == '\0') return;
+    std::fputs(text, stderr);
+    std::fflush(stderr);
+    const int priority = level == SD_LOG_ERROR ? ANDROID_LOG_ERROR :
+                         level == SD_LOG_WARN ? ANDROID_LOG_WARN :
+                         level == SD_LOG_DEBUG ? ANDROID_LOG_DEBUG :
+                         level == SD_LOG_VERBOSE ? ANDROID_LOG_VERBOSE : ANDROID_LOG_INFO;
+    __android_log_print(priority, PONKO_LOG_TAG, "%s", text);
+}
+
+void initializePonkoLogging() {
+    std::call_once(g_log_init, [] {
+        ggml_log_set(ponkoLogCallback, nullptr);
+        sd_set_log_callback(ponkoSdLogCallback, nullptr);
+    });
+}
+
 void progressCallback(int step, int steps, float, void* data) {
     auto* state = static_cast<CallbackState*>(data);
     if (state != nullptr && state->step != nullptr) state->step(state->user_data, step, steps);
@@ -238,7 +258,7 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
                                   int32_t wtype, int32_t flash_attn, int32_t vae_conv_direct,
                                   const char* backend, const char* const* slots, size_t slot_count) {
     g_last_error.clear();
-    std::call_once(g_log_init, [] { ggml_log_set(ponkoLogCallback, nullptr); });
+    initializePonkoLogging();
     if (model_path == nullptr && (slots == nullptr || slot_count == 0)) {
         setError("model path or slot paths are required");
         return nullptr;
@@ -601,6 +621,7 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
                                        const char* quant_type,
                                        int32_t n_threads) {
     g_last_error.clear();
+    initializePonkoLogging();
     try {
     PONKO_LOGI("LoRA fusion entered C ABI: adapters=%zu quant=%s threads=%d",
                lora_count, stringIsNonempty(quant_type) ? quant_type : "(null)", n_threads);
