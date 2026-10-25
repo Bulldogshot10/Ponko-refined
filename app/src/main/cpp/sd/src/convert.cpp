@@ -2,6 +2,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -369,6 +370,30 @@ static bool load_tensor_for_export(ModelLoader& model_loader,
     return true;
 }
 
+static uint64_t read_proc_kib(const char* path, const char* key) {
+    std::ifstream input(path);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.compare(0, std::strlen(key), key) != 0) continue;
+        const char* value = line.c_str() + std::strlen(key);
+        while (*value == ' ' || *value == '\\t') ++value;
+        return static_cast<uint64_t>(std::strtoull(value, nullptr, 10));
+    }
+    return 0;
+}
+
+static void log_fusion_memory(const char* phase, const std::string& tensor_name, size_t estimate_bytes) {
+    const uint64_t rss_kib = read_proc_kib("/proc/self/status", "VmRSS:");
+    const uint64_t hwm_kib = read_proc_kib("/proc/self/status", "VmHWM:");
+    const uint64_t available_kib = read_proc_kib("/proc/meminfo", "MemAvailable:");
+    LOG_INFO("LoRA fusion memory phase=%s tensor=%s estimate=%llu MiB rss=%llu MiB hwm=%llu MiB system_available=%llu MiB",
+             phase, tensor_name.c_str(),
+             static_cast<unsigned long long>(estimate_bytes / (1024ull * 1024ull)),
+             static_cast<unsigned long long>(rss_kib / 1024ull),
+             static_cast<unsigned long long>(hwm_kib / 1024ull),
+             static_cast<unsigned long long>(available_kib / 1024ull));
+}
+
 static bool stream_tensor_data(ModelLoader& model_loader,
                                const std::string& output_path,
                                const std::vector<TensorExportInfo>& tensors,
@@ -377,7 +402,9 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                                std::string* error,
                                LoraFusionContext* fusion = nullptr) {
     n_threads = n_threads > 0 ? n_threads : sd_get_num_physical_cores();
-    n_threads = std::max(1, n_threads);
+    // Fusion loads the base tensor in F32 and builds a separate LoRA graph. Serialize it on
+    // memory-constrained Android devices instead of allowing several peak allocations at once.
+    n_threads = fusion != nullptr ? 1 : std::max(1, n_threads);
     LOG_INFO("streaming convert with %d threads", n_threads);
 
     int64_t start_time       = ggml_time_ms();
@@ -387,7 +414,12 @@ static bool stream_tensor_data(ModelLoader& model_loader,
     bool failed              = false;
     std::string failure;
 
-    const size_t memory_budget = 1024ull * 1024ull * 1024ull;
+    // Fusion's transient estimate includes several F32 copies but not the resident LoRA
+    // parameters. Keep a hard ceiling for each fusion tensor; never allow the old
+    // "single oversized tensor is okay" exception to the memory budget.
+    const size_t memory_budget = fusion != nullptr
+        ? 384ull * 1024ull * 1024ull
+        : 1024ull * 1024ull * 1024ull;
     size_t reserved_bytes      = 0;
 
     std::mutex work_mutex;
@@ -447,16 +479,26 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                 }
 
                 size_t tensor_bytes = export_tensor_nbytes(tensors[tensor_index]);
-                if (fusion != nullptr && fusion->targets(tensors[tensor_index].storage.name)) {
+                const bool fusion_target = fusion != nullptr &&
+                    fusion->targets(tensors[tensor_index].storage.name);
+                if (fusion_target) {
                     const int64_t raw_elements = tensors[tensor_index].storage.nelements();
                     const size_t elements = raw_elements > 0 ? static_cast<size_t>(raw_elements) : 0;
                     const size_t float_bytes = elements > SIZE_MAX / sizeof(float)
                         ? SIZE_MAX
                         : elements * sizeof(float);
-                    // Fusion keeps both the F32 destination and a temporary dequantized copy alive
-                    // while applying deltas. Account for both, not only the compressed GGUF output.
+                    // Fusion keeps the base F32 tensor, a dequantized source copy, and output
+                    // bytes alive together; the estimate is intentionally conservative.
                     const size_t fusion_bytes = float_bytes > SIZE_MAX / 3 ? SIZE_MAX : float_bytes * 3;
                     tensor_bytes = std::max(tensor_bytes, fusion_bytes);
+                    log_fusion_memory("tensor-start", tensors[tensor_index].storage.name, tensor_bytes);
+                    if (tensor_bytes > memory_budget) {
+                        fail("LoRA fusion stopped before allocation: tensor '" +
+                             tensors[tensor_index].storage.name + "' estimates " +
+                             std::to_string(tensor_bytes / (1024ull * 1024ull)) +
+                             " MiB transient memory, above the 384 MiB safe per-tensor limit");
+                        return;
+                    }
                 }
                 if (!reserve_memory(tensor_bytes)) {
                     return;
@@ -471,6 +513,10 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                     job.success = false;
                 }
 
+                if (fusion_target) {
+                    log_fusion_memory(job.success ? "tensor-computed" : "tensor-compute-failed",
+                                      tensors[tensor_index].storage.name, tensor_bytes);
+                }
                 if (!job.success) {
                     release_memory(tensor_bytes);
                     fail(job.error.empty() ? "streaming conversion failed" : job.error);
@@ -511,7 +557,14 @@ static bool stream_tensor_data(ModelLoader& model_loader,
         if (error != nullptr) {
             *error = failure;
         }
+        if (fusion != nullptr) {
+            LOG_ERROR("LoRA fusion tensor stream failed: %s", failure.c_str());
+            log_fusion_memory("stream-failed", failure, reserved_bytes);
+        }
         return false;
+    }
+    if (fusion != nullptr) {
+        log_fusion_memory("stream-complete", "(all tensors)", static_cast<size_t>(bytes_written));
     }
     LOG_INFO("streaming conversion completed, taking %.2fs", (ggml_time_ms() - start_time) / 1000.f);
     return true;
