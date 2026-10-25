@@ -19,25 +19,22 @@ fn duration_from_nanos(nanos: u128) -> Duration {
 
 /// Summarize non-empty samples without silently accepting an empty benchmark.
 pub fn summarize(samples: &[Duration]) -> Result<TimingSummary> {
-    ensure!(!samples.is_empty(), "at least one timing sample is required");
+    ensure!(
+        !samples.is_empty(),
+        "at least one timing sample is required"
+    );
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
 
     let middle = sorted.len() / 2;
     let median = if sorted.len() % 2 == 0 {
-        duration_from_nanos(
-            (sorted[middle - 1].as_nanos() + sorted[middle].as_nanos()) / 2,
-        )
+        duration_from_nanos((sorted[middle - 1].as_nanos() + sorted[middle].as_nanos()) / 2)
     } else {
         sorted[middle]
     };
     let p95_index = ((sorted.len() * 95).div_ceil(100) - 1).min(sorted.len() - 1);
-    let mean_ms = sorted
-        .iter()
-        .map(Duration::as_secs_f64)
-        .sum::<f64>()
-        * 1000.0
-        / sorted.len() as f64;
+    let mean_ms =
+        sorted.iter().map(Duration::as_secs_f64).sum::<f64>() * 1000.0 / sorted.len() as f64;
 
     Ok(TimingSummary {
         min: sorted[0],

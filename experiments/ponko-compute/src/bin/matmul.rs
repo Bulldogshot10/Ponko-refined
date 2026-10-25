@@ -21,7 +21,10 @@ fn parse_usize(value: Option<String>, label: &str, default: usize) -> Result<usi
 
 fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
     let actual: &[f32] = try_cast_slice(bytes).context("cast matrix output bytes to f32")?;
-    ensure!(actual.len() == expected.len(), "matrix output length mismatch");
+    ensure!(
+        actual.len() == expected.len(),
+        "matrix output length mismatch"
+    );
     let mut max_abs_error = 0.0_f32;
     for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
         let error = (actual - expected).abs();
@@ -38,7 +41,8 @@ fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let shader_path = PathBuf::from(
-        args.next().unwrap_or_else(|| "shaders/matmul.spv".to_owned()),
+        args.next()
+            .unwrap_or_else(|| "shaders/matmul.spv".to_owned()),
     );
     let m = parse_usize(args.next(), "M dimension", DEFAULT_DIMENSION)?;
     let n = parse_usize(args.next(), "N dimension", DEFAULT_DIMENSION)?;
@@ -60,8 +64,14 @@ fn main() -> Result<()> {
         multiply_count <= MAX_MULTIPLIES,
         "M*N*K must be <= {MAX_MULTIPLIES} to keep the CPU reference bounded"
     );
-    ensure!(warmups <= MAX_WARMUPS, "warm-up iterations must be <= {MAX_WARMUPS}");
-    ensure!((1..=MAX_ITERATIONS).contains(&iterations), "timed iterations must be in 1..={MAX_ITERATIONS}");
+    ensure!(
+        warmups <= MAX_WARMUPS,
+        "warm-up iterations must be <= {MAX_WARMUPS}"
+    );
+    ensure!(
+        (1..=MAX_ITERATIONS).contains(&iterations),
+        "timed iterations must be in 1..={MAX_ITERATIONS}"
+    );
     let a_count = m.checked_mul(k).context("A matrix size overflow")?;
     let b_count = k.checked_mul(n).context("B matrix size overflow")?;
     let c_count = m.checked_mul(n).context("C matrix size overflow")?;
@@ -98,11 +108,7 @@ fn main() -> Result<()> {
     device.upload(&a_buffer, cast_slice(&a))?;
     device.upload(&b_buffer, cast_slice(&b))?;
 
-    let kernel = device.load_kernel(
-        &shader_path,
-        3,
-        3 * std::mem::size_of::<u32>() as u32,
-    )?;
+    let kernel = device.load_kernel(&shader_path, 3, 3 * std::mem::size_of::<u32>() as u32)?;
     let push_constants = [m as u32, n as u32, k as u32];
     let workgroups = [((n as u32) + 7) / 8, ((m as u32) + 7) / 8, 1];
 

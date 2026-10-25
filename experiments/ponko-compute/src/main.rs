@@ -14,13 +14,16 @@ fn parse_usize(value: Option<String>, label: &str, default: usize) -> Result<usi
     value
         .map(|value| value.parse::<usize>())
         .transpose()
-        .with_context(|| format!("parse {label}")) 
+        .with_context(|| format!("parse {label}"))
         .map(|value| value.unwrap_or(default))
 }
 
 fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
     let actual: &[f32] = try_cast_slice(bytes).context("cast vector-add bytes to f32")?;
-    ensure!(actual.len() == expected.len(), "vector-add output length mismatch");
+    ensure!(
+        actual.len() == expected.len(),
+        "vector-add output length mismatch"
+    );
     let mut max_abs_error = 0.0_f32;
     for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
         let error = (actual - expected).abs();
@@ -37,15 +40,25 @@ fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let shader_path = PathBuf::from(
-        args.next().unwrap_or_else(|| "shaders/vector_add.spv".to_owned()),
+        args.next()
+            .unwrap_or_else(|| "shaders/vector_add.spv".to_owned()),
     );
     let count = parse_usize(args.next(), "element count", DEFAULT_COUNT)?;
     let warmups = parse_usize(args.next(), "warm-up iteration count", DEFAULT_WARMUPS)?;
     let iterations = parse_usize(args.next(), "timed iteration count", DEFAULT_ITERATIONS)?;
 
-    ensure!((1..=MAX_COUNT).contains(&count), "element count must be in 1..={MAX_COUNT}");
-    ensure!(warmups <= MAX_WARMUPS, "warm-up iterations must be <= {MAX_WARMUPS}");
-    ensure!((1..=MAX_ITERATIONS).contains(&iterations), "timed iterations must be in 1..={MAX_ITERATIONS}");
+    ensure!(
+        (1..=MAX_COUNT).contains(&count),
+        "element count must be in 1..={MAX_COUNT}"
+    );
+    ensure!(
+        warmups <= MAX_WARMUPS,
+        "warm-up iterations must be <= {MAX_WARMUPS}"
+    );
+    ensure!(
+        (1..=MAX_ITERATIONS).contains(&iterations),
+        "timed iterations must be in 1..={MAX_ITERATIONS}"
+    );
 
     let a: Vec<f32> = (0..count).map(|i| i as f32 * 0.5).collect();
     let b: Vec<f32> = (0..count).map(|i| i as f32 * 0.25 + 1.0).collect();
