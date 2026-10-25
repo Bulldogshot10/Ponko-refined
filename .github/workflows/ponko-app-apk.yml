@@ -41,6 +41,7 @@ jobs:
     env:
       PONKO_ENABLE_VULKAN: ON
       PONKO_EXYNOS_2400E_CPU_PROFILE: ON
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -58,12 +59,18 @@ jobs:
           targets: aarch64-linux-android
           components: rustfmt
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK packages and ccache
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ccache
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          else
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -print 2>/dev/null | sort -V | tail -n 1)"
+          fi
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" --install \
@@ -76,7 +83,17 @@ jobs:
             echo "ANDROID_SDK_ROOT=$SDK_ROOT"
             echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.3.13750724"
             echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/27.3.13750724"
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache"
           } >> "$GITHUB_ENV"
+          ccache --version
+
+      - name: Restore native compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ponko-native-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/CMakeLists.txt', 'app/build.gradle.kts', 'rust/ponko-native/build.rs') }}
+          restore-keys: |
+            ponko-native-${{ runner.os }}-
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -95,6 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          chmod +x gradlew
           ./gradlew :app:assembleDebug \
             --no-daemon \
             --stacktrace \
