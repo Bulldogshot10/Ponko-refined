@@ -405,7 +405,7 @@ static uint64_t read_proc_kib(const char* path, const char* key) {
     while (std::getline(input, line)) {
         if (line.compare(0, std::strlen(key), key) != 0) continue;
         const char* value = line.c_str() + std::strlen(key);
-        while (*value == ' ' || *value == '\\t') ++value;
+        while (*value == ' ') ++value;
         return static_cast<uint64_t>(std::strtoull(value, nullptr, 10));
     }
     return 0;
