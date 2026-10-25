@@ -570,6 +570,11 @@
     <string name="draw_lora_fusion_title">Fuse LoRA into checkpoint</string>
     <string name="draw_lora_fusion_intro">Choose one or more local LoRA adapters to merge into %1$s. Ponko will create a new GGUF checkpoint; the original model and adapter files stay unchanged.</string>
     <string name="draw_lora_fusion_next">Next</string>
+    <string name="draw_lora_fusion_import">Import LoRA</string>
+    <string name="draw_lora_fusion_pick_file">Choose LoRA adapter (.safetensors)</string>
+    <string name="draw_lora_fusion_imported">Imported LoRA: %1$s</string>
+    <string name="draw_lora_fusion_import_failed">Could not import LoRA: %1$s</string>
+    <string name="draw_lora_fusion_bad_lora">Choose a LoRA adapter file with the .safetensors extension.</string>
     <string name="draw_lora_fusion_no_model">Select a drawing model first.</string>
     <string name="draw_lora_fusion_supported">Fusion currently supports single-file Stable Diffusion 1.x and SDXL checkpoints (.safetensors, .gguf, .ckpt, .pt, or .pth).</string>
     <string name="draw_lora_fusion_no_loras">Import or select at least one local .safetensors LoRA adapter.</string>
