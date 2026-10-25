@@ -1,2 +1,3 @@
 /target
 /shaders/vector_add.spv
+/shaders/matmul.spv
