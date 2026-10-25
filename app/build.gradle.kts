@@ -86,6 +86,15 @@ if (ponkoRustFacadeEnabled) {
     val rustNativeLibrary = ponkoRustJniLibsDir.map { it.file("arm64-v8a/libponko_native.so") }
     val rustManifest = ponkoRustDir.resolve("Cargo.toml").absolutePath
 
+    // Hearth's pinned CubeCL has a desktop-only SPIR-V disk-cache config. Apply the Android
+    // compatibility patch before Cargo compiles cubecl-wgpu for aarch64-linux-android.
+    val patchHearthCubeclAndroid = tasks.register<Exec>("patchHearthCubeclAndroid") {
+        group = "build"
+        workingDir(rootProject.projectDir)
+        description = "Disable desktop-only CubeCL SPIR-V disk cache on Android."
+        commandLine("bash", rootProject.file("scripts/patch-hearth-android.sh").absolutePath)
+    }
+
     val buildPonkoRustAndroid = tasks.register<Exec>("buildPonkoRustAndroid") {
         group = "build"
         workingDir(ponkoRustDir)
@@ -107,6 +116,10 @@ if (ponkoRustFacadeEnabled) {
             "-o", ponkoRustJniLibsDir.get().asFile.absolutePath,
             "build", "--release", "--manifest-path", rustManifest
         )
+    }
+
+    buildPonkoRustAndroid.configure {
+        dependsOn(patchHearthCubeclAndroid)
     }
 
     val generatePonkoUniffiKotlin = tasks.register<Exec>("generatePonkoUniffiKotlin") {

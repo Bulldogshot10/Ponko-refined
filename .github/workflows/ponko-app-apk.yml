@@ -8,6 +8,7 @@ on:
     paths:
       - "app/**"
       - "rust/ponko-native/**"
+      - "scripts/**"
       - "rust/hearth/**"
       - ".gitmodules"
       - "build.gradle.kts"
@@ -83,6 +84,9 @@ jobs:
 
       - name: Configure Gradle cache
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Patch CubeCL Android SPIR-V cache config
+        run: bash scripts/patch-hearth-android.sh
 
       - name: Format and test Hearth adapter
         shell: bash

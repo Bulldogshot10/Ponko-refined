@@ -8,6 +8,7 @@ on:
     paths:
       - "app/**"
       - "rust/**"
+      - "scripts/**"
       - ".gitmodules"
       - "gradle/**"
       - "build.gradle*"
@@ -85,6 +86,9 @@ jobs:
             "ndk;27.3.13750724"
 
       - uses: gradle/actions/setup-gradle@v4
+
+      - name: Patch CubeCL Android SPIR-V cache config
+        run: bash scripts/patch-hearth-android.sh
 
       - name: Format and test Hearth adapter
         run: |
