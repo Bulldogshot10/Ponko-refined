@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,24 @@
 #include "model_io/safetensors_io.h"
 #include "model_io/streaming_writer.h"
 #include "model_loader.h"
+
+static std::string fusion_memory_snapshot() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    std::string snapshot;
+    while (std::getline(status, line)) {
+        if (starts_with(line, "VmRSS:") || starts_with(line, "VmHWM:") || starts_with(line, "VmSize:")) {
+            if (!snapshot.empty()) snapshot += " ";
+            snapshot += line;
+        }
+    }
+    return snapshot.empty() ? "proc-status-unavailable" : snapshot;
+}
+
+static void log_fusion_memory(const char* stage) {
+    const std::string memory = fusion_memory_snapshot();
+    LOG_INFO("LoRA fusion diagnostics | stage=%s | %s", stage, memory.c_str());
+}
 
 struct TensorExportInfo {
     TensorStorage storage;
@@ -309,6 +328,14 @@ static bool load_tensor_for_export(ModelLoader& model_loader,
     output_storage.type = job.info.type;
 
     if (fusion != nullptr && fusion->targets(storage.name)) {
+        static std::atomic<size_t> fusion_tensor_sequence{0};
+        const size_t sequence = fusion_tensor_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+        LOG_INFO("LoRA fusion tensor start | index=%zu | name=%s | shape=[%lld,%lld,%lld,%lld] | estimated_f32=%zu",
+                 sequence, storage.name.c_str(),
+                 static_cast<long long>(storage.ne[0]), static_cast<long long>(storage.ne[1]),
+                 static_cast<long long>(storage.ne[2]), static_cast<long long>(storage.ne[3]),
+                 static_cast<size_t>(storage.nelements()) * sizeof(float));
+        if (sequence == 1 || sequence % 16 == 0) log_fusion_memory("before-fused-tensor");
         const size_t float_bytes = static_cast<size_t>(storage.nelements()) * sizeof(float);
         const size_t mem_size = 1 * 1024 * 1024 + ggml_tensor_overhead() + float_bytes;
         ggml_context* ggml_ctx = ggml_init({mem_size, nullptr, false});
@@ -333,11 +360,13 @@ static bool load_tensor_for_export(ModelLoader& model_loader,
             return false;
         }
         std::memcpy(tensor->data, base_weights.data(), base_weights.size() * sizeof(float));
+        if (sequence == 1 || sequence % 16 == 0) log_fusion_memory("after-base-tensor-f32");
         if (!fusion->apply_tensor(storage.name, tensor, &job.error)) {
             ggml_free(ggml_ctx);
             return false;
         }
         const bool converted = convert_fused_f32_tensor(tensor, job.info.type, &job.data, &job.error);
+        if (sequence == 1 || sequence % 16 == 0) log_fusion_memory("after-lora-apply-and-export-convert");
         ggml_free(ggml_ctx);
         return converted;
     }
@@ -681,6 +710,9 @@ bool fuse_loras_to_file(const char* input_model_path,
         return false;
     }
 
+    log_fusion_memory("fusion-start");
+    LOG_INFO("LoRA fusion base checkpoint load start | path=%s | adapters=%zu | requested_threads=%d",
+             input_model_path, lora_count, n_threads);
     ModelLoader model_loader;
     model_loader.set_n_threads(n_threads);
     if (!model_loader.init_from_file(input_model_path)) {
@@ -688,6 +720,9 @@ bool fuse_loras_to_file(const char* input_model_path,
         return false;
     }
     if (convert_name) model_loader.convert_tensors_name();
+    LOG_INFO("LoRA fusion base checkpoint loaded | tensors=%zu | version=%d",
+             model_loader.get_tensor_storage_map().size(), static_cast<int>(model_loader.get_sd_version()));
+    log_fusion_memory("after-base-checkpoint-metadata");
 
     std::set<std::string> base_names;
     for (const auto& item : model_loader.get_tensor_storage_map()) {
@@ -708,11 +743,15 @@ bool fuse_loras_to_file(const char* input_model_path,
         scales.push_back(lora_scales[i]);
     }
     std::string error;
+    log_fusion_memory("before-load-selected-lora-tensors");
     if (!fusion.initialize(paths, scales, base_names, version, n_threads, &error)) {
         LOG_ERROR("LoRA fusion initialization failed: %s", error.c_str());
         return false;
     }
-    return export_loaded_model(model_loader, output_path, output_type, tensor_type_rules, n_threads, &fusion);
+    log_fusion_memory("after-load-selected-lora-tensors");
+    const bool export_success = export_loaded_model(model_loader, output_path, output_type, tensor_type_rules, n_threads, &fusion);
+    log_fusion_memory(export_success ? "fusion-export-success" : "fusion-export-failure");
+    return export_success;
 }
 
 bool convert(const char* input_path,
