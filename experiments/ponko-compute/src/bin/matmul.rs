@@ -20,7 +20,8 @@ fn parse_usize(value: Option<String>, label: &str, default: usize) -> Result<usi
 }
 
 fn verify_output(bytes: &[u8], expected: &[f32]) -> Result<f32> {
-    let actual: &[f32] = try_cast_slice(bytes).map_err(|error| anyhow::anyhow!("cast matrix output bytes to f32: {error:?}"))?;
+    let actual: &[f32] = try_cast_slice(bytes)
+        .map_err(|error| anyhow::anyhow!("cast matrix output bytes to f32: {error:?}"))?;
     ensure!(
         actual.len() == expected.len(),
         "matrix output length mismatch"
