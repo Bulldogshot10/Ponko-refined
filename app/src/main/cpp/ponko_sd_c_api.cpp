@@ -649,7 +649,8 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
 
     const std::string temporary = std::string(output_path) + ".partial.gguf";
     std::remove(temporary.c_str());
-    const int threads = std::max(1, std::min(2, n_threads));
+    const int threads = 1; // Low-RAM device path: serialize fusion tensor workers.
+
     PONKO_LOGI("LoRA fusion entering converter: output=%s threads=%d", output_path, threads);
     const bool converted = fuse_loras_to_file(
         input_model_path, lora_paths, lora_scales, lora_count, temporary.c_str(),
