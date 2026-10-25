@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   linux-vulkan-stable:
-    name: Rust + SPIR-V + Vulkan correctness
+    name: Linux Vulkan correctness (lavapipe)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -77,3 +77,86 @@ jobs:
           cargo run --release --bin ponko-matmul -- shaders/matmul.spv 17 9 3 1 5
           cargo run --release --bin ponko-matmul -- shaders/matmul.spv 67 53 29 3 10
           cargo run --release --bin ponko-matmul -- shaders/matmul.spv 64 64 64 3 10
+
+  android-arm64-vulkan:
+    name: Android ARM64 Vulkan build (Xclipse 940 target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: experiments/ponko-compute
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android NDK and Vulkan shader tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          printf 'y\n%.0s' {1..50} | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install "ndk;27.3.13750724"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Compile runtime for Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo ndk -t arm64-v8a build --release --bins
+          test -s target/aarch64-linux-android/release/ponko-compute
+          test -s target/aarch64-linux-android/release/ponko-matmul
+
+      - name: Compile SPIR-V shaders for the Android runtime
+        run: |
+          glslangValidator -V --target-env vulkan1.0 shaders/vector_add.comp -o shaders/vector_add.spv
+          glslangValidator -V --target-env vulkan1.0 shaders/matmul.comp -o shaders/matmul.spv
+          spirv-val --target-env vulkan1.0 shaders/vector_add.spv
+          spirv-val --target-env vulkan1.0 shaders/matmul.spv
+
+      - name: Verify Android ELF architecture and assemble device-test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$NDK_BIN/llvm-readelf" -h target/aarch64-linux-android/release/ponko-compute | grep -E 'Machine:.*AArch64'
+          "$NDK_BIN/llvm-readelf" -h target/aarch64-linux-android/release/ponko-matmul | grep -E 'Machine:.*AArch64'
+          mkdir -p dist/android-arm64
+          cp target/aarch64-linux-android/release/ponko-compute dist/android-arm64/
+          cp target/aarch64-linux-android/release/ponko-matmul dist/android-arm64/
+          cp shaders/vector_add.spv shaders/matmul.spv dist/android-arm64/
+          cat > dist/android-arm64/run-xclipse-stable-tests.sh <<'SCRIPT'
+          #!/system/bin/sh
+          set -eu
+          DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          cd "$DIR"
+          echo "PonkoCompute target: Android ARM64 / Vulkan runtime"
+          ./ponko-compute vector_add.spv 1 1 5
+          ./ponko-compute vector_add.spv 65 1 5
+          ./ponko-compute vector_add.spv 16387 10 100
+          ./ponko-matmul matmul.spv 1 1 1 0 5
+          ./ponko-matmul matmul.spv 17 9 3 1 5
+          ./ponko-matmul matmul.spv 67 53 29 10 100
+          ./ponko-matmul matmul.spv 64 64 64 10 100
+          SCRIPT
+          echo "Android ARM64 Vulkan runtime bundle assembled."
+
+      - name: Upload Android ARM64 Vulkan test bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponko-compute-xclipse940-android-arm64-${{ github.run_id }}
+          path: experiments/ponko-compute/dist/android-arm64/*
+          if-no-files-found: error
+          retention-days: 14
