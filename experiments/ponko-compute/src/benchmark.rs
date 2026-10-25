@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn averages_middle_pair_for_even_median() {
         let summary = summarize(&ms(&[4, 1, 3, 2])).unwrap();
-        assert_eq!(summary.median, Duration::from_millis(2500));
+        assert_eq!(summary.median, Duration::from_micros(2500));
         assert_eq!(summary.p95, Duration::from_millis(4));
     }
 
