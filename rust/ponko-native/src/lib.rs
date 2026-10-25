@@ -406,8 +406,8 @@ fn render_sd15(
         let strength = request.lora_scales[i];
         clip.apply_lora("text_model", "lora_te", &lora, strength, &device).map_err(native_error)?;
     }
-    let positive_tokens = tokenizer.encode(&request.prompt, &device);
-    let negative_tokens = tokenizer.encode(&request.negative_prompt, &device);
+    let positive_tokens = tokenizer.encode(&request.prompt, &device).map_err(native_error)?;
+    let negative_tokens = tokenizer.encode(&request.negative_prompt, &device).map_err(native_error)?;
     let positive = Sd15Conditioning::new(clip.forward(positive_tokens));
     let negative = Sd15Conditioning::new(clip.forward(negative_tokens));
     drop(clip);
@@ -488,10 +488,10 @@ fn render_sdxl(
         clip_g.apply_lora("lora_te2", &lora, strength, &device).map_err(native_error)?;
     }
 
-    let pos_l = tokenizer.encode(&request.prompt, &device);
-    let neg_l = tokenizer.encode(&request.negative_prompt, &device);
-    let pos_g = tokenizer.encode_open_clip(&request.prompt, &device);
-    let neg_g = tokenizer.encode_open_clip(&request.negative_prompt, &device);
+    let pos_l = tokenizer.encode(&request.prompt, &device).map_err(native_error)?;
+    let neg_l = tokenizer.encode(&request.negative_prompt, &device).map_err(native_error)?;
+    let pos_g = tokenizer.encode_open_clip(&request.prompt, &device).map_err(native_error)?;
+    let neg_g = tokenizer.encode_open_clip(&request.negative_prompt, &device).map_err(native_error)?;
     let pos_l_hidden = clip_l.forward_hidden_layer(pos_l, Some(10));
     let neg_l_hidden = clip_l.forward_hidden_layer(neg_l, Some(10));
     let (pos_g_hidden, pos_pooled) = clip_g.forward(pos_g);
