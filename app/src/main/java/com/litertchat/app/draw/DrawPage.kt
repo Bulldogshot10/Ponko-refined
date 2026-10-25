@@ -107,6 +107,7 @@ class DrawPage(
         private const val REQ_RESADAPTER_NORM = 0x5D05
         private const val REQ_HIRES_MODEL = 0x5D06
         private const val REQ_ADETAILER_MODEL = 0x5D07
+        private const val REQ_LORA_FUSION_IMPORT = 0x5D08
         private const val HIRES_UPSCALER_DIR = "hires-upscalers"
         private const val ADETAILER_MODEL_DIR = "adetailer-models"
 
@@ -2295,15 +2296,13 @@ class DrawPage(
             return
         }
         val available = listLoras()
-        if (available.isEmpty()) {
-            toast(c.getString(R.string.draw_lora_fusion_no_loras))
-            return
-        }
-
         val checked = BooleanArray(available.size)
         android.app.AlertDialog.Builder(act)
             .setTitle(c.getString(R.string.draw_lora_fusion_title))
-            .setMessage(c.getString(R.string.draw_lora_fusion_intro, source.name))
+            .setMessage(
+                if (available.isEmpty()) c.getString(R.string.draw_lora_fusion_no_loras)
+                else c.getString(R.string.draw_lora_fusion_intro, source.name)
+            )
             .setMultiChoiceItems(available.map { it.name }.toTypedArray(), checked) { _, which, isChecked ->
                 checked[which] = isChecked
             }
@@ -2315,8 +2314,75 @@ class DrawPage(
                     showLoraFusionSettings(set, source, selected)
                 }
             }
+            .setNeutralButton(c.getString(R.string.draw_lora_fusion_import)) { _, _ ->
+                pickLoraForFusion()
+            }
             .setNegativeButton(c.getString(R.string.s_066), null)
             .show()
+    }
+
+    private fun pickLoraForFusion() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(android.content.Intent.EXTRA_TITLE, c.getString(R.string.draw_lora_fusion_pick_file))
+        }
+        act.startActivityForResult(intent, REQ_LORA_FUSION_IMPORT)
+    }
+
+    private fun handleLoraFusionPickedFile(
+        requestCode: Int,
+        resultCode: Int,
+        data: android.content.Intent?,
+    ): Boolean {
+        if (requestCode != REQ_LORA_FUSION_IMPORT) return false
+        if (resultCode != Activity.RESULT_OK) return true
+        val uri = data?.data
+        if (uri == null) {
+            toast(c.getString(R.string.draw_lora_fusion_import_failed, c.getString(R.string.s_106)))
+            return true
+        }
+        val name = queryDisplayName(uri)?.takeIf { it.isNotBlank() } ?: "lora.safetensors"
+        if (!name.endsWith(".safetensors", ignoreCase = true)) {
+            toast(c.getString(R.string.draw_lora_fusion_bad_lora))
+            return true
+        }
+
+        scope.launch {
+            try {
+                val imported = withContext(Dispatchers.IO) {
+                    val safeName = File(name).name
+                        .replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                        .take(120)
+                        .ifBlank { "lora.safetensors" }
+                    val stem = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "")
+                    val dir = loraDir()
+                    var destination = File(dir, safeName)
+                    var suffix = 2
+                    while (destination.exists()) {
+                        destination = File(dir, "$stem-$suffix" + if (ext.isEmpty()) "" else ".$ext")
+                        suffix++
+                    }
+                    try {
+                        copyContentUri(uri, destination)
+                        destination
+                    } catch (e: Throwable) {
+                        destination.delete()
+                        throw e
+                    }
+                }
+                toast(c.getString(R.string.draw_lora_fusion_imported, imported.name))
+                // Reopen the picker with the newly imported adapter included in the list.
+                showLoraFusionWizard()
+            } catch (e: Throwable) {
+                toast(c.getString(
+                    R.string.draw_lora_fusion_import_failed,
+                    e.message ?: e.javaClass.simpleName,
+                ))
+            }
+        }
+        return true
     }
 
     private fun showLoraFusionSettings(baseSet: ModelSet, source: File, loras: List<File>) {
@@ -3173,6 +3239,7 @@ class DrawPage(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (handleLoraFusionPickedFile(requestCode, resultCode, data)) return true
         if (handleHiresUpscalerPickedFile(requestCode, resultCode, data)) return true
         if (handleADetailerPickedFile(requestCode, resultCode, data)) return true
         if (handleResAdapterPickedFile(requestCode, resultCode, data)) return true
