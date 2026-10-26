@@ -111,6 +111,9 @@ object DrawCore {
         scheduler: HearthEngine.Scheduler? = null,
         onStep: ((Int, Int) -> Unit)? = null,
     ): List<Result> {
+        // UI/chat generation runs outside this API mutex and reports through uiBusy.
+        // Reject it here so an API request cannot enter the same native Hearth handle concurrently.
+        if (uiBusy) throw IllegalStateException("绘图引擎正忙")
         if (!lock.tryLock()) throw IllegalStateException("绘图引擎正忙")
         busy = true
         cancelFlag = false
