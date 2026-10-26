@@ -60,3 +60,24 @@ Real-device Xclipse 940 validation is pending. No fresh CI/build/device result i
 
 - Drawing GGUF/quantization, img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion, and LoRA fusion remain unsupported and must stay out of the active drawing UI.
 - The repository's current device-validation status remains pending until real-device logs are available.
+
+
+## Follow-up peer review (2026-10-26)
+
+### Additional changes on `feat/hearth-native-rewrite`
+
+- Wired CLIP Skip all the way from the Kotlin UI through the UniFFI request into Hearth. SD 1.5 now keeps the normal final-layer output at skip 1 and selects earlier hidden layers for higher values; SDXL preserves its existing penultimate CLIP-L output at skip 1 and selects earlier CLIP-L layers for higher values.
+- Added Rust validation for CLIP Skip values outside 1–12 and unit coverage for the SD 1.5 / SDXL layer mapping.
+- Removed the visible ETA control because the current Hearth sampler calls do not consume the legacy ETA parameter. The legacy field remains in the API structure for compatibility.
+- Replaced silent truncation of mismatched LoRA path/weight arrays with explicit Kotlin validation; the native request still enforces the four-adapter maximum.
+- Hardened native lifecycle serialization: overlapping generation calls now fail immediately instead of queuing, and native context release refuses to run while generation holds the shared WGPU runtime.
+- Added post-decode synchronization and Burn/WGPU memory cleanup so successful and failed RGB conversion paths release cached VAE decode allocations after each generation.
+- Direct callers now receive explicit failures for unsupported img2img, HiRes Fix, and ADetailer options rather than silently getting a text-to-image result.
+- Updated `rust/ponko-native/API_PARITY.md` with CLIP Skip and ETA status.
+
+### Validation status for this follow-up
+
+- Source/patch-anchor verification completed through the GitHub repository API; changed files were fetched again after writing.
+- `git ls-remote` / local checkout failed with `Could not resolve host: github.com`. Therefore `cargo fmt --check`, `cargo test`, and `./gradlew --no-daemon :app:assembleDebug` have **not** been run here.
+- The available commit-status query returned no status checks for the latest code commit. No automated build or test pass is claimed.
+- Next: in a recursive-submodule checkout, run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`, `cargo test --manifest-path rust/ponko-native/Cargo.toml`, and `./gradlew --no-daemon :app:assembleDebug`. Then install the APK and test SD 1.5 generation, CLIP Skip 1 vs 2, cancellation while model weights load, repeated generations for memory growth, and SDXL VAE decoding on Exynos 2400e / Xclipse 940.
