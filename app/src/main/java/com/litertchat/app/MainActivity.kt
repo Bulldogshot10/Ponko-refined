@@ -4342,16 +4342,15 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
-    /** 图片长按菜单：保存到相册 / 引用 / 发送至图生图。 */
+    /** 图片长按菜单：保存到相册 / 引用。Img2img is not exposed by the Hearth backend yet. */
     private fun showImageMenu(bmp: Bitmap, name: String) {
-        val items = arrayOf(getString(R.string.s_045), getString(R.string.s_291), getString(R.string.s_225))
+        val items = arrayOf(getString(R.string.s_045), getString(R.string.s_291))
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.s_293))
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> saveImageToGallery(bmp, name)
                     1 -> quoteImage(bmp)
-                    2 -> { drawPage?.sendImageToI2i(bmp); switchTab(2) }
                 }
             }
             .setNegativeButton(getString(R.string.s_066), null)
