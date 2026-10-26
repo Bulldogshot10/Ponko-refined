@@ -269,12 +269,17 @@ object HearthEngine {
         adetailer: ADetailerSettings = ADetailerSettings(),
     ): IntArray? = runCatching {
         lastNativeError = ""
-        val loraCount = minOf(loraPaths.size, loraScales.size)
+        require(loraPaths.size == loraScales.size) {
+            "LoRA paths and weights must have equal lengths."
+        }
+        require(loraPaths.size <= 4) {
+            "Hearth supports at most 4 LoRA adapters per generation."
+        }
         val request = com.litertchat.app.ponko.GenerationRequest(
             prompt,
             negative,
-            loraPaths.take(loraCount),
-            loraScales.take(loraCount).toList(),
+            loraPaths.toList(),
+            loraScales.toList(),
             width,
             height,
             steps,
@@ -292,7 +297,7 @@ object HearthEngine {
             0,
             hiresDenoisingStrength,
             hiresTileSize,
-            1,
+            clipSkip.coerceIn(1, 12),
             null, // The current Hearth adapter is text-to-image only.
             0,
             0,
@@ -404,7 +409,7 @@ object HearthEngine {
 
     /** 生成一张图；失败返回 null。
      *
-     *  initImage 非空则会走图生图（img2img）：它会被缩放到 width×height 后作为初始 latent，
+     *  当前 Hearth adapter 只支持文生图；传入 initImage 会由 adapter 明确拒绝。
      *  strength(<1) 决定从第几步开始去噪（越小越接近原图）。
      */
     fun render(
