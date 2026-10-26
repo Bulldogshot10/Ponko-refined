@@ -1943,7 +1943,7 @@ class DrawPage(
         return try {
             // Detach the process-wide API reference before freeing its native handle. If loading
             // the replacement fails, the API must stay detached instead of calling a stale handle.
-            DrawCore.release()
+            if (!DrawCore.release()) throw IllegalStateException(c.getString(R.string.s_428))
             if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
             sdHandle = 0L
             stage(HearthEngine.info())
@@ -1993,7 +1993,7 @@ class DrawPage(
         if (DrawCore.busy || DrawCore.uiBusy) {
             throw IllegalStateException(c.getString(R.string.s_428))
         }
-        DrawCore.release()   // 先清引用，别让 API 拿到已经 free 的句柄
+        if (!DrawCore.release()) throw IllegalStateException(c.getString(R.string.s_428))
         if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
         sdHandle = 0L
         activeBackend = "CPU"
@@ -3084,7 +3084,7 @@ class DrawPage(
         @Suppress("UNUSED_PARAMETER") onPreview: ((Int, Int, Int, ByteArray) -> Unit)? = null,
     ): ImageData = throw IllegalStateException(c.getString(R.string.draw_hearth_i2i_unavailable))
 
-        fun toBitmap(img: ImageData): Bitmap = img.bitmap
+    fun toBitmap(img: ImageData): Bitmap = img.bitmap
 
     /** 供对话页调用：把生成过程的预览帧转给「过程」页 */
     fun previewFrame(step: Int, w: Int, h: Int, rgb: ByteArray) = onPreviewFrame(step, w, h, rgb)
@@ -3131,7 +3131,9 @@ class DrawPage(
     }
 
     fun release() {
-        DrawCore.release()   // 顺序不能反：先断开 API 侧的引用，再真正释放 native 句柄
+        // Activity destruction can race a long render. Leave the handle untouched while busy;
+        // freeing it here would invalidate the pointer still used by the native sampler.
+        if (!DrawCore.release()) return
         if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
         sdHandle = 0L
     }
