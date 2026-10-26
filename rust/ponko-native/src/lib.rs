@@ -17,7 +17,7 @@ use std::{
 
 uniffi::setup_scaffolding!();
 
-pub const FACADE_API_VERSION: u32 = 3;
+pub const FACADE_API_VERSION: u32 = 4;
 
 type StepFn = unsafe extern "C" fn(*mut c_void, i32, i32);
 type PreviewFn = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *const u8, usize);
@@ -1007,6 +1007,19 @@ mod tests {
         input.lora_paths = (0..8).map(|i| format!("{i}.safetensors")).collect();
         input.lora_scales = vec![0.5; 8];
         assert!(validate_generation_request(input).valid);
+    }
+
+    #[test]
+    fn conditioning_model_slots_keep_native_order() {
+        let mut slots = empty_slots();
+        slots.control_net = Some("control.gguf".into());
+        slots.ip_adapter = Some("ip-adapter.gguf".into());
+        slots.embedding = Some("embedding.safetensors".into());
+        let ordered = slots.ordered();
+        assert_eq!(ordered.len(), 16);
+        assert_eq!(ordered[13], Some("control.gguf"));
+        assert_eq!(ordered[14], Some("ip-adapter.gguf"));
+        assert_eq!(ordered[15], Some("embedding.safetensors"));
     }
 
     #[test]

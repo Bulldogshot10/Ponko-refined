@@ -560,4 +560,21 @@
     <string name="draw_lora_fusion_failed_detail">原生融合失败，或生成的 GGUF 未通过验证。</string>
     <string name="draw_lora_fusion_create_failed">无法创建输出模型集目录。</string>
     <string name="draw_lora_fusion_register_failed">融合已完成，但无法注册新的模型集。</string>
+    <string name="draw_conditioning_title">图像条件控制</string>
+    <string name="draw_conditioning_intro">在模型集中选择兼容的模型权重，然后选择可选的条件图。</string>
+    <string name="draw_controlnet_label">ControlNet 模型</string>
+    <string name="draw_ipadapter_label">IP-Adapter 模型</string>
+    <string name="draw_embedding_label">Textual Inversion 嵌入</string>
+    <string name="draw_controlnet_pick_image">选择 ControlNet 控制图</string>
+    <string name="draw_controlnet_image_none">尚未选择 ControlNet 控制图</string>
+    <string name="draw_ipadapter_pick_image">选择 IP-Adapter 参考图</string>
+    <string name="draw_ipadapter_image_none">尚未选择 IP-Adapter 参考图</string>
+    <string name="draw_conditioning_image_selected">已选择图片：%1$d × %2$d</string>
+    <string name="draw_conditioning_clear_image">清除图片</string>
+    <string name="draw_controlnet_strength">ControlNet 强度（0 到 2）</string>
+    <string name="draw_controlnet_hint">请选择与模型匹配的预处理 Canny、深度、姿态或线稿控制图。ControlNet 作用于基础生成阶段。</string>
+    <string name="draw_ipadapter_strength">IP-Adapter 强度（0 到 2）</string>
+    <string name="draw_ipadapter_hint">IP-Adapter 需要兼容的 ip_adapter 权重；根据模型配置，可能还需要在 clip_vision 槽位添加匹配的 CLIP Vision 模型。</string>
+    <string name="draw_embedding_hint">适用于 SD1.x、SD2.x 或 SDXL。添加一个嵌入文件到模型集，并在提示词中使用不含扩展名的文件名作为触发词。</string>
+
 </resources>
