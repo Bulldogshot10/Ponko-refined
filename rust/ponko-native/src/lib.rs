@@ -445,10 +445,14 @@ fn render_sd15(
     let clip_skip_layer = sd15_clip_skip_layer(request.clip_skip);
     let (positive_hidden, negative_hidden) = match clip_skip_layer {
         None => (clip.forward(positive_tokens), clip.forward(negative_tokens)),
-        Some(layer) => (
-            clip.forward_hidden_layer(positive_tokens, Some(layer)),
-            clip.forward_hidden_layer(negative_tokens, Some(layer)),
-        ),
+        Some(layer) => {
+            let positive_hidden = clip.forward_hidden_layer(positive_tokens, Some(layer));
+            let negative_hidden = clip.forward_hidden_layer(negative_tokens, Some(layer));
+            (
+                apply_sd15_final_layer_norm(positive_hidden, &tensors, &device)?,
+                apply_sd15_final_layer_norm(negative_hidden, &tensors, &device)?,
+            )
+        }
     };
     let positive = Sd15Conditioning::new(positive_hidden);
     let negative = Sd15Conditioning::new(negative_hidden);
@@ -737,6 +741,30 @@ pub fn validate_res_adapter_request(_request: ResAdapterRequest) -> ValidationRe
 #[uniffi::export]
 pub fn validate_lora_fusion_request(_request: LoraFusionRequest) -> ValidationReport {
     invalid("LoRA fusion/export is not implemented by the Hearth backend.")
+}
+
+fn apply_sd15_final_layer_norm(
+    hidden: Tensor<Backend, 3>,
+    tensors: &SafeTensors<'_>,
+    device: &Device<Backend>,
+) -> Result<Tensor<Backend, 3>, PonkoError> {
+    // Hearth's hidden-layer API intentionally omits final_layer_norm for SDXL's raw CLIP-L
+    // conditioning. SD 1.5 clip-skip follows the usual CLIP convention and normalizes the
+    // selected hidden state before it becomes conditioning.
+    let weight = hearth::model_loader::load_tensor_1d(
+        tensors,
+        "cond_stage_model.transformer.text_model.final_layer_norm.weight",
+        device,
+    ).map_err(native_error)?;
+    let bias = hearth::model_loader::load_tensor_1d(
+        tensors,
+        "cond_stage_model.transformer.text_model.final_layer_norm.bias",
+        device,
+    ).map_err(native_error)?;
+    let mut norm: burn::nn::LayerNorm<Backend> = burn::nn::LayerNormConfig::new(768).init(device);
+    norm.gamma = burn::module::Param::from_tensor(weight);
+    norm.beta = Some(burn::module::Param::from_tensor(bias));
+    Ok(norm.forward(hidden))
 }
 
 fn sd15_clip_skip_layer(clip_skip: i32) -> Option<usize> {
