@@ -692,7 +692,7 @@ class DrawPage(
             setPadding(dp(16), dp(10), dp(16), dp(12))
         }
 
-        // ---- 结果面板内的子标签：结果 / 过程（过程页逐步刷新预览）----
+        // ---- Result tabs: final image / live step progress ----
         val resBar = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(pal.surface)
@@ -711,7 +711,7 @@ class DrawPage(
         processContent = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
         resultPane.addView(processContent, matchWrap())
 
-        // 过程页：逐步刷新的预览图 + 步骤进度
+        // Process page: live step progress; the current Hearth backend only previews after decoding completes.
         val procCard = card()
         procCard.addView(title(c.getString(R.string.s_373)))
         previewImg = ImageView(c).apply {
