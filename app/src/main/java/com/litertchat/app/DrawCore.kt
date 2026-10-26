@@ -80,11 +80,17 @@ object DrawCore {
     }
 
     /** 只清引用，不 free（free 由句柄持有者 DrawPage 负责，且**必须先调这个**，否则 API 会拿到已释放的句柄） */
-    fun release() = synchronized(stateLock) {
-        check(!busy && !uiBusy) { "绘图引擎正忙" }
-        handle = 0L
-        modelName = null
-        backend = null
+    fun release(): Boolean = synchronized(stateLock) {
+        // Lifecycle callbacks may arrive while native work is in flight. Refuse the release
+        // without throwing; the owner decides whether to retry or keep the current handle.
+        if (busy || uiBusy) {
+            false
+        } else {
+            handle = 0L
+            modelName = null
+            backend = null
+            true
+        }
     }
 
     fun isReady(): Boolean = handle != 0L
