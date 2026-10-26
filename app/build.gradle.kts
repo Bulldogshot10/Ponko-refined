@@ -3,9 +3,9 @@ plugins {
     id("com.android.application")
 }
 
-// Set -PponkoEnableVulkan=OFF for a CPU-only variant; default stays ON.
+// Vulkan is opt-in; the default Android build is CPU-only.
 // Keep the requested Exynos ISA profile enabled unless explicitly overridden.
-val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("ON").get()
+val ponkoEnableVulkan = providers.gradleProperty("ponkoEnableVulkan").orElse("OFF").get()
 val ponkoExynosCpuProfile = providers.gradleProperty("ponkoExynosCpuProfile").orElse("ON").get()
 val ponkoCpuArchFlags = if (ponkoExynosCpuProfile.equals("ON", ignoreCase = true)) {
     "-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4"

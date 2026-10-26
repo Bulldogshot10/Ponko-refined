@@ -1,4 +1,4 @@
-name: Ponko Android APK (Vulkan / Xclipse 940)
+name: Ponko Android APK (CPU / Exynos 2400E)
 
 on:
   push:
@@ -35,11 +35,11 @@ concurrency:
 
 jobs:
   android-debug-apk:
-    name: Build Ponko debug APK (Vulkan ON, Exynos 2400E profile)
+    name: Build Ponko debug APK (Vulkan OFF, Exynos 2400E CPU profile)
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
-      PONKO_ENABLE_VULKAN: ON
+      PONKO_ENABLE_VULKAN: OFF
       PONKO_EXYNOS_2400E_CPU_PROFILE: ON
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
@@ -108,7 +108,7 @@ jobs:
           cargo fmt --manifest-path rust/ponko-native/Cargo.toml
           cargo test --manifest-path rust/ponko-native/Cargo.toml
 
-      - name: Build APK with Vulkan and Exynos profile enabled
+      - name: Build CPU APK with Vulkan disabled and Exynos profile enabled
         shell: bash
         run: |
           set -euo pipefail
@@ -116,7 +116,7 @@ jobs:
           ./gradlew :app:assembleDebug \
             --no-daemon \
             --stacktrace \
-            -PponkoEnableVulkan=ON \
+            -PponkoEnableVulkan=OFF \
             -PponkoExynosCpuProfile=ON \
             2>&1 | tee app-build.log
 
@@ -140,7 +140,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ponko-vulkan-xclipse940-debug-apk-${{ github.run_id }}
+          name: ponko-cpu-exynos2400e-debug-apk-${{ github.run_id }}
           path: |
             app/build/outputs/apk/debug/app-debug.apk
             app-build.log

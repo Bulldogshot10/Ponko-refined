@@ -24,7 +24,7 @@ project(ponko_sd CXX C)
 option(PONKO_EXYNOS_2400E_CPU_PROFILE
        "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
 option(PONKO_ENABLE_VULKAN
-       "Build the Vulkan backend and its shader toolchain" ON)
+       "Build the Vulkan backend and its shader toolchain" OFF)
 if (PONKO_EXYNOS_2400E_CPU_PROFILE)
     set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
     message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")

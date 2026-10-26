@@ -109,7 +109,10 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
           mkdir -p app/build
-          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee app/build/ponko-gradle-build.log
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace \
+            -PponkoEnableVulkan=OFF \
+            -PponkoExynosCpuProfile=ON \
+            2>&1 | tee app/build/ponko-gradle-build.log
 
       - name: Inspect generated UniFFI Kotlin bindings
         if: always()
