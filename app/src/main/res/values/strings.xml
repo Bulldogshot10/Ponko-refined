@@ -410,8 +410,8 @@
 <string name="s_370">Main model copied. Tap "Companion files" to add the remaining slots.</string>
     <string name="s_371">Model slots (%1$d/%2$d)</string>
 <string name="s_373">Process</string>
-<string name="s_374">The preview is a low-resolution approximation (latent projection); the final image appears when generation finishes.</string>
-<string name="s_375">The preview refreshes here once generation starts.</string>
+<string name="s_374">Hearth currently updates step progress during generation; the image preview appears after generation finishes.</string>
+<string name="s_375">Intermediate image previews are not available in the current Hearth backend.</string>
 <string name="s_376">Theme</string>
 <string name="s_377">Follow system</string>
 <string name="s_378">Light</string>
