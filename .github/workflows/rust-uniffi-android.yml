@@ -19,6 +19,7 @@ on:
     paths:
       - "app/**"
       - "rust/**"
+      - "scripts/**"
       - ".gitmodules"
       - "gradle/**"
       - "build.gradle*"
