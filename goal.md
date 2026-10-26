@@ -72,18 +72,21 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 
 ## Model conditioning feature follow-up (2026-10-26)
 
-### Implemented in source; build and device verification needed
+### Implemented in source; CI build passed; device verification pending
 - **ControlNet path:** added the optional `control_net` model-set slot and routes an RGB888 control map plus strength through Kotlin, UniFFI, Rust's C ABI mirror and `ponko_sd_generate()` into `sd_img_gen_params_t.control_image/control_strength`. The image should be preprocessed for the selected ControlNet. A full-frame map is not reused for ADetailer crop passes because it would be spatially misaligned.
 - **IP-Adapter path:** added the optional `ip_adapter` model-set slot, reference-image picker, strength control and native `ip_adapter_image/ip_adapter_strength` wiring. Use weights compatible with the active SD model and a matching CLIP Vision component where required.
 - **Textual Inversion:** added one optional `embedding` slot. For SD1.x/SD2.x/SDXL, the bridge passes an `sd_embedding_t` to the existing native loader; the prompt trigger token defaults to the embedding filename stem (without extension).
 - **UI scope:** conditioning image controls are shared by text-to-image and img2img. Image selections remain in memory for the current page session; strength settings persist in preferences. Conditioning weights are optional model-set slots.
 - **Validation in code:** Rust validates optional image dimensions and RGB888 length, plus finite strengths; C++ repeats image-buffer validation at the ABI boundary and rejects images when the corresponding ControlNet/IP-Adapter weights are not loaded.
 - **Static audit follow-up (2026-10-26):** bumped the UniFFI facade contract to version 4 for the changed typed generation request; updated parity documentation from 13 to 16 model slots and corrected its Vulkan default statement; added a Rust unit test for the native slot ordering; added Chinese translations for the conditioning UI.
-- **Needs verification:** source wiring has not been compiled or exercised on-device with actual compatible weights. The feature commit uses `[skip ci]` to avoid intentionally starting workflows while Actions allowance is constrained. No local checkout or online dependency access was available for running Rust/Android builds in this session.
-- **Next steps:** run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`, `cargo test --manifest-path rust/ponko-native/Cargo.toml`, and `./gradlew :app:assembleDebug`; then test a compatible SD1.5 ControlNet map, IP-Adapter weights with CLIP Vision, and the embedding trigger token.
+- **Build validation:** CI build succeeded on 2026-10-26 in [run 40310371991](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40310371991), building source commit `566b39d3faef8ba134016064960af61839252517`. Rust formatting/tests, Gradle APK build, required-library verification, and artifact upload all passed.
+- **Needs device verification:** compiled wiring has not yet been exercised on-device with actual compatible weights. Test a compatible SD1.5 ControlNet map, IP-Adapter weights with CLIP Vision, and the embedding trigger token.
 
 ## CPU APK build follow-up (2026-10-26)
 
-- **Build trigger enabled:** `.github/workflows/ponko-app-apk.yml` now also runs when `goal.md` changes, so documented build/validation handoffs can request a fresh APK build without touching application source. This commit also modifies the workflow file itself, which triggers a build against the current conditioning-enabled branch head.
-- **Status at commit time:** build pending. Do not call the APK successful until the new GitHub Actions run completes, the required native libraries are verified in the APK, and the uploaded artifact is inspected.
-- **Workflow:** `.github/workflows/ponko-app-apk.yml` (CPU profile, Vulkan OFF, Exynos 2400E profile ON). Expected artifact name: `ponko-cpu-exynos2400e-debug-apk-<run_id>`.
+- **Build trigger enabled:** `.github/workflows/ponko-app-apk.yml` now also runs when `goal.md` changes, so documented build/validation handoffs can request a fresh APK build without touching application source. The workflow-file change triggered this build against the conditioning-enabled branch head.
+- **Build result: SUCCESS.** [GitHub Actions run 40310371991](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40310371991) completed successfully on source commit `566b39d3faef8ba134016064960af61839252517`. `cargo fmt`, `cargo test`, `./gradlew :app:assembleDebug`, required native-library checks, and upload all passed. Gradle reported `BUILD SUCCESSFUL in 1m 17s`.
+- **APK:** artifact `ponko-cpu-exynos2400e-debug-apk-40310371991`, APK size 51,697,848 bytes. SHA-256: `685429588ae9ffb806cedcae1239dbd0ee4066304910d1e224f1e29185966333`. Downloaded artifact checksum matches exactly.
+- **Native libraries verified:** `lib/arm64-v8a/libomp.so`, `libponko_native.so`, `libponko_sd.so`, and `libstable-diffusion.so` are present. Build configuration is Vulkan OFF with the Exynos 2400E CPU profile ON.
+- **Validation boundary:** this confirms CI compilation and packaged-library verification. No install or on-device generation test has been performed. ControlNet, IP-Adapter, and Textual Inversion still need runtime tests with compatible model weights.
+- **Next step:** install the APK on the target device, confirm app startup, then test ControlNet, IP-Adapter with its CLIP Vision dependency as applicable, and the embedding trigger token.
