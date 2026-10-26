@@ -301,6 +301,16 @@ impl NativeEngine {
     }
 
     pub fn free_context(&self, handle_id: i64) -> Result<(), PonkoError> {
+        // Do not retire a context while inference still holds GPU/model resources for it.
+        let _generation = match self.generation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(native_error("Cannot free a Hearth context while generation is active."));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(native_error("Hearth generation lock poisoned"));
+            }
+        };
         let removed = self.handles.lock().map_err(|_| native_error("Hearth handle registry lock poisoned"))?
             .remove(&handle_id);
         if removed.is_none() {
@@ -352,6 +362,17 @@ impl NativeEngine {
         if !report.valid {
             return Err(PonkoError::InvalidArgument { details: report.message });
         }
+        // Inference uses one shared WGPU runtime. Reject overlapping calls instead of queueing
+        // them; queued cancellation and handle teardown otherwise race when the next call starts.
+        let _generation = match self.generation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(native_error("Another Hearth generation is already running."));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(native_error("Hearth generation lock poisoned"));
+            }
+        };
         let context = self.handles.lock().map_err(|_| native_error("Hearth handle registry lock poisoned"))?
             .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
                 details: format!("unknown or unloaded Hearth handle {handle_id}"),
@@ -360,8 +381,6 @@ impl NativeEngine {
             .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
                 details: format!("unknown or unloaded Hearth handle {handle_id}"),
             })?;
-
-        let _generation = self.generation_lock.lock().map_err(|_| native_error("Hearth generation lock poisoned"))?;
         cancel.store(false, Ordering::Relaxed);
         *self.last_params.lock().map_err(|_| native_error("Hearth status lock poisoned"))? = format!(
             "Hearth generate: family={}, {}x{}, steps={}, cfg={}, sampler={}, scheduler={}, LoRAs={}",
@@ -412,8 +431,16 @@ fn render_sd15(
     }
     let positive_tokens = tokenizer.encode(&request.prompt, &device).map_err(native_error)?;
     let negative_tokens = tokenizer.encode(&request.negative_prompt, &device).map_err(native_error)?;
-    let positive = Sd15Conditioning::new(clip.forward(positive_tokens));
-    let negative = Sd15Conditioning::new(clip.forward(negative_tokens));
+    let clip_skip_layer = sd15_clip_skip_layer(request.clip_skip);
+    let (positive_hidden, negative_hidden) = match clip_skip_layer {
+        None => (clip.forward(positive_tokens), clip.forward(negative_tokens)),
+        Some(layer) => (
+            clip.forward_hidden_layer(positive_tokens, Some(layer)),
+            clip.forward_hidden_layer(negative_tokens, Some(layer)),
+        ),
+    };
+    let positive = Sd15Conditioning::new(positive_hidden);
+    let negative = Sd15Conditioning::new(negative_hidden);
     drop(clip);
 
     let mut unet = Sd15Unet2D::load(&tensors, &device).map_err(native_error)?;
@@ -465,7 +492,12 @@ fn render_sd15(
         let vae = Sd15VaeDecoder::load(&tensors, Some("first_stage_model"), &device).map_err(native_error)?;
         vae.forward(denoised)
     };
-    tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback)
+    let output = tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback);
+    // Release VAE decoder allocations after the GPU work and host copy complete, including on
+    // conversion errors, so repeated generations don't accumulate cached decode buffers.
+    let _ = Backend::sync(&device);
+    Backend::memory_cleanup(&device);
+    output
 }
 
 fn render_sdxl(
@@ -496,8 +528,9 @@ fn render_sdxl(
     let neg_l = tokenizer.encode(&request.negative_prompt, &device).map_err(native_error)?;
     let pos_g = tokenizer.encode_open_clip(&request.prompt, &device).map_err(native_error)?;
     let neg_g = tokenizer.encode_open_clip(&request.negative_prompt, &device).map_err(native_error)?;
-    let pos_l_hidden = clip_l.forward_hidden_layer(pos_l, Some(10));
-    let neg_l_hidden = clip_l.forward_hidden_layer(neg_l, Some(10));
+    let clip_l_layer = sdxl_clip_l_skip_layer(request.clip_skip);
+    let pos_l_hidden = clip_l.forward_hidden_layer(pos_l, Some(clip_l_layer));
+    let neg_l_hidden = clip_l.forward_hidden_layer(neg_l, Some(clip_l_layer));
     let (pos_g_hidden, pos_pooled) = clip_g.forward(pos_g);
     let (neg_g_hidden, neg_pooled) = clip_g.forward(neg_g);
     let h = request.height as f32;
@@ -554,7 +587,12 @@ fn render_sdxl(
     let vae_tensors = vae_file.tensors().map_err(native_error)?;
     let vae = SdxlVaeDecoder::load(&vae_tensors, None, &device).map_err(native_error)?;
     let decoded = vae.forward_tiled(denoised, 64, 8);
-    tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback)
+    let output = tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback);
+    // Release VAE decoder allocations after the GPU work and host copy complete, including on
+    // conversion errors, so repeated generations don't accumulate cached decode buffers.
+    let _ = Backend::sync(&device);
+    Backend::memory_cleanup(&device);
+    output
 }
 
 fn tensor_to_rgb(
@@ -651,6 +689,9 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
         return invalid("Width and height must be >=64, <=2048, and divisible by 8.");
     }
     if !(1..=150).contains(&request.steps) { return invalid("Steps must be in 1..=150."); }
+    if !(1..=12).contains(&request.clip_skip) {
+        return invalid("CLIP skip must be in 1..=12.");
+    }
     if !request.cfg.is_finite() || request.cfg < 0.0 { return invalid("CFG must be finite and >=0."); }
     if request.lora_paths.len() > MAX_LORA_COUNT {
         return invalid("Hearth supports at most 4 LoRA adapters per generation.");
@@ -685,6 +726,18 @@ pub fn validate_res_adapter_request(_request: ResAdapterRequest) -> ValidationRe
 #[uniffi::export]
 pub fn validate_lora_fusion_request(_request: LoraFusionRequest) -> ValidationReport {
     invalid("LoRA fusion/export is not implemented by the Hearth backend.")
+}
+
+fn sd15_clip_skip_layer(clip_skip: i32) -> Option<usize> {
+    match clip_skip.clamp(1, 12) {
+        1 => None, // Preserve the normal final layer plus final layer norm.
+        skip => Some(12usize - skip as usize),
+    }
+}
+
+fn sdxl_clip_l_skip_layer(clip_skip: i32) -> usize {
+    // SDXL's standard CLIP-L output is the penultimate hidden layer, even at clip-skip 1.
+    11usize.saturating_sub(clip_skip.clamp(1, 12) as usize)
 }
 
 fn valid(message: &str) -> ValidationReport { ValidationReport { valid: true, message: message.to_owned() } }
@@ -737,5 +790,30 @@ mod tests {
         too_many_loras.lora_paths = vec!["adapter.safetensors".to_owned(); 5];
         too_many_loras.lora_scales = vec![1.0; 5];
         assert!(!validate_generation_request(too_many_loras).valid);
+
+        let mut invalid_clip_skip = GenerationRequest {
+            prompt: "test".into(), negative_prompt: String::new(), lora_paths: vec![],
+            lora_scales: vec![], width: 512, height: 512, steps: 6, cfg: 7.0, seed: 42,
+            sample_method: 1, scheduler: 0, eta: -1.0, hires_enabled: false,
+            hires_upscaler: 1, hires_model_path: None, hires_scale: 2.0, hires_target_width: 0,
+            hires_target_height: 0, hires_steps: 0, hires_denoising_strength: 0.7,
+            hires_tile_size: 128, clip_skip: 13, init_image_rgb888: None, init_image_width: 0,
+            init_image_height: 0, strength: 1.0, adetailer_enabled: false,
+            adetailer_detector_path: None, adetailer_prompt: String::new(),
+            adetailer_negative_prompt: String::new(), adetailer_extra_args: String::new(),
+        };
+        assert!(!validate_generation_request(invalid_clip_skip.clone()).valid);
+        invalid_clip_skip.clip_skip = 1;
+        assert!(validate_generation_request(invalid_clip_skip).valid);
+    }
+
+    #[test]
+    fn clip_skip_maps_to_expected_hidden_layers() {
+        assert_eq!(sd15_clip_skip_layer(1), None);
+        assert_eq!(sd15_clip_skip_layer(2), Some(10));
+        assert_eq!(sd15_clip_skip_layer(12), Some(0));
+        assert_eq!(sdxl_clip_l_skip_layer(1), 10);
+        assert_eq!(sdxl_clip_l_skip_layer(2), 9);
+        assert_eq!(sdxl_clip_l_skip_layer(12), 0);
     }
 }
