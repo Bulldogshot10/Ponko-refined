@@ -81,3 +81,9 @@ Real-device Xclipse 940 validation is pending. No fresh CI/build/device result i
 - `git ls-remote` / local checkout failed with `Could not resolve host: github.com`. Therefore `cargo fmt --check`, `cargo test`, and `./gradlew --no-daemon :app:assembleDebug` have **not** been run here.
 - The available commit-status query returned no status checks for the latest code commit. No automated build or test pass is claimed.
 - Next: in a recursive-submodule checkout, run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`, `cargo test --manifest-path rust/ponko-native/Cargo.toml`, and `./gradlew --no-daemon :app:assembleDebug`. Then install the APK and test SD 1.5 generation, CLIP Skip 1 vs 2, cancellation while model weights load, repeated generations for memory growth, and SDXL VAE decoding on Exynos 2400e / Xclipse 940.
+
+
+### Cancellation-race follow-up (2026-10-26)
+
+- Added a UniFFI `reset_cancel(handle_id)` method and call it immediately before Kotlin enters the blocking `generate_image` call. Removed the second reset from Rust generation startup, preventing a cancel request arriving during native-call startup from being cleared.
+- Validation remains source-only because local GitHub DNS resolution prevents checkout. Re-run Rust formatting/tests and the Android debug build using the commands above; test cancel immediately after the UI button changes to “stop” and verify a subsequent generation still starts normally.
