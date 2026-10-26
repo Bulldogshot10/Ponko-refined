@@ -935,7 +935,7 @@ bool adetail_image(adetailer_ctx_t* context,
     if (num_images_out != nullptr) {
         *num_images_out = 0;
     }
-    if (context == nullptr || context->detailer == nullptr || sd_ctx == nullptr || public_params == nullptr ||
+    if (context == nullptr || sd_ctx == nullptr || public_params == nullptr ||
         inpaint_params == nullptr || input_image.data == nullptr) {
         return false;
     }
