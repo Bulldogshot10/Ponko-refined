@@ -13,6 +13,7 @@
 | Samplers | Euler, Euler a, DPM++ 2M, DPM++ SDE |
 | Schedules | Normal, Karras |
 | Progress/cancel | Step callbacks; cancellation checked between denoising steps |
+| Request validation | Dimensions from 64 to 2048 px, divisible by 8; at most 4 LoRAs |
 | Drawing GGUF / quantization | Not implemented |
 | Img2img / HiRes Fix / ADetailer | Not implemented in this adapter |
 | UNet quantization / ResAdapter / LoRA fusion | Not implemented in this adapter |
@@ -24,3 +25,4 @@
 2. SD 1.5 SafeTensors text-to-image smoke test on Exynos 2400e / Xclipse 940.
 3. SDXL load/generation test where device memory allows.
 4. Verify model loading, generated dimensions, Vulkan diagnostics, memory use, and cancellation behavior.
+5. Run request-validation tests for oversized dimensions, unsupported samplers/features, and the 4-LoRA limit.
