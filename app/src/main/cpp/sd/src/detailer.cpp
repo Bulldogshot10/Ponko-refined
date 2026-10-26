@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <sstream>
 #include <utility>
 
@@ -15,6 +16,26 @@
 
 struct adetailer_ctx_t {
     ADetailerGGML* detailer = nullptr;
+    std::string detector_path;
+    int n_threads = 1;
+    std::string backend_spec = "cpu";
+    std::string params_backend_spec = "cpu";
+
+    bool ensure_loaded() {
+        if (detailer != nullptr) return true;
+        auto* candidate = new (std::nothrow) ADetailerGGML(n_threads, backend_spec, params_backend_spec);
+        if (candidate == nullptr || !candidate->load_from_file(detector_path)) {
+            delete candidate;
+            return false;
+        }
+        detailer = candidate;
+        return true;
+    }
+
+    void unload() {
+        delete detailer;
+        detailer = nullptr;
+    }
 };
 
 struct LetterboxInput {
@@ -878,14 +899,16 @@ adetailer_ctx_t* new_adetailer_ctx(const char* detector_path,
     if (detector_path == nullptr || detector_path[0] == '\0') {
         return nullptr;
     }
-    auto* context = static_cast<adetailer_ctx_t*>(calloc(1, sizeof(adetailer_ctx_t)));
+    auto* context = new (std::nothrow) adetailer_ctx_t();
     if (context == nullptr) {
         return nullptr;
     }
-    context->detailer = new ADetailerGGML(n_threads, SAFE_STR(backend), SAFE_STR(params_backend));
-    if (context->detailer == nullptr || !context->detailer->load_from_file(detector_path)) {
-        delete context->detailer;
-        free(context);
+    context->detector_path = detector_path;
+    context->n_threads = n_threads > 0 ? n_threads : 1;
+    context->backend_spec = SAFE_STR(backend);
+    context->params_backend_spec = SAFE_STR(params_backend);
+    if (!context->ensure_loaded()) {
+        delete context;
         return nullptr;
     }
     return context;
@@ -895,9 +918,8 @@ void free_adetailer_ctx(adetailer_ctx_t* context) {
     if (context == nullptr) {
         return;
     }
-    delete context->detailer;
-    context->detailer = nullptr;
-    free(context);
+    context->unload();
+    delete context;
 }
 
 bool adetail_image(adetailer_ctx_t* context,
@@ -923,7 +945,15 @@ bool adetail_image(adetailer_ctx_t* context,
         return false;
     }
 
+    if (!context->ensure_loaded()) {
+        LOG_ERROR("failed to load ADetailer detector '%s'", context->detector_path.c_str());
+        return false;
+    }
     auto detections = context->detailer->predict(input_image, params);
+    // Detection tensors and masks are all CPU-side values by this point. Destroy the
+    // detector/model manager before crop inpainting so its parameter buffers do not
+    // compete with the diffusion model's denoising and VAE decode peak.
+    context->unload();
     filter_and_sort_detections(&detections, input_image.width, input_image.height, params);
     // Non-merged masks are produced and consumed one at a time. Only merged mode
     // retains a full-frame mask, and its helper now merges incrementally.
