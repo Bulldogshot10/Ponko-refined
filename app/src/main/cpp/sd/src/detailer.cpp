@@ -1,7 +1,8 @@
 #include "detailer.h"
 
 #include <algorithm>
-#include <cctype>
+#include <chrono>
+#include <cctype
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -57,6 +58,10 @@ struct CropRegion {
     int x2 = 0;
     int y2 = 0;
 };
+
+static double elapsed_seconds(const std::chrono::steady_clock::time_point& start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
 
 static std::string trim_copy(const std::string& value) {
     size_t first = value.find_first_not_of(" \t\r\n");
@@ -373,24 +378,63 @@ static Mask morphology_mask(const Mask& source, int amount) {
     if (amount == 0) {
         return source;
     }
-    int kernel = std::abs(amount);
-    int before = kernel / 2;
-    int after  = kernel - before - 1;
-    Mask output{source.width, source.height, std::vector<uint8_t>(source.data.size(), amount > 0 ? 0 : 255)};
-    for (int y = 0; y < source.height; ++y) {
-        for (int x = 0; x < source.width; ++x) {
+    const int width  = source.width;
+    const int height = source.height;
+    const int kernel = std::abs(amount);
+    const int before = kernel / 2;
+    const int after  = kernel - before - 1;
+    Mask output{width, height, std::vector<uint8_t>(source.data.size(), 0)};
+    if (width <= 0 || height <= 0 || source.data.empty()) {
+        return output;
+    }
+
+    // Find the occupied region once, then run morphology only where its result can
+    // be nonzero. The previous full-frame kernel scan was repeated for every box.
+    int min_x = width;
+    int min_y = height;
+    int max_x = -1;
+    int max_y = -1;
+    for (int y = 0; y < height; ++y) {
+        const size_t row = static_cast<size_t>(y) * width;
+        for (int x = 0; x < width; ++x) {
+            if (source.data[row + x] != 0) {
+                min_x = std::min(min_x, x);
+                min_y = std::min(min_y, y);
+                max_x = std::max(max_x, x);
+                max_y = std::max(max_y, y);
+            }
+        }
+    }
+    if (max_x < min_x || max_y < min_y) {
+        return output;
+    }
+
+    int x_begin = min_x;
+    int y_begin = min_y;
+    int x_end   = max_x + 1;
+    int y_end   = max_y + 1;
+    if (amount > 0) {
+        // With even-sized kernels, dilation extends asymmetrically on each side.
+        x_begin = std::max(0, x_begin - after);
+        y_begin = std::max(0, y_begin - after);
+        x_end   = std::min(width, x_end + before);
+        y_end   = std::min(height, y_end + before);
+    }
+
+    for (int y = y_begin; y < y_end; ++y) {
+        for (int x = x_begin; x < x_end; ++x) {
             uint8_t value = amount > 0 ? 0 : 255;
             for (int ky = -before; ky <= after; ++ky) {
                 for (int kx = -before; kx <= after; ++kx) {
-                    int sx         = x + kx;
-                    int sy         = y + ky;
-                    uint8_t sample = (sx >= 0 && sx < source.width && sy >= 0 && sy < source.height)
-                                         ? source.data[static_cast<size_t>(sy) * source.width + sx]
-                                         : 0;
-                    value          = amount > 0 ? std::max(value, sample) : std::min(value, sample);
+                    const int sx = x + kx;
+                    const int sy = y + ky;
+                    const uint8_t sample = (sx >= 0 && sx < width && sy >= 0 && sy < height)
+                        ? source.data[static_cast<size_t>(sy) * width + sx]
+                        : 0;
+                    value = amount > 0 ? std::max(value, sample) : std::min(value, sample);
                 }
             }
-            output.data[static_cast<size_t>(y) * source.width + x] = value;
+            output.data[static_cast<size_t>(y) * width + x] = value;
         }
     }
     return output;
@@ -574,8 +618,33 @@ static sd_image_t resize_crop_mask(const Mask& source, const CropRegion& crop, i
 }
 
 static sd_image_t copy_as_rgb(const sd_image_t& source) {
-    CropRegion full{0, 0, static_cast<int>(source.width), static_cast<int>(source.height)};
-    return resize_crop_image(source, full, source.width, source.height);
+    if (source.data == nullptr || source.width == 0 || source.height == 0 || source.channel == 0) {
+        return {0, 0, 0, nullptr};
+    }
+    const uint64_t pixel_count = static_cast<uint64_t>(source.width) * source.height;
+    if (pixel_count > std::numeric_limits<size_t>::max() / 3 ||
+        pixel_count > std::numeric_limits<size_t>::max() / source.channel) {
+        return {0, 0, 0, nullptr};
+    }
+    const size_t rgb_bytes = static_cast<size_t>(pixel_count) * 3;
+    auto* output_data = static_cast<uint8_t*>(malloc(rgb_bytes));
+    if (output_data == nullptr) {
+        return {0, 0, 0, nullptr};
+    }
+    if (source.channel == 3) {
+        // Same-size RGB input needs no interpolation.
+        std::memcpy(output_data, source.data, rgb_bytes);
+    } else {
+        const size_t channels = source.channel;
+        for (size_t i = 0; i < static_cast<size_t>(pixel_count); ++i) {
+            const uint8_t* src = source.data + i * channels;
+            for (size_t c = 0; c < 3; ++c) {
+                const size_t source_channel = channels == 1 ? 0 : std::min(c, channels - 1);
+                output_data[i * 3 + c] = src[source_channel];
+            }
+        }
+    }
+    return {source.width, source.height, 3, output_data};
 }
 
 static void composite_crop(sd_image_t* destination,
@@ -741,18 +810,26 @@ bool ADetailerGGML::load_from_file(const std::string& detector_path) {
 
 std::vector<ADetailerDetection> ADetailerGGML::predict(sd_image_t image,
                                                        const ADetailerParams& params) {
-    LetterboxInput input  = make_letterbox_input(image, params.input_size);
-    int64_t start         = ggml_time_ms();
+    const auto preprocess_start = std::chrono::steady_clock::now();
+    LetterboxInput input = make_letterbox_input(image, params.input_size);
+    const double preprocess_seconds = elapsed_seconds(preprocess_start);
+
+    const auto inference_start = std::chrono::steady_clock::now();
     sd::Tensor<float> raw = detector->compute(n_threads, input.tensor);
     detector->runner_end();
+    const double inference_seconds = elapsed_seconds(inference_start);
     if (raw.empty()) {
         LOG_ERROR("YOLOv8 detector inference failed");
         return {};
     }
+
+    const auto decode_start = std::chrono::steady_clock::now();
     auto detections = decode_detections(raw, detector->config, input, image, params);
-    LOG_INFO("ADetailer detected %zu object(s), taking %.2fs",
-             detections.size(),
-             (ggml_time_ms() - start) / 1000.f);
+    const double decode_seconds = elapsed_seconds(decode_start);
+    LOG_INFO("ADetailer timing: preprocess=%.2fs inference=%.2fs decode_nms=%.2fs total=%.2fs input=%dx%d detector_size=%d detections=%zu",
+             preprocess_seconds, inference_seconds, decode_seconds,
+             preprocess_seconds + inference_seconds + decode_seconds,
+             image.width, image.height, params.input_size, detections.size());
     for (size_t i = 0; i < detections.size(); ++i) {
         const auto& detection = detections[i];
         std::string object    = "class_" + std::to_string(detection.class_id);
@@ -945,15 +1022,26 @@ bool adetail_image(adetailer_ctx_t* context,
         return false;
     }
 
+    const auto total_start = std::chrono::steady_clock::now();
+    const auto detector_load_start = std::chrono::steady_clock::now();
     if (!context->ensure_loaded()) {
         LOG_ERROR("failed to load ADetailer detector '%s'", context->detector_path.c_str());
         return false;
     }
+    LOG_INFO("ADetailer timing: detector_load_or_reload=%.2fs", elapsed_seconds(detector_load_start));
+
+    const auto detect_start = std::chrono::steady_clock::now();
     auto detections = context->detailer->predict(input_image, params);
+    LOG_INFO("ADetailer timing: detector_stage=%.2fs", elapsed_seconds(detect_start));
+
+    const auto unload_start = std::chrono::steady_clock::now();
     // Detection tensors and masks are all CPU-side values by this point. Destroy the
     // detector/model manager before crop inpainting so its parameter buffers do not
     // compete with the diffusion model's denoising and VAE decode peak.
     context->unload();
+    LOG_INFO("ADetailer timing: detector_unload=%.2fs", elapsed_seconds(unload_start));
+
+    const auto mask_start = std::chrono::steady_clock::now();
     filter_and_sort_detections(&detections, input_image.width, input_image.height, params);
     // Non-merged masks are produced and consumed one at a time. Only merged mode
     // retains a full-frame mask, and its helper now merges incrementally.
@@ -961,8 +1049,12 @@ bool adetail_image(adetailer_ctx_t* context,
     if (params.merge_masks) {
         merged_masks = make_masks(detections, input_image.width, input_image.height, params);
     }
+    LOG_INFO("ADetailer timing: detection_filter_and_merge_masks=%.2fs detections=%zu merged=%d",
+             elapsed_seconds(mask_start), detections.size(), params.merge_masks ? 1 : 0);
 
+    const auto rgb_copy_start = std::chrono::steady_clock::now();
     sd_image_t current = copy_as_rgb(input_image);
+    LOG_INFO("ADetailer timing: original_rgb_copy=%.2fs", elapsed_seconds(rgb_copy_start));
     if (current.data == nullptr) {
         return false;
     }
@@ -971,6 +1063,7 @@ bool adetail_image(adetailer_ctx_t* context,
     const size_t mask_count = params.merge_masks ? merged_masks.size() : detections.size();
     size_t mask_index = 0;
     for (size_t detection_index = 0; detection_index < mask_count; ++detection_index) {
+        const auto crop_prep_start = std::chrono::steady_clock::now();
         Mask mask = params.merge_masks
             ? std::move(merged_masks[detection_index])
             : make_mask_for_detection(detections[detection_index], input_image.width, input_image.height, params);
@@ -1009,6 +1102,9 @@ bool adetail_image(adetailer_ctx_t* context,
             free(current.data);
             return false;
         }
+        LOG_INFO("ADetailer timing: crop_prep[%zu]=%.2fs bbox=[%d,%d,%d,%d] crop=%dx%d",
+                 i, elapsed_seconds(crop_prep_start), crop.x1, crop.y1, crop.x2, crop.y2,
+                 params.inpaint_width, params.inpaint_height);
 
         sd_img_gen_params_t generation = *inpaint_params;
         generation.prompt              = prompt.c_str();
@@ -1043,7 +1139,10 @@ bool adetail_image(adetailer_ctx_t* context,
 
         sd_image_t* generated = nullptr;
         int generated_count   = 0;
+        const auto inpaint_start = std::chrono::steady_clock::now();
         bool success          = generate_image(sd_ctx, &generation, &generated, &generated_count);
+        LOG_INFO("ADetailer timing: crop_inpaint[%zu]=%.2fs success=%d", i,
+                 elapsed_seconds(inpaint_start), success ? 1 : 0);
         free(local_image.data);
         free(local_mask.data);
         if (!success || generated_count <= 0 || generated == nullptr || generated[0].data == nullptr) {
@@ -1052,8 +1151,11 @@ bool adetail_image(adetailer_ctx_t* context,
             return false;
         }
 
+        const auto composite_start = std::chrono::steady_clock::now();
         Mask feather = gaussian_blur_mask(mask, params.mask_blur);
         composite_crop(&current, generated[0], feather, crop);
+        LOG_INFO("ADetailer timing: feather_and_composite[%zu]=%.2fs", i,
+                 elapsed_seconds(composite_start));
         free_sd_images(generated, generated_count);
         ++applied;
     }
@@ -1072,6 +1174,6 @@ bool adetail_image(adetailer_ctx_t* context,
     if (num_images_out != nullptr) {
         *num_images_out = 1;
     }
-    LOG_INFO("ADetailer applied %d mask(s)", applied);
+    LOG_INFO("ADetailer applied %d mask(s); total=%.2fs", applied, elapsed_seconds(total_start));
     return true;
 }

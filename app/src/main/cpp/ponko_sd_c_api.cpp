@@ -438,6 +438,9 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     int image_count = 0;
     const auto start = std::chrono::steady_clock::now();
     bool ok = generate_image(handle->ctx, &generation, &images, &image_count);
+    const auto base_generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    PONKO_LOGI("BENCHMARK base generation elapsed_ms=%lld", static_cast<long long>(base_generation_ms));
     // Post-generation ADetailer. Cache the detector on this loaded model handle.
     if (image_count > 0 && images != nullptr && images[0].data != nullptr) ok = true;
     if (ok && image_count > 0 && images != nullptr && images[0].data != nullptr &&
@@ -451,8 +454,13 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
                              handle->adetailer_detector_path == detector_path;
             if (!detector_ready) {
                 // Use CPU for detection so this does not depend on detector Vulkan kernels.
+                const auto detector_load_start = std::chrono::steady_clock::now();
                 adetailer_ctx_t* replacement = new_adetailer_ctx(
                     detector_path, handle->n_threads, "cpu", "cpu");
+                const auto detector_load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - detector_load_start).count();
+                PONKO_LOGI("BENCHMARK ADetailer detector load elapsed_ms=%lld success=%d",
+                           static_cast<long long>(detector_load_ms), replacement != nullptr ? 1 : 0);
                 if (replacement == nullptr) {
                     setError("could not load the ADetailer YOLOv8 detection .safetensors file");
                 } else {
