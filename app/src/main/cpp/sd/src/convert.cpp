@@ -55,7 +55,7 @@ struct LoraFusionContext {
     std::vector<std::unique_ptr<LoraModel>> lora_models;
     // Keep only source tensor names resident during fusion. LoRA weight buffers are
     // loaded for one target tensor at a time and released immediately after applying it.
-    std::vector<std::set<std::string>> lora_source_names;
+    std::vector<std::map<std::string, std::set<std::string>>> lora_source_aliases;
     std::set<std::string> model_tensor_names;
     std::set<std::string> target_tensor_names;
     SDVersion model_version = VERSION_COUNT;
@@ -81,8 +81,35 @@ struct LoraFusionContext {
         return false;
     }
 
+    using SourceNameAliases = std::map<std::string, std::set<std::string>>;
+
+    static SourceNameAliases build_source_name_aliases(const std::set<std::string>& source_names,
+                                                        bool merge_clip_qkv) {
+        SourceNameAliases aliases;
+        static const std::pair<const char*, const char*> clip_qkv_names[] = {
+            {"self_attn.q_proj.weight", "self_attn.in_proj.weight"},
+            {"self_attn.q_proj.bias", "self_attn.in_proj.bias"},
+            {"self_attn.k_proj.weight", "self_attn.in_proj.weight.1"},
+            {"self_attn.k_proj.bias", "self_attn.in_proj.bias.1"},
+            {"self_attn.v_proj.weight", "self_attn.in_proj.weight.2"},
+            {"self_attn.v_proj.bias", "self_attn.in_proj.bias.2"},
+        };
+        for (const auto& source_name : source_names) {
+            aliases[source_name].insert(source_name);
+            if (!merge_clip_qkv) continue;
+            for (const auto& mapping : clip_qkv_names) {
+                const size_t pos = source_name.find(mapping.first);
+                if (pos == std::string::npos) continue;
+                std::string alias = source_name;
+                alias.replace(pos, std::strlen(mapping.first), mapping.second);
+                aliases[alias].insert(source_name);
+            }
+        }
+        return aliases;
+    }
+
     static std::set<std::string> matching_source_names(
-        const std::set<std::string>& source_names, const std::string& tensor_name) {
+        const SourceNameAliases& source_aliases, const std::string& tensor_name) {
         static const char* suffixes[] = {
             ".lora_down", ".lora_up", ".lora_mid", ".diff", ".alpha", ".scale",
             ".hada_w1_a", ".hada_w1_b", ".hada_w2_a", ".hada_w2_b",
@@ -93,18 +120,18 @@ struct LoraFusionContext {
         for (int index = 0; index < 16; ++index) {
             const std::string key = root + (index == 0 ? "" : "." + std::to_string(index));
             for (const char* suffix : suffixes) {
-                const std::string name = key + suffix;
-                if (source_names.find(name) != source_names.end()) {
-                    matched.insert(name);
+                const auto found = source_aliases.find(key + suffix);
+                if (found != source_aliases.end()) {
+                    matched.insert(found->second.begin(), found->second.end());
                 }
             }
         }
         return matched;
     }
 
-    static bool has_source_weight_delta(const std::set<std::string>& source_names,
+    static bool has_source_weight_delta(const SourceNameAliases& source_aliases,
                                         const std::string& tensor_name) {
-        return !matching_source_names(source_names, tensor_name).empty();
+        return !matching_source_names(source_aliases, tensor_name).empty();
     }
 
     bool initialize(const std::vector<std::string>& paths,
@@ -155,8 +182,11 @@ struct LoraFusionContext {
             return false;
         }
 
+        const bool merge_clip_qkv =
+            model_tensor_names.find("cond_stage_model.1.transformer.text_model.encoder.layers.0.self_attn.in_proj.weight") !=
+            model_tensor_names.end();
         lora_models.reserve(specs.size());
-        lora_source_names.reserve(specs.size());
+        lora_source_aliases.reserve(specs.size());
         for (const auto& spec : specs) {
             // file_tensors is a metadata-only view; do not allocate/register every LoRA
             // weight up front, because that makes peak RSS grow across the whole export.
@@ -165,16 +195,17 @@ struct LoraFusionContext {
             for (const auto& entry : source_tensors) {
                 source_names.insert(entry.first);
             }
+            auto source_aliases = build_source_name_aliases(source_names, merge_clip_qkv);
 
             auto model = std::make_unique<LoraModel>(
                 spec.path, compute_backend, params_backend, model_manager, spec.file_id, model_version);
             model->multiplier = spec.multiplier;
             for (const auto& tensor_name : model_tensor_names) {
-                if (has_source_weight_delta(source_names, tensor_name)) {
+                if (has_source_weight_delta(source_aliases, tensor_name)) {
                     target_tensor_names.insert(tensor_name);
                 }
             }
-            lora_source_names.push_back(std::move(source_names));
+            lora_source_aliases.push_back(std::move(source_aliases));
             lora_models.push_back(std::move(model));
         }
 
@@ -197,7 +228,7 @@ struct LoraFusionContext {
         for (size_t i = 0; i < lora_models.size(); ++i) {
             auto& model = lora_models[i];
             const std::set<std::string> selected_names =
-                matching_source_names(lora_source_names[i], tensor_name);
+                matching_source_names(lora_source_aliases[i], tensor_name);
             if (selected_names.empty()) continue;
 
             // Register only this target's LoRA factors. ModelManager otherwise retains
