@@ -890,6 +890,7 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     model_manager->set_n_threads(n_threads);
     model_manager->set_enable_mmap(enable_mmap);
     model_manager->set_segmented_compute_disabled(disable_segmented_compute);
+    model_manager->set_cpu_streaming_enabled(sd_ctx_params->cpu_streaming);
     model_manager->set_prefetch_disabled(disable_prefetch);
     ModelLoader model_loader;
 

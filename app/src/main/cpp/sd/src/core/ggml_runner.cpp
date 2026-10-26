@@ -802,11 +802,21 @@ std::optional<Tensor<float>> GGMLRunner::execute_graph(ggml_cgraph* graph, int n
     if (full_measurement.buffers.empty()) {
         return std::nullopt;
     }
-    auto manager         = residency_manager.lock();
-    const bool segmented = !is_multi_device() && !sd_backend_is_cpu(runtime_backend) &&
+    auto manager = residency_manager.lock();
+    const bool cpu_streaming = manager != nullptr &&
+                               manager->cpu_streaming_enabled() &&
+                               sd_backend_is_cpu(runtime_backend) &&
+                               manager->has_disk_resident_params(params);
+    const bool segmented = !is_multi_device() &&
                            manager != nullptr && manager->segmented_compute_enabled() &&
                            plan.valid && plan.has_cuts && plan.segments.size() > 1 &&
-                           !fits(memory_requests(full_measurement.buffers, cache_.pending_bytes(graph)), params);
+                           (cpu_streaming ||
+                            (!sd_backend_is_cpu(runtime_backend) &&
+                             !fits(memory_requests(full_measurement.buffers, cache_.pending_bytes(graph)), params)));
+    if (cpu_streaming && (!plan.valid || !plan.has_cuts || plan.segments.size() <= 1)) {
+        LOG_WARN("%s CPU UFS streaming requested but this graph has no usable graph cuts; executing monolithically",
+                 get_desc().c_str());
+    }
     if (!segmented) {
         ggml_graph_cut::Segment segment;
         segment.group_name          = "graph";

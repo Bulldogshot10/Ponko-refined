@@ -560,4 +560,7 @@
     <string name="draw_lora_fusion_failed_detail">原生融合失败，或生成的 GGUF 未通过验证。</string>
     <string name="draw_lora_fusion_create_failed">无法创建输出模型集目录。</string>
     <string name="draw_lora_fusion_register_failed">融合已完成，但无法注册新的模型集。</string>
+    <string name="draw_cpu_streaming_enable">实验性 CPU UFS 张量流式加载</string>
+    <string name="draw_cpu_streaming_hint">按计算图分段读取 diffusion 权重，并在使用后释放。仅限 CPU；可降低峰值内存，但速度可能明显变慢。下次加载模型时生效。没有可用分段的计算图会退回整体执行。</string>
+    <string name="draw_cpu_streaming_reload_notice">此设置将在下次加载模型时生效。</string>
 </resources>

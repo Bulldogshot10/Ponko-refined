@@ -1512,6 +1512,17 @@ void ModelManager::evict_compute_backend_params(const std::vector<ggml_tensor*>&
     }
     release_params_storage_blocks(false, &target_states);
 }
+bool ModelManager::has_disk_resident_params(const std::vector<ggml_tensor*>& tensors) const {
+    for (const ggml_tensor* tensor : tensors) {
+        const auto found = tensor_states_by_tensor_.find(tensor);
+        if (found != tensor_states_by_tensor_.end() && found->second != nullptr &&
+            found->second->residency_mode == ResidencyMode::Disk) {
+            return true;
+        }
+    }
+    return false;
+}
+
 WeightResidencyInfo ModelManager::inspect_compute_backend_params(
     const std::vector<ggml_tensor*>& tensors) const {
     WeightResidencyInfo info;

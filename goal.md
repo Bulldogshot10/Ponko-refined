@@ -48,3 +48,24 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - The memory-handling edits were committed to `feat/rust-uniffi-native-facade`; commits: `913f2eed` and `a9c416c8` (fusion, including merged CLIP QKV aliases), `ddd30e05`, `3be9625e`, and `eddc6201` (ADetailer), and `70191b90` (VAE retries).
 - **Local validation not run:** no local checkout was available for running Rust/CMake/Gradle commands directly. Push-triggered CI on source commit `eddc6201` reports `Format Rust facade` and `Test Rust facade` completed successfully. The Rust-UniFFI APK build and the separate Vulkan/Exynos APK build were still in progress at the latest status check; no APK build result or target-device runtime test is available yet. Re-check the workflow results before treating native compilation as passed.
 - **Next steps:** verify source-name matching and repeated parameter unregister/re-register with one and multiple SD1.x/SD2.x/SDXL LoRAs; run ADetailer with multiple detections at high resolution and compare merged/non-merged outputs; force VAE decode failures and confirm retries decrease tile size without altering successful decode output unexpectedly. Capture native logs/RSS and the actual failure signal to distinguish OOM from another fusion crash.
+
+
+## CPU UFS tensor streaming experiment (2026-10-26)
+
+### Partial implementation / needs verification
+- **Experimental CPU streaming flag — implemented in source, needs build/runtime verification:** branch `feat/cpu-ufs-tensor-streaming` adds an opt-in UI preference, carries it through Kotlin → UniFFI → Rust → C ABI, forces CPU execution for this mode, and assigns diffusion weights to `params_backend=diffusion=disk`.
+- **CPU segmented execution — implemented in source, needs verification:** when a graph has a valid multi-segment graph-cut plan and includes disk-resident weights, `GGMLRunner` may run it segmented even if a monolithic graph would fit. The disk-resident segment weights are unpinned and evicted after each segment.
+- **Fallback behavior — implemented in source, needs verification:** if a streaming graph has no usable graph cuts, the runner logs a warning and executes monolithically; this path can still have a high memory peak.
+
+### Current limitations
+- CPU streaming is opt-in and applies on the next model load. It intentionally targets diffusion/UNet weights; text encoder, VAE, and other model components retain their normal residency in this first experiment.
+- CPU async UFS prefetch is **not implemented**. Segment weights load synchronously from the model file, so repeated denoising steps may incur substantial storage I/O and slowdown.
+- Page-cache reclamation is not forced. File-backed pages may remain in the kernel page cache after application buffers are released.
+- No local checkout was available for a build or unit-test run during implementation; Android device/runtime validation on Exynos 2400e is still required.
+
+### Next steps
+1. Run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check` and `cargo test --manifest-path rust/ponko-native/Cargo.toml`.
+2. Build the ARM64 APK with `./gradlew :app:assembleDebug` and inspect C ABI / UniFFI generated binding errors.
+3. On CPU, compare streaming off/on using the same SD1.5 GGUF, prompt, seed, resolution, steps, and thread count. Capture graph-cut logs, peak RSS, elapsed time, and storage-I/O behavior.
+4. Verify with SDXL and other supported families whether graph-cut plans produce useful segments and whether the largest segment's working set remains bounded.
+5. Only after measurements, experiment with bounded read-ahead and page-cache advice; do not label those as implemented until tested.

@@ -321,6 +321,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->max_vram                  = nullptr;
     sd_ctx_params->disable_prefetch          = false;
     sd_ctx_params->disable_segmented_compute = false;
+    sd_ctx_params->cpu_streaming             = false;
     sd_ctx_params->eager_load                = false;
     sd_ctx_params->enable_mmap               = false;
     sd_ctx_params->diffusion_flash_attn      = false;
@@ -367,6 +368,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "max_vram: %s\n"
              "disable_prefetch: %s\n"
              "disable_segmented_compute: %s\n"
+             "cpu_streaming: %s\n"
              "eager_load: %s\n"
              "backend: %s\n"
              "params_backend: %s\n"
@@ -403,6 +405,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              SAFE_STR(sd_ctx_params->max_vram),
              BOOL_STR(sd_ctx_params->disable_prefetch),
              BOOL_STR(sd_ctx_params->disable_segmented_compute),
+             BOOL_STR(sd_ctx_params->cpu_streaming),
              BOOL_STR(sd_ctx_params->eager_load),
              SAFE_STR(sd_ctx_params->backend),
              SAFE_STR(sd_ctx_params->params_backend),

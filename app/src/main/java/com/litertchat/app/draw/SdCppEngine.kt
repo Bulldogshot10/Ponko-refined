@@ -190,10 +190,11 @@ object SdCppEngine {
         vaeConvDirect: Boolean,
         backend: String?,
         slots: Array<String?>?,
+        cpuStreaming: Boolean = false,
     ): Long = runCatching {
         nativeEngine.createContext(
             com.litertchat.app.ponko.ModelLoadRequest(
-                modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, modelSlots(slots)
+                modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, modelSlots(slots), cpuStreaming
             )
         )
     }.getOrDefault(0L)
@@ -372,7 +373,8 @@ object SdCppEngine {
         vaeConvDirect: Boolean = true,
         backend: String? = null,
         slots: Array<String?>? = null,
-    ): Long = nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, slots)
+        cpuStreaming: Boolean = false,
+    ): Long = nativeCreate(modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, slots, cpuStreaming)
 
     /**
      * 槽位顺序（与 JNI 里的 SlotIndex 一一对应；sd.cpp 的 sd_ctx_params_t 路径字段）。

@@ -256,7 +256,8 @@ extern "C" const char* ponko_sd_last_error(void) {
 
 extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, int32_t n_threads,
                                   int32_t wtype, int32_t flash_attn, int32_t vae_conv_direct,
-                                  const char* backend, const char* const* slots, size_t slot_count) {
+                                  const char* backend, const char* const* slots, size_t slot_count,
+                                  int32_t cpu_streaming) {
     g_last_error.clear();
     initializePonkoLogging();
     if (model_path == nullptr && (slots == nullptr || slot_count == 0)) {
@@ -304,12 +305,23 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
     params.n_threads = n_threads > 0 ? n_threads : sd_get_num_physical_cores();
     if (wtype >= 0) params.wtype = static_cast<enum sd_type_t>(wtype);
     params.enable_mmap = true;
+    params.cpu_streaming = cpu_streaming != 0;
+    if (params.cpu_streaming) {
+        // Keep the diffusion module disk-resident between CPU graph segments.
+        // Other modules retain normal residency in this first experiment.
+        params.backend = "CPU";
+        params.params_backend = "diffusion=disk";
+        params.disable_prefetch = true; // Existing async prefetch is GPU-oriented.
+        params.disable_segmented_compute = false;
+        PONKO_LOGI("CPU UFS tensor streaming enabled: diffusion=disk, backend=CPU");
+    } else if (stringIsNonempty(backend)) {
+        params.backend = backend;
+    }
     const bool flash = flash_attn != 0;
     params.flash_attn = flash;
     params.diffusion_flash_attn = flash;
     params.vae_conv_direct = vae_conv_direct != 0;
     params.lora_apply_mode = LORA_APPLY_AUTO;
-    if (stringIsNonempty(backend)) params.backend = backend;
 
     char* dump = sd_ctx_params_to_str(&params);
     {

@@ -61,7 +61,7 @@ struct CGenerationParams {
 
 type LastErrorFn = unsafe extern "C" fn() -> *const c_char;
 type CreateFn = unsafe extern "C" fn(
-    *const c_char, *const c_char, i32, i32, i32, i32, *const c_char, *const *const c_char, usize,
+    *const c_char, *const c_char, i32, i32, i32, i32, *const c_char, *const *const c_char, usize, i32,
 ) -> *mut c_void;
 type GenerateFn = unsafe extern "C" fn(
     *mut c_void, *const CGenerationParams, Option<StepFn>, Option<PreviewFn>, *mut c_void,
@@ -250,6 +250,8 @@ pub struct ModelLoadRequest {
     pub vae_conv_direct: bool,
     pub backend: Option<String>,
     pub slots: Option<ModelSlots>,
+    /// Experimental CPU-only segmented diffusion-weight streaming from model storage.
+    pub cpu_streaming: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -435,6 +437,7 @@ impl NativeEngine {
                 backend.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 slots_ptr,
                 slot_count,
+                request.cpu_streaming as i32,
             )
         };
         if pointer.is_null() {
@@ -941,6 +944,7 @@ mod tests {
         let request = ModelLoadRequest {
             model_path: String::new(), vae_path: None, n_threads: 4, wtype: -1,
             flash_attn: true, vae_conv_direct: true, backend: None, slots: Some(empty_slots()),
+            cpu_streaming: false,
         };
         assert!(!validate_model_load_request(request.clone()).valid);
         let mut valid_request = request;

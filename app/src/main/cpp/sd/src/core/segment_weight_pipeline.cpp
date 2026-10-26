@@ -121,6 +121,10 @@ namespace sd {
     void SegmentWeightPipeline::segment_end() {
         if (auto manager = residency_manager_.lock()) {
             manager->release_compute_backend_params(pinned_params_);
+            // Disk-resident CPU weights are safe to release only after the segment unpins them.
+            if (manager->cpu_streaming_enabled() && manager->has_disk_resident_params(pinned_params_)) {
+                manager->evict_compute_backend_params(pinned_params_);
+            }
         }
         pinned_params_.clear();
     }

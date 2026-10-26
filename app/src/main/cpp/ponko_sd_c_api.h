@@ -50,7 +50,8 @@ typedef struct ponko_generation_params {
 const char* ponko_sd_last_error(void);
 void* ponko_sd_create(const char* model_path, const char* vae_path, int32_t n_threads,
                       int32_t wtype, int32_t flash_attn, int32_t vae_conv_direct,
-                      const char* backend, const char* const* slots, size_t slot_count);
+                      const char* backend, const char* const* slots, size_t slot_count,
+                      int32_t cpu_streaming);
 int32_t ponko_sd_generate(void* handle, const ponko_generation_params_t* params,
                           ponko_step_callback_t step_callback,
                           ponko_preview_callback_t preview_callback, void* user_data,

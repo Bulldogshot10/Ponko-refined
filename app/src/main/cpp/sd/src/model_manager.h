@@ -108,6 +108,7 @@ private:
     bool writable_mmap_              = false;
     bool segmented_compute_disabled_ = false;
     bool prefetch_disabled_          = false;
+    bool cpu_streaming_enabled_      = false;
 
     void finish_compute_backend_usage(const std::vector<TensorState*>& states);
     void release_all();
@@ -191,6 +192,9 @@ public:
         segmented_compute_disabled_ = disabled;
     }
     void set_prefetch_disabled(bool disabled) { prefetch_disabled_ = disabled; }
+    void set_cpu_streaming_enabled(bool enabled) { cpu_streaming_enabled_ = enabled; }
+    bool cpu_streaming_enabled() const override { return cpu_streaming_enabled_; }
+    bool has_disk_resident_params(const std::vector<ggml_tensor*>& tensors) const override;
     void set_enable_mmap(bool enable_mmap) { enable_mmap_ = enable_mmap; }
     void set_writable_mmap(bool writable_mmap) { writable_mmap_ = writable_mmap; }
     void set_common_ignore_tensors(std::set<std::string> ignore_tensors);

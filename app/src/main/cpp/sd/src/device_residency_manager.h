@@ -41,6 +41,8 @@ struct DeviceResidencyManager {
 
     virtual bool segmented_compute_enabled() const                                          = 0;
     virtual bool prefetch_enabled() const                                                   = 0;
+    virtual bool cpu_streaming_enabled() const { return false; }
+    virtual bool has_disk_resident_params(const std::vector<ggml_tensor*>& tensors) const { return false; }
     virtual void set_workspace_reclaimer(uintptr_t owner_id, std::function<bool()> reclaim) = 0;
     virtual void remove_runtime_owner(uintptr_t owner_id)                                   = 0;
     // Capacity requests select their backend's weights; protection spans all backends.

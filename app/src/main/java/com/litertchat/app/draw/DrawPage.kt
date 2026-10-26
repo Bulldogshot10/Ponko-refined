@@ -96,6 +96,13 @@ class DrawPage(
         prefs().edit().putBoolean(KEY_VAE_CONV_DIRECT, enabled).apply()
     }
 
+    /** Opt-in CPU tensor streaming; this setting takes effect on the next model load. */
+    fun cpuStreamingEnabled(): Boolean = prefs().getBoolean(KEY_CPU_STREAMING, false)
+
+    fun setCpuStreamingEnabled(enabled: Boolean) {
+        prefs().edit().putBoolean(KEY_CPU_STREAMING, enabled).apply()
+    }
+
     fun taesdFileName(): String? = activeSetOrSelected()?.files?.get("taesd")?.name
 
     fun hasTaesdFile(): Boolean = activeSetOrSelected()?.files?.get("taesd")?.isFile == true
@@ -123,6 +130,7 @@ class DrawPage(
         private const val KEY_CPU_THREADS = "drawCpuThreads"
         private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
         private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"
+        private const val KEY_CPU_STREAMING = "drawCpuUfsStreaming"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -524,6 +532,19 @@ class DrawPage(
             setPadding(0, dp(6), 0, 0)
         }
         modelCard.addView(quantText)
+        val cpuStreamingCheck = CheckBox(c).apply {
+            text = c.getString(R.string.draw_cpu_streaming_enable)
+            textSize = 13f
+            setTextColor(textColor)
+            setPadding(0, dp(8), 0, 0)
+            isChecked = cpuStreamingEnabled()
+            setOnCheckedChangeListener { _, checked ->
+                setCpuStreamingEnabled(checked)
+                if (sdHandle != 0L) toast(c.getString(R.string.draw_cpu_streaming_reload_notice))
+            }
+        }
+        modelCard.addView(cpuStreamingCheck, matchWrap(top = 4))
+        modelCard.addView(body(c.getString(R.string.draw_cpu_streaming_hint)), matchWrap(top = 2))
         quantizeUnetButton = Button(c).apply {
             text = c.getString(R.string.draw_quantize_unet)
             setOnClickListener { showUnetQuantizer() }
@@ -1997,6 +2018,7 @@ class DrawPage(
         stage("2 模型集：${set.id}（${set.kind}/${set.family}，${set.slotCount()} 个文件）")
         slots.forEach { (k, v) -> stage("   槽位 $k = ${File(v).name}（${File(v).length() / 1048576} MB）") }
         stage("VAE direct-conv: ${if (useVaeConvDirect) "enabled" else "disabled"}")
+        stage("CPU UFS streaming preference: ${if (cpuStreamingEnabled()) "enabled" else "disabled"}")
         activeLora()?.let { stage(c.getString(R.string.v_058, (it.name), (it.length() / 1048576))) }
         stage(c.getString(R.string.v_041, (android.os.Build.SUPPORTED_ABIS.firstOrNull()), (android.os.Build.VERSION.SDK_INT), (android.os.Build.MANUFACTURER), (android.os.Build.MODEL)))
         stage(c.getString(R.string.v_042, (Runtime.getRuntime().maxMemory() / 1048576), (root.usableSpace / 1048576)))
@@ -2031,6 +2053,7 @@ class DrawPage(
                 vaeConvDirect = useVaeConvDirect,
                 backend = b,
                 slots = SdCppEngine.buildSlots(slots),
+                cpuStreaming = cpuStreamingEnabled() && b.equals("CPU", ignoreCase = true),
             )
             var used = gpuDev ?: "CPU"
             var h = createWith(used)
@@ -2076,6 +2099,7 @@ class DrawPage(
                 append(c.getString(R.string.s_094)).append(set.name)
                 append(" · ").append(activeBackend).append(" · ").append(nThreads).append(c.getString(R.string.s_001)).append(if (flashAttn) "FA" else c.getString(R.string.s_110)).append(" · sd.cpp")
                 append(" · ").append(c.getString(if (useVaeConvDirect) R.string.draw_vae_conv_direct_status else R.string.draw_vae_conv_standard_status))
+                if (cpuStreamingEnabled() && used.equals("CPU", ignoreCase = true)) append(" · CPU UFS stream")
                 append(vkMode)
             }
             statusText.post { statusText.text = summary }

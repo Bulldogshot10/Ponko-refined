@@ -242,6 +242,7 @@ typedef struct {
     const char* rpc_servers;
     const char* model_args;
     bool disable_segmented_compute;  // Force monolithic graph execution even when automatic graph cutting would fit memory better
+    bool cpu_streaming;  // Experimental CPU-only segmented execution for disk-resident diffusion weights
 } sd_ctx_params_t;
 
 typedef struct {

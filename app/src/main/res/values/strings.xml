@@ -591,4 +591,7 @@
     <string name="draw_lora_fusion_failed_detail">Native fusion failed or the generated GGUF did not pass validation.</string>
     <string name="draw_lora_fusion_create_failed">Could not create the output model-set directory.</string>
     <string name="draw_lora_fusion_register_failed">Fusion completed, but Ponko could not register the new model set.</string>
+    <string name="draw_cpu_streaming_enable">Experimental CPU UFS tensor streaming</string>
+    <string name="draw_cpu_streaming_hint">Loads diffusion weights by graph segment and releases them after use. CPU only; can reduce peak memory but may be much slower. Takes effect on the next model load. Graphs without usable cuts fall back to monolithic execution.</string>
+    <string name="draw_cpu_streaming_reload_notice">This setting applies the next time you load the model.</string>
 </resources>
