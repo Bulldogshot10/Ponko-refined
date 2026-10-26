@@ -2890,9 +2890,10 @@ class DrawPage(
         val sampler = pickSampler(loras.isNotEmpty())
         val scheduler = pickScheduler(loras.isNotEmpty())
 
-        // 对话页出图不走界面的 setGenerating，这里手动上报一句：
-        // 否则 API 侧不知道界面在出图，会插进来抢同一个 native 句柄
-        DrawCore.uiBusy = true
+        // Reserve the exact handle atomically with API generation and model replacement.
+        if (!DrawCore.tryBeginUiGeneration(h)) {
+            throw IllegalStateException(c.getString(R.string.s_428))
+        }
         try {
             // 推理是同步阻塞的 native 调用（一张几百秒），绝不能跟调用方同线程——
             // 调用方基本都在 Dispatchers.Main，否则整个 UI 会卡死到出图为止。
@@ -2922,7 +2923,7 @@ class DrawPage(
             onProgress(steps, steps)
             return ImageData(bmp, useSeed)
         } finally {
-            DrawCore.uiBusy = false
+            DrawCore.endUiGeneration()
         }
     }
 
@@ -3076,69 +3077,14 @@ class DrawPage(
         }
     }
 
-    /** 图生图实际推理：把选中的参考图编码成 RGB888 传给 native，strength 控制重绘幅度 */
+    /** The Hearth adapter has no img2img pipeline; fail explicitly instead of silently running txt2img. */
     private suspend fun generateImageI2i(
-        prompt: String,
-        onProgress: (Int, Int) -> Unit = { _, _ -> },
-        onPreview: ((Int, Int, Int, ByteArray) -> Unit)? = null,
-    ): ImageData {
-        val steps = i2iStepsEdit.text.toString().toIntOrNull()?.coerceIn(1, 150) ?: 20
-        val cfg = i2iCfgEdit.text.toString().toFloatOrNull()?.coerceIn(1f, 30f) ?: 7.0f
-        val eta = parseEta(i2iEtaEdit)
-        val clipSkip = i2iClipSkipSeekBar.progress + 1
-        val seed = i2iSeedEdit.text.toString().toLongOrNull() ?: -1L
-        val useSeed = if (seed < 0) System.currentTimeMillis() else seed
-        val w = (i2iWidthEdit.text.toString().toIntOrNull() ?: 512).let { (it / 64) * 64 }.coerceIn(64, 2048)
-        val hgt = (i2iHeightEdit.text.toString().toIntOrNull() ?: 512).let { (it / 64) * 64 }.coerceIn(64, 2048)
-        val strength = i2iStrengthEdit.text.toString().toFloatOrNull()?.coerceIn(0.05f, 0.99f) ?: 0.75f
-        onProgress(0, steps)
-        cancelRequested = false
+        @Suppress("UNUSED_PARAMETER") prompt: String,
+        @Suppress("UNUSED_PARAMETER") onProgress: (Int, Int) -> Unit = { _, _ -> },
+        @Suppress("UNUSED_PARAMETER") onPreview: ((Int, Int, Int, ByteArray) -> Unit)? = null,
+    ): ImageData = throw IllegalStateException(c.getString(R.string.draw_hearth_i2i_unavailable))
 
-        val h = sdHandle
-        if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
-        if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
-        val src = i2iBitmap ?: throw IllegalStateException(c.getString(R.string.s_214))
-
-        val loras = selectedLoras("i2i")
-        val negative = i2iNegEdit.text.toString()
-        val sampler = pickI2iSampler(loras.isNotEmpty())
-        val scheduler = pickI2iScheduler(loras.isNotEmpty())
-        val hires = currentHiresSettings()
-        val adetailer = currentADetailerSettings()
-
-        val bmp = withContext(Dispatchers.IO) {
-            val rgb = HearthEngine.bitmapToRgb888(src)
-            HearthEngine.render(
-                handle = h,
-                prompt = prompt,
-                negative = negative,
-                loras = loras,
-                width = w,
-                height = hgt,
-                steps = steps,
-                cfg = cfg,
-                clipSkip = clipSkip,
-                seed = useSeed,
-                sampler = sampler,
-                scheduler = scheduler,
-                eta = eta,
-                hires = hires,
-                adetailer = adetailer,
-                cb = { cur, total -> onProgress(cur, total) },
-                onPreview = onPreview?.let { f ->
-                    HearthEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
-                },
-                initImage = rgb,
-                initWidth = src.width,
-                initHeight = src.height,
-                strength = strength,
-            )
-        } ?: throw IllegalStateException(c.getString(R.string.s_147))
-        onProgress(steps, steps)
-        return ImageData(bmp, useSeed)
-    }
-
-    fun toBitmap(img: ImageData): Bitmap = img.bitmap
+        fun toBitmap(img: ImageData): Bitmap = img.bitmap
 
     /** 供对话页调用：把生成过程的预览帧转给「过程」页 */
     fun previewFrame(step: Int, w: Int, h: Int, rgb: ByteArray) = onPreviewFrame(step, w, h, rgb)
@@ -3152,7 +3098,6 @@ class DrawPage(
     /** 统一切换按钮的「开始生成 / 中断生成」外观与行为 */
     private fun setGenerating(g: Boolean) {
         generating = g
-        DrawCore.uiBusy = g   // 上报给 API 侧：界面在出图，别来抢同一个句柄
         genBtn.post {
             genBtn.isEnabled = true
             genBtn.text = if (g) c.getString(R.string.s_040) else c.getString(R.string.s_098)
