@@ -300,6 +300,18 @@ impl NativeEngine {
         Ok(())
     }
 
+    /// Clear a previous cancellation before starting the next generation. This is called
+    /// immediately before the blocking UniFFI generation call, so a newly arriving cancel
+    /// request cannot be overwritten when generation acquires its lock.
+    pub fn reset_cancel(&self, handle_id: i64) -> Result<(), PonkoError> {
+        let flag = self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
+            .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
+                details: format!("unknown or unloaded Hearth handle {handle_id}"),
+            })?;
+        flag.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub fn free_context(&self, handle_id: i64) -> Result<(), PonkoError> {
         // Do not retire a context while inference still holds GPU/model resources for it.
         let _generation = match self.generation_lock.try_lock() {
@@ -381,7 +393,6 @@ impl NativeEngine {
             .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
                 details: format!("unknown or unloaded Hearth handle {handle_id}"),
             })?;
-        cancel.store(false, Ordering::Relaxed);
         *self.last_params.lock().map_err(|_| native_error("Hearth status lock poisoned"))? = format!(
             "Hearth generate: family={}, {}x{}, steps={}, cfg={}, sampler={}, scheduler={}, LoRAs={}",
             context.family, request.width, request.height, request.steps, request.cfg,
