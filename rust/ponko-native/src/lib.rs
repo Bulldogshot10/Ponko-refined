@@ -321,6 +321,16 @@ impl NativeEngine {
     /// immediately before the blocking UniFFI generation call, so a newly arriving cancel
     /// request cannot be overwritten when generation acquires its lock.
     pub fn reset_cancel(&self, handle_id: i64) -> Result<(), PonkoError> {
+        // Never let a second caller clear the cancellation flag of an in-flight generation.
+        let _generation = match self.generation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(native_error("Cannot reset cancellation while generation is active."));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(native_error("Hearth generation lock poisoned"));
+            }
+        };
         let flag = self.cancel_flags.lock().map_err(|_| native_error("Hearth cancellation registry lock poisoned"))?
             .get(&handle_id).cloned().ok_or_else(|| PonkoError::InvalidHandle {
                 details: format!("unknown or unloaded Hearth handle {handle_id}"),
