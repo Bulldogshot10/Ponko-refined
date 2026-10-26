@@ -81,3 +81,9 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - **Static audit follow-up (2026-10-26):** bumped the UniFFI facade contract to version 4 for the changed typed generation request; updated parity documentation from 13 to 16 model slots and corrected its Vulkan default statement; added a Rust unit test for the native slot ordering; added Chinese translations for the conditioning UI.
 - **Needs verification:** source wiring has not been compiled or exercised on-device with actual compatible weights. The feature commit uses `[skip ci]` to avoid intentionally starting workflows while Actions allowance is constrained. No local checkout or online dependency access was available for running Rust/Android builds in this session.
 - **Next steps:** run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`, `cargo test --manifest-path rust/ponko-native/Cargo.toml`, and `./gradlew :app:assembleDebug`; then test a compatible SD1.5 ControlNet map, IP-Adapter weights with CLIP Vision, and the embedding trigger token.
+
+## CPU APK build follow-up (2026-10-26)
+
+- **Build trigger enabled:** `.github/workflows/ponko-app-apk.yml` now also runs when `goal.md` changes, so documented build/validation handoffs can request a fresh APK build without touching application source. This commit also modifies the workflow file itself, which triggers a build against the current conditioning-enabled branch head.
+- **Status at commit time:** build pending. Do not call the APK successful until the new GitHub Actions run completes, the required native libraries are verified in the APK, and the uploaded artifact is inspected.
+- **Workflow:** `.github/workflows/ponko-app-apk.yml` (CPU profile, Vulkan OFF, Exynos 2400E profile ON). Expected artifact name: `ponko-cpu-exynos2400e-debug-apk-<run_id>`.
