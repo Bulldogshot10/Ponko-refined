@@ -24,6 +24,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.ScrollView
 import android.widget.Toast
@@ -127,6 +129,21 @@ class DrawPage(
         private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"
         private const val KEY_CONTROL_STRENGTH = "drawControlStrength"
         private const val KEY_IP_ADAPTER_STRENGTH = "drawIpAdapterStrength"
+        private const val KEY_CONDITIONING_PIPELINE_MODE = "drawConditioningPipelineMode"
+        private const val KEY_CONDITIONING_DRAFT_STEPS = "drawConditioningDraftSteps"
+        private const val KEY_CONDITIONING_REFINE_STRENGTH = "drawConditioningRefineStrength"
+
+        private const val CONDITIONING_PIPELINE_OFF = 0
+        private const val CONDITIONING_PIPELINE_CONTROLNET = 1
+        private const val CONDITIONING_PIPELINE_IP_ADAPTER = 2
+        private const val CONTEXT_POLICY_FULL = 0
+        private const val CONTEXT_POLICY_CONTROLNET = 1
+        private const val CONTEXT_POLICY_IP_ADAPTER = 2
+        private const val CONTEXT_POLICY_BASE_ONLY = 3
+
+        private const val ID_PIPELINE_OFF = 0x5D20
+        private const val ID_PIPELINE_CONTROLNET = 0x5D21
+        private const val ID_PIPELINE_IP_ADAPTER = 0x5D22
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -470,6 +487,10 @@ class DrawPage(
 
     private var controlImageBitmap: Bitmap? = null
     private var ipAdapterImageBitmap: Bitmap? = null
+    private lateinit var conditioningPipelineGroup: RadioGroup
+    private lateinit var conditioningDraftStepsEdit: EditText
+    private lateinit var conditioningRefineStrengthEdit: EditText
+    private var activeContextPolicy: Int = CONTEXT_POLICY_FULL
     private lateinit var controlModelStatus: TextView
     private lateinit var ipAdapterModelStatus: TextView
     private lateinit var clipVisionModelStatus: TextView
@@ -1234,6 +1255,62 @@ class DrawPage(
         box.addView(title(c.getString(R.string.draw_conditioning_title)))
         box.addView(body(c.getString(R.string.draw_conditioning_intro)))
 
+        val pipelineCard = card()
+        pipelineCard.addView(title(c.getString(R.string.draw_conditioning_pipeline_title)))
+        pipelineCard.addView(body(c.getString(R.string.draw_conditioning_pipeline_hint)))
+        conditioningPipelineGroup = RadioGroup(c).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(RadioButton(c).apply {
+                id = ID_PIPELINE_OFF
+                text = c.getString(R.string.draw_conditioning_pipeline_off)
+                textSize = 13f
+                setTextColor(textColor)
+            })
+            addView(RadioButton(c).apply {
+                id = ID_PIPELINE_CONTROLNET
+                text = c.getString(R.string.draw_conditioning_pipeline_controlnet)
+                textSize = 13f
+                setTextColor(textColor)
+            })
+            addView(RadioButton(c).apply {
+                id = ID_PIPELINE_IP_ADAPTER
+                text = c.getString(R.string.draw_conditioning_pipeline_ipadapter)
+                textSize = 13f
+                setTextColor(textColor)
+            })
+            check(when (prefs().getInt(KEY_CONDITIONING_PIPELINE_MODE, CONDITIONING_PIPELINE_OFF)) {
+                CONDITIONING_PIPELINE_CONTROLNET -> ID_PIPELINE_CONTROLNET
+                CONDITIONING_PIPELINE_IP_ADAPTER -> ID_PIPELINE_IP_ADAPTER
+                else -> ID_PIPELINE_OFF
+            })
+            setOnCheckedChangeListener { _, checkedId ->
+                val mode = when (checkedId) {
+                    ID_PIPELINE_CONTROLNET -> CONDITIONING_PIPELINE_CONTROLNET
+                    ID_PIPELINE_IP_ADAPTER -> CONDITIONING_PIPELINE_IP_ADAPTER
+                    else -> CONDITIONING_PIPELINE_OFF
+                }
+                prefs().edit().putInt(KEY_CONDITIONING_PIPELINE_MODE, mode).apply()
+            }
+        }
+        pipelineCard.addView(conditioningPipelineGroup, matchWrap(top = 4))
+        conditioningDraftStepsEdit = smallNumber(loadParam(KEY_CONDITIONING_DRAFT_STEPS, "4")).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        bindParam(conditioningDraftStepsEdit, KEY_CONDITIONING_DRAFT_STEPS)
+        pipelineCard.addView(paramRow(
+            c.getString(R.string.draw_conditioning_draft_steps),
+            conditioningDraftStepsEdit,
+            c.getString(R.string.draw_conditioning_draft_steps_hint)
+        ), matchWrap(top = 4))
+        conditioningRefineStrengthEdit = smallNumber(loadParam(KEY_CONDITIONING_REFINE_STRENGTH, "0.45"))
+        bindParam(conditioningRefineStrengthEdit, KEY_CONDITIONING_REFINE_STRENGTH)
+        pipelineCard.addView(paramRow(
+            c.getString(R.string.draw_conditioning_refine_strength),
+            conditioningRefineStrengthEdit,
+            c.getString(R.string.draw_conditioning_refine_strength_hint)
+        ), matchWrap(top = 4))
+        box.addView(pipelineCard)
+
         // Model weights and the ControlNet condition-map image are separate inputs.
         val controlCard = card()
         controlCard.addView(title(c.getString(R.string.draw_controlnet_label)))
@@ -1383,6 +1460,207 @@ class DrawPage(
         ipAdapterStrength = loadParam(KEY_IP_ADAPTER_STRENGTH, "1.0")
             .toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0f, 2f) ?: 1.0f,
     )
+
+    private fun currentConditioningPipelineMode(): Int {
+        if (!::conditioningPipelineGroup.isInitialized) {
+            return prefs().getInt(KEY_CONDITIONING_PIPELINE_MODE, CONDITIONING_PIPELINE_OFF)
+                .coerceIn(CONDITIONING_PIPELINE_OFF, CONDITIONING_PIPELINE_IP_ADAPTER)
+        }
+        return when (conditioningPipelineGroup.checkedRadioButtonId) {
+            ID_PIPELINE_CONTROLNET -> CONDITIONING_PIPELINE_CONTROLNET
+            ID_PIPELINE_IP_ADAPTER -> CONDITIONING_PIPELINE_IP_ADAPTER
+            else -> CONDITIONING_PIPELINE_OFF
+        }
+    }
+
+    /** Replace the native context so each pipeline pass owns only the weights it needs. */
+    private suspend fun switchPipelineContext(policy: Int) {
+        val set = activeSetOrSelected() ?: throw IllegalStateException(c.getString(R.string.s_121))
+        val slots = LinkedHashMap<String, String>()
+        set.files.forEach { (key, file) ->
+            if (!taesdEnabled() && key == "taesd") return@forEach
+            val include = when (policy) {
+                CONTEXT_POLICY_CONTROLNET -> key != "ip_adapter" && key != "clip_vision"
+                CONTEXT_POLICY_IP_ADAPTER -> key != "control_net"
+                CONTEXT_POLICY_BASE_ONLY -> key != "control_net" && key != "ip_adapter" && key != "clip_vision"
+                else -> true
+            }
+            if (include) slots[key] = file.absolutePath
+        }
+
+        // Free the previous context before loading the next weight set.
+        DrawCore.release()
+        val oldHandle = sdHandle
+        sdHandle = 0L
+        if (oldHandle != 0L) withContext(Dispatchers.IO) { SdCppEngine.nativeFree(oldHandle) }
+
+        fun createWith(backendName: String): Long = SdCppEngine.create(
+            modelPath = slots["model"].orEmpty(),
+            vaePath = slots["vae"],
+            nThreads = nThreads,
+            wtype = SdCppEngine.WTYPE_KEEP,
+            flashAttn = flashAttn,
+            vaeConvDirect = vaeConvDirectEnabled(),
+            backend = backendName,
+            slots = SdCppEngine.buildSlots(slots),
+        )
+        var usedBackend = activeBackend.ifBlank { "CPU" }
+        var handle = withContext(Dispatchers.IO) { createWith(usedBackend) }
+        if (handle == 0L && usedBackend != "CPU") {
+            usedBackend = "CPU"
+            handle = withContext(Dispatchers.IO) { createWith(usedBackend) }
+        }
+        if (handle == 0L) {
+            val detail = SdCppEngine.lastCreateError()?.trim().orEmpty()
+            throw IllegalStateException(
+                if (detail.isBlank()) c.getString(R.string.s_059)
+                else c.getString(R.string.s_059) + "\n" + detail.take(800)
+            )
+        }
+
+        sdHandle = handle
+        activeBackend = usedBackend
+        activeContextPolicy = policy
+        mainModel = set.mainFile()
+        vaeModel = set.files["vae"]
+        DrawCore.attach(handle, set.name, usedBackend)
+    }
+
+    private suspend fun ensureFullContextForConditioning(conditioning: ConditioningSettings) {
+        if (activeContextPolicy == CONTEXT_POLICY_FULL) return
+        if (conditioning.controlImage != null || conditioning.ipAdapterImage != null) {
+            switchPipelineContext(CONTEXT_POLICY_FULL)
+        }
+    }
+
+
+    /**
+     * Pass 1 creates a short conditioned draft using one adapter family.
+     * Pass 2 frees that context and refines the draft with the base model only.
+     */
+    private suspend fun runConditioningPipeline(
+        mode: Int,
+        prompt: String,
+        negative: String,
+        loras: List<SdCppEngine.Lora>,
+        width: Int,
+        height: Int,
+        steps: Int,
+        cfg: Float,
+        clipSkip: Int,
+        seed: Long,
+        sampler: SdCppEngine.Sampler,
+        scheduler: SdCppEngine.Scheduler,
+        eta: Float,
+        hires: SdCppEngine.HiResSettings,
+        adetailer: SdCppEngine.ADetailerSettings,
+        conditioning: ConditioningSettings,
+        sourceImage: Bitmap?,
+        sourceStrength: Float,
+        onProgress: (Int, Int) -> Unit,
+        onPreview: ((Int, Int, Int, ByteArray) -> Unit)?,
+    ): Bitmap {
+        val set = activeSetOrSelected() ?: throw IllegalStateException(c.getString(R.string.s_121))
+        val controlMap = conditioning.controlImage
+        val referenceImage = conditioning.ipAdapterImage
+        when (mode) {
+            CONDITIONING_PIPELINE_CONTROLNET -> {
+                if (controlMap == null) throw IllegalStateException(c.getString(R.string.draw_conditioning_pipeline_need_control_image))
+                if (set.files["control_net"]?.isFile != true) {
+                    throw IllegalStateException(c.getString(R.string.draw_conditioning_pipeline_need_control_weights))
+                }
+            }
+            CONDITIONING_PIPELINE_IP_ADAPTER -> {
+                if (referenceImage == null) throw IllegalStateException(c.getString(R.string.draw_conditioning_pipeline_need_ip_image))
+                if (set.files["ip_adapter"]?.isFile != true || set.files["clip_vision"]?.isFile != true) {
+                    throw IllegalStateException(c.getString(R.string.draw_conditioning_pipeline_need_ip_weights))
+                }
+            }
+            else -> throw IllegalArgumentException("Unknown conditioning pipeline mode: $mode")
+        }
+
+        val draftSteps = loadParam(KEY_CONDITIONING_DRAFT_STEPS, "4")
+            .toIntOrNull()?.coerceIn(1, 12) ?: 4
+        val refineStrength = loadParam(KEY_CONDITIONING_REFINE_STRENGTH, "0.45")
+            .toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0.05f, 0.99f) ?: 0.45f
+
+        onStatus?.invoke(c.getString(R.string.draw_conditioning_pipeline_stage1), false)
+        switchPipelineContext(
+            if (mode == CONDITIONING_PIPELINE_CONTROLNET) CONTEXT_POLICY_CONTROLNET
+            else CONTEXT_POLICY_IP_ADAPTER
+        )
+        val draftHandle = sdHandle
+        onProgress(0, draftSteps)
+        val draft = withContext(Dispatchers.IO) {
+            SdCppEngine.render(
+                handle = draftHandle,
+                prompt = prompt,
+                negative = negative,
+                loras = loras,
+                width = width,
+                height = height,
+                steps = draftSteps,
+                cfg = cfg,
+                clipSkip = clipSkip,
+                seed = seed,
+                sampler = sampler,
+                scheduler = scheduler,
+                eta = eta,
+                hires = SdCppEngine.HiResSettings(),
+                adetailer = SdCppEngine.ADetailerSettings(),
+                controlImage = if (mode == CONDITIONING_PIPELINE_CONTROLNET) controlMap?.let { SdCppEngine.bitmapToRgb888(it) } else null,
+                controlImageWidth = if (mode == CONDITIONING_PIPELINE_CONTROLNET) controlMap?.width ?: 0 else 0,
+                controlImageHeight = if (mode == CONDITIONING_PIPELINE_CONTROLNET) controlMap?.height ?: 0 else 0,
+                controlStrength = conditioning.controlStrength,
+                ipAdapterImage = if (mode == CONDITIONING_PIPELINE_IP_ADAPTER) referenceImage?.let { SdCppEngine.bitmapToRgb888(it) } else null,
+                ipAdapterImageWidth = if (mode == CONDITIONING_PIPELINE_IP_ADAPTER) referenceImage?.width ?: 0 else 0,
+                ipAdapterImageHeight = if (mode == CONDITIONING_PIPELINE_IP_ADAPTER) referenceImage?.height ?: 0 else 0,
+                ipAdapterStrength = conditioning.ipAdapterStrength,
+                cb = { cur, total -> onProgress(cur, total) },
+                onPreview = onPreview?.let { f ->
+                    SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
+                },
+                initImage = sourceImage?.let { SdCppEngine.bitmapToRgb888(it) },
+                initWidth = sourceImage?.width ?: 0,
+                initHeight = sourceImage?.height ?: 0,
+                strength = if (sourceImage != null) sourceStrength else 1.0f,
+            )
+        } ?: throw IllegalStateException(c.getString(R.string.s_147))
+
+        if (cancelRequested) throw GenerationCancelledException()
+        onStatus?.invoke(c.getString(R.string.draw_conditioning_pipeline_stage2), false)
+        switchPipelineContext(CONTEXT_POLICY_BASE_ONLY)
+        val baseHandle = sdHandle
+        onProgress(0, steps)
+        return withContext(Dispatchers.IO) {
+            val draftRgb = SdCppEngine.bitmapToRgb888(draft)
+            SdCppEngine.render(
+                handle = baseHandle,
+                prompt = prompt,
+                negative = negative,
+                loras = loras,
+                width = width,
+                height = height,
+                steps = steps,
+                cfg = cfg,
+                clipSkip = clipSkip,
+                seed = seed,
+                sampler = sampler,
+                scheduler = scheduler,
+                eta = eta,
+                hires = hires,
+                adetailer = adetailer,
+                cb = { cur, total -> onProgress(cur, total) },
+                onPreview = onPreview?.let { f ->
+                    SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
+                },
+                initImage = draftRgb,
+                initWidth = draft.width,
+                initHeight = draft.height,
+                strength = refineStrength,
+            )
+        } ?: throw IllegalStateException(c.getString(R.string.s_147))
+    }
 
     private fun refreshConditioningImageStatus() {
         if (::controlImageStatus.isInitialized) {
@@ -2295,6 +2573,7 @@ class DrawPage(
                 }
             }
             sdHandle = h
+            activeContextPolicy = CONTEXT_POLICY_FULL
             activeVulkanDiagnostic = if (used.contains("vulkan", ignoreCase = true)) {
                 SdCppEngine.vulkanDiagnostics()
             } else {
@@ -2342,6 +2621,7 @@ class DrawPage(
         DrawCore.release()   // 先清引用，别让 API 拿到已经 free 的句柄
         if (sdHandle != 0L) runCatching { SdCppEngine.nativeFree(sdHandle) }
         sdHandle = 0L
+        activeContextPolicy = CONTEXT_POLICY_FULL
         activeBackend = "CPU"
         activeVulkanDiagnostic = ""
         try {
@@ -3157,6 +3437,7 @@ class DrawPage(
                         }
                     },
                     onPreview = { st, w, h, rgb -> onPreviewFrame(st, w, h, rgb) },
+                    twoPassConditioningMode = currentConditioningPipelineMode(),
                 )
                 ticker.cancel()
                 val bmp = toBitmap(img)
@@ -3207,6 +3488,7 @@ class DrawPage(
         prompt: String,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
         onPreview: ((Int, Int, Int, ByteArray) -> Unit)? = null,
+        twoPassConditioningMode: Int = CONDITIONING_PIPELINE_OFF,
     ): ImageData {
         // 绘图接口正在出图时别插队：同一个 native 句柄同时跑两个任务会错乱
         if (DrawCore.busy) throw IllegalStateException(c.getString(R.string.s_428))
@@ -3222,8 +3504,7 @@ class DrawPage(
         onProgress(0, steps)
         cancelRequested = false
 
-        val h = sdHandle
-        if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
+        if (sdHandle == 0L) throw IllegalStateException(c.getString(R.string.s_163))
         if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
 
         // LoRA 列表按槽位逐个传给 sd.cpp，支持每个 adapter 独立权重。
@@ -3244,7 +3525,34 @@ class DrawPage(
         try {
             // 推理是同步阻塞的 native 调用（一张几百秒），绝不能跟调用方同线程——
             // 调用方基本都在 Dispatchers.Main，否则整个 UI 会卡死到出图为止。
-            val bmp = withContext(Dispatchers.IO) {
+            val bmp = if (twoPassConditioningMode != CONDITIONING_PIPELINE_OFF) {
+                runConditioningPipeline(
+                    mode = twoPassConditioningMode,
+                    prompt = prompt,
+                    negative = negative,
+                    loras = loras,
+                    width = w,
+                    height = hgt,
+                    steps = steps,
+                    cfg = cfg,
+                    clipSkip = clipSkip,
+                    seed = useSeed,
+                    sampler = sampler,
+                    scheduler = scheduler,
+                    eta = eta,
+                    hires = hires,
+                    adetailer = adetailer,
+                    conditioning = conditioning,
+                    sourceImage = null,
+                    sourceStrength = 1.0f,
+                    onProgress = onProgress,
+                    onPreview = onPreview,
+                )
+            } else {
+                ensureFullContextForConditioning(conditioning)
+                val h = sdHandle
+                if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
+                withContext(Dispatchers.IO) {
                 SdCppEngine.render(
                     handle = h,
                     prompt = prompt,
@@ -3275,6 +3583,7 @@ class DrawPage(
                     },
                 )
             } ?: throw IllegalStateException(c.getString(R.string.s_147))
+            }
             onProgress(steps, steps)
             return ImageData(bmp, useSeed)
         } finally {
@@ -3450,10 +3759,10 @@ class DrawPage(
         onProgress(0, steps)
         cancelRequested = false
 
-        val h = sdHandle
-        if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
+        if (sdHandle == 0L) throw IllegalStateException(c.getString(R.string.s_163))
         if (mainModel == null) throw IllegalStateException(c.getString(R.string.s_121))
         val src = i2iBitmap ?: throw IllegalStateException(c.getString(R.string.s_214))
+        val pipelineMode = currentConditioningPipelineMode()
 
         val loras = selectedLoras("i2i")
         val negative = i2iNegEdit.text.toString()
@@ -3463,7 +3772,34 @@ class DrawPage(
         val adetailer = currentADetailerSettings()
         val conditioning = currentConditioningSettings()
 
-        val bmp = withContext(Dispatchers.IO) {
+        val bmp = if (pipelineMode != CONDITIONING_PIPELINE_OFF) {
+            runConditioningPipeline(
+                mode = pipelineMode,
+                prompt = prompt,
+                negative = negative,
+                loras = loras,
+                width = w,
+                height = hgt,
+                steps = steps,
+                cfg = cfg,
+                clipSkip = clipSkip,
+                seed = useSeed,
+                sampler = sampler,
+                scheduler = scheduler,
+                eta = eta,
+                hires = hires,
+                adetailer = adetailer,
+                conditioning = conditioning,
+                sourceImage = src,
+                sourceStrength = strength,
+                onProgress = onProgress,
+                onPreview = onPreview,
+            )
+        } else {
+            ensureFullContextForConditioning(conditioning)
+            val h = sdHandle
+            if (h == 0L) throw IllegalStateException(c.getString(R.string.s_163))
+            withContext(Dispatchers.IO) {
             val rgb = SdCppEngine.bitmapToRgb888(src)
             SdCppEngine.render(
                 handle = h,
@@ -3499,6 +3835,7 @@ class DrawPage(
                 strength = strength,
             )
         } ?: throw IllegalStateException(c.getString(R.string.s_147))
+        }
         onProgress(steps, steps)
         return ImageData(bmp, useSeed)
     }
