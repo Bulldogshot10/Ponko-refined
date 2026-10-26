@@ -35,3 +35,16 @@ Move the Kotlin-to-native API into Rust through generated UniFFI bindings, with 
 
 ## Current blocker
 Fresh build/CI and target-device behavior are not verified by this document. Do not report completion until the actual run results have been inspected.
+
+
+## Memory handling follow-up (2026-10-26)
+
+### Partial implementation / needs verification
+- **LoRA fusion memory — Partial, needs verification:** `app/src/main/cpp/sd/src/convert.cpp` now retains LoRA source tensor names as metadata, registers only factors matching the current base tensor, and calls `release_loaded_tensors()` after each adapter application. This bounds retained LoRA parameter buffers instead of accumulating previously used tensors across the export. Expected tradeoff: more per-tensor adapter loading and I/O.
+- **ADetailer mask memory — Partial, needs verification:** `app/src/main/cpp/sd/src/detailer.cpp` now creates and consumes non-merged full-resolution masks one at a time. Merged-mask mode incrementally merges into one output mask rather than retaining one full-frame mask per detection.
+- **VAE decode OOM retries — Partial, needs verification:** `app/src/main/cpp/sd/src/core/backend_fit.cpp` now progressively shrinks spatial tile dimensions over repeated decode retries, while retaining the existing temporal-tiling retry for supported video VAEs.
+
+### Validation for this follow-up
+- The three implementation edits were committed to `feat/rust-uniffi-native-facade`; commits: `913f2eed`, `ddd30e05`, and `70191b90`.
+- **Not yet run:** Rust formatting/tests, Android APK/CMake build, or target-device runtime tests. These edits must not be considered runtime-verified until those checks pass.
+- **Next steps:** verify source-name matching and repeated parameter unregister/re-register with one and multiple SD1.x/SD2.x/SDXL LoRAs; run ADetailer with multiple detections at high resolution and compare merged/non-merged outputs; force VAE decode failures and confirm retries decrease tile size without altering successful decode output unexpectedly. Capture native logs/RSS and the actual failure signal to distinguish OOM from another fusion crash.
