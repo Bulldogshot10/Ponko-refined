@@ -58,13 +58,17 @@ object DrawCore {
 
     /** 界面正在出图（由 DrawPage 上报）——API 侧据此避让，别和界面抢同一个句柄 */
     @Volatile var uiBusy = false
+        private set
 
     @Volatile private var cancelFlag = false
 
     private val lock = Mutex()
+    // Serializes UI/API generation reservations with context attach/release operations.
+    private val stateLock = Any()
 
     /** 登记句柄。**只放引用，不接管所有权**——句柄仍由 DrawPage free。 */
-    fun attach(h: Long, name: String?, backendName: String? = null) {
+    fun attach(h: Long, name: String?, backendName: String? = null) = synchronized(stateLock) {
+        check(!busy && !uiBusy) { "绘图引擎正忙" }
         handle = h
         modelName = name
         backend = backendName
@@ -76,13 +80,43 @@ object DrawCore {
     }
 
     /** 只清引用，不 free（free 由句柄持有者 DrawPage 负责，且**必须先调这个**，否则 API 会拿到已释放的句柄） */
-    fun release() {
+    fun release() = synchronized(stateLock) {
+        check(!busy && !uiBusy) { "绘图引擎正忙" }
         handle = 0L
         modelName = null
         backend = null
     }
 
     fun isReady(): Boolean = handle != 0L
+
+    /** Atomically reserve the shared handle for UI/chat generation. */
+    fun tryBeginUiGeneration(expectedHandle: Long): Boolean = synchronized(stateLock) {
+        if (busy || uiBusy || handle == 0L || handle != expectedHandle) {
+            false
+        } else {
+            uiBusy = true
+            true
+        }
+    }
+
+    fun endUiGeneration() = synchronized(stateLock) {
+        uiBusy = false
+    }
+
+    private fun tryBeginApiGeneration(): Boolean = synchronized(stateLock) {
+        if (busy || uiBusy || handle == 0L || !lock.tryLock()) {
+            false
+        } else {
+            busy = true
+            cancelFlag = false
+            true
+        }
+    }
+
+    private fun endApiGeneration() = synchronized(stateLock) {
+        busy = false
+        lock.unlock()
+    }
 
     fun requestCancel() {
         cancelFlag = true
@@ -111,12 +145,8 @@ object DrawCore {
         scheduler: HearthEngine.Scheduler? = null,
         onStep: ((Int, Int) -> Unit)? = null,
     ): List<Result> {
-        // UI/chat generation runs outside this API mutex and reports through uiBusy.
-        // Reject it here so an API request cannot enter the same native Hearth handle concurrently.
-        if (uiBusy) throw IllegalStateException("绘图引擎正忙")
-        if (!lock.tryLock()) throw IllegalStateException("绘图引擎正忙")
-        busy = true
-        cancelFlag = false
+        // Reserve the API side and inspect uiBusy under the same monitor used by UI renders.
+        if (!tryBeginApiGeneration()) throw IllegalStateException("绘图引擎正忙")
         try {
             val p = params
             val h = handle
@@ -154,8 +184,7 @@ object DrawCore {
             if (out.isEmpty()) throw IllegalStateException("已取消")
             return out
         } finally {
-            busy = false
-            lock.unlock()
+            endApiGeneration()
         }
     }
 }
