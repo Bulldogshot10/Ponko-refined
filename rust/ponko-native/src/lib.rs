@@ -17,7 +17,7 @@ use std::{
 
 uniffi::setup_scaffolding!();
 
-pub const FACADE_API_VERSION: u32 = 3;
+pub const FACADE_API_VERSION: u32 = 4;
 
 type StepFn = unsafe extern "C" fn(*mut c_void, i32, i32);
 type PreviewFn = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *const u8, usize);
