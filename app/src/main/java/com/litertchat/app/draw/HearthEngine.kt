@@ -325,6 +325,9 @@ object HearthEngine {
                 }
             }
         }
+        // Clear a previous cancellation immediately before entering the synchronous native call.
+        // Rust must not clear it again after UI is already allowed to request cancellation.
+        nativeEngine.resetCancel(handle)
         val image = com.litertchat.app.ponko.generateImage(nativeEngine, handle, request, stepProxy, previewProxy)
         val pixelCount = image.width.toLong() * image.height.toLong()
         require(image.width > 0 && image.height > 0 && pixelCount <= Int.MAX_VALUE - 2)
