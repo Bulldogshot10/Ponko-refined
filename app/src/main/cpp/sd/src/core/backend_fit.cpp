@@ -400,11 +400,38 @@ namespace sd::backend_fit {
             }
             retry_mode = tiling_params.temporal_tiling ? "spatial+temporal" : "spatial";
         } else {
-            return false;
+            // Keep reducing the spatial working set across retries. A single 50% tile
+            // retry isn't enough for larger SDXL/HiRes decodes on memory-constrained phones.
+            auto shrink_axis = [](float* relative_size, int* tile_size) {
+                if (*relative_size > 0.f) {
+                    if (*relative_size > 1.f) {
+                        if (*relative_size >= 16.f) return false;
+                        *relative_size *= 2.f;  // Values above 1 specify tile count.
+                    } else {
+                        if (*relative_size <= 0.0625f) return false;
+                        *relative_size *= 0.5f;
+                    }
+                    return true;
+                }
+                const int current = *tile_size >= 4 ? *tile_size : 32;
+                if (current <= 4) return false;
+                *tile_size = std::max(4, current / 2);
+                return true;
+            };
+            const bool shrink_x = shrink_axis(&tiling_params.rel_size_x, &tiling_params.tile_size_x);
+            const bool shrink_y = shrink_axis(&tiling_params.rel_size_y, &tiling_params.tile_size_y);
+            if (!shrink_x && !shrink_y) {
+                return false;
+            }
+            retry_mode = tiling_params.temporal_tiling ? "smaller spatial+temporal" : "smaller spatial";
         }
 
-        LOG_WARN("VAE decode failed (likely out of memory); retrying with %s tiling",
-                 retry_mode);
+        LOG_WARN("VAE decode failed (likely out of memory); retrying with %s tiling (rel_size=%.4f,%.4f tile_size=%d,%d)",
+                 retry_mode,
+                 tiling_params.rel_size_x,
+                 tiling_params.rel_size_y,
+                 tiling_params.tile_size_x,
+                 tiling_params.tile_size_y);
         return true;
     }
 
