@@ -10,7 +10,7 @@
 | SD 1.5 VAE | Embedded or separate SafeTensors |
 | SDXL VAE | Separate FP16-safe SafeTensors |
 | LoRA | Applies supported adapter weights to CLIP/UNet; maximum 4 adapters per request |
-| CLIP skip | 1–12; SD 1.5 uses final output at 1 and earlier hidden layers above 1; SDXL retains its penultimate CLIP-L output at 1 and selects earlier CLIP-L layers above 1 |
+| CLIP skip | 1–12; SD 1.5 applies final LayerNorm to selected earlier hidden layers; SDXL retains its penultimate CLIP-L output at 1 and selects earlier CLIP-L layers above 1 |
 | Samplers | Euler, Euler a, DPM++ 2M, DPM++ SDE |
 | Schedules | Normal, Karras |
 | Progress/cancel | Step callbacks; cancellation checked between denoising steps |
