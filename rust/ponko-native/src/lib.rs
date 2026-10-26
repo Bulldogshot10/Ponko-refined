@@ -57,6 +57,16 @@ struct CGenerationParams {
     adetailer_prompt: *const c_char,
     adetailer_negative_prompt: *const c_char,
     adetailer_extra_args: *const c_char,
+    control_image_rgb888: *const u8,
+    control_image_length: usize,
+    control_image_width: i32,
+    control_image_height: i32,
+    control_strength: f32,
+    ip_adapter_image_rgb888: *const u8,
+    ip_adapter_image_length: usize,
+    ip_adapter_image_width: i32,
+    ip_adapter_image_height: i32,
+    ip_adapter_strength: f32,
 }
 
 type LastErrorFn = unsafe extern "C" fn() -> *const c_char;
@@ -217,24 +227,20 @@ pub struct ModelSlots {
     pub vae: Option<String>,
     pub audio_vae: Option<String>,
     pub taesd: Option<String>,
+    pub control_net: Option<String>,
+    pub ip_adapter: Option<String>,
+    pub embedding: Option<String>,
 }
 
 impl ModelSlots {
-    fn ordered(&self) -> [Option<&str>; 13] {
+    fn ordered(&self) -> [Option<&str>; 16] {
         [
-            self.model.as_deref(),
-            self.diffusion.as_deref(),
-            self.high_noise.as_deref(),
-            self.uncond.as_deref(),
-            self.clip_l.as_deref(),
-            self.clip_g.as_deref(),
-            self.clip_vision.as_deref(),
-            self.t5xxl.as_deref(),
-            self.llm.as_deref(),
-            self.llm_vision.as_deref(),
-            self.vae.as_deref(),
-            self.audio_vae.as_deref(),
-            self.taesd.as_deref(),
+            self.model.as_deref(), self.diffusion.as_deref(), self.high_noise.as_deref(),
+            self.uncond.as_deref(), self.clip_l.as_deref(), self.clip_g.as_deref(),
+            self.clip_vision.as_deref(), self.t5xxl.as_deref(), self.llm.as_deref(),
+            self.llm_vision.as_deref(), self.vae.as_deref(), self.audio_vae.as_deref(),
+            self.taesd.as_deref(), self.control_net.as_deref(), self.ip_adapter.as_deref(),
+            self.embedding.as_deref(),
         ]
     }
 }
@@ -286,6 +292,14 @@ pub struct GenerationRequest {
     pub adetailer_prompt: String,
     pub adetailer_negative_prompt: String,
     pub adetailer_extra_args: String,
+    pub control_image_rgb888: Option<Vec<u8>>,
+    pub control_image_width: i32,
+    pub control_image_height: i32,
+    pub control_strength: f32,
+    pub ip_adapter_image_rgb888: Option<Vec<u8>>,
+    pub ip_adapter_image_width: i32,
+    pub ip_adapter_image_height: i32,
+    pub ip_adapter_strength: f32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -601,6 +615,8 @@ impl NativeEngine {
             .collect::<Result<Vec<_>, _>>()?;
         let lora_pointers: Vec<*const c_char> = lora_paths.iter().map(|path| path.as_ptr()).collect();
         let image = request.init_image_rgb888.as_deref();
+        let control_image = request.control_image_rgb888.as_deref();
+        let ip_adapter_image = request.ip_adapter_image_rgb888.as_deref();
         let params = CGenerationParams {
             prompt: prompt.as_ptr(),
             negative_prompt: negative.as_ptr(),
@@ -635,6 +651,16 @@ impl NativeEngine {
             adetailer_prompt: adetailer_prompt.as_ptr(),
             adetailer_negative_prompt: adetailer_negative_prompt.as_ptr(),
             adetailer_extra_args: adetailer_extra_args.as_ptr(),
+            control_image_rgb888: control_image.map_or(ptr::null(), |bytes| bytes.as_ptr()),
+            control_image_length: control_image.map_or(0, |bytes| bytes.len()),
+            control_image_width: request.control_image_width,
+            control_image_height: request.control_image_height,
+            control_strength: request.control_strength,
+            ip_adapter_image_rgb888: ip_adapter_image.map_or(ptr::null(), |bytes| bytes.as_ptr()),
+            ip_adapter_image_length: ip_adapter_image.map_or(0, |bytes| bytes.len()),
+            ip_adapter_image_width: request.ip_adapter_image_width,
+            ip_adapter_image_height: request.ip_adapter_image_height,
+            ip_adapter_strength: request.ip_adapter_strength,
         };
         let mut callbacks = CallbackState { step: step_callback, preview: preview_callback };
         let callbacks_ptr = (&mut callbacks as *mut CallbackState).cast::<c_void>();
@@ -755,6 +781,18 @@ pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationRepor
     }
 }
 
+fn valid_optional_rgb888(image: &Option<Vec<u8>>, width: i32, height: i32) -> bool {
+    match image {
+        Some(rgb) => {
+            if width <= 0 || height <= 0 { return false; }
+            let expected = (width as usize).checked_mul(height as usize)
+                .and_then(|pixels| pixels.checked_mul(3));
+            expected == Some(rgb.len())
+        }
+        None => width == 0 && height == 0,
+    }
+}
+
 #[uniffi::export]
 pub fn validate_generation_request(request: GenerationRequest) -> ValidationReport {
     if request.width <= 0 || request.height <= 0 {
@@ -801,6 +839,16 @@ pub fn validate_generation_request(request: GenerationRequest) -> ValidationRepo
         if expected != Some(rgb.len()) {
             return invalid("The img2img buffer must contain exactly width * height * 3 RGB888 bytes.");
         }
+    }
+    if !valid_optional_rgb888(&request.control_image_rgb888, request.control_image_width, request.control_image_height)
+        || !valid_optional_rgb888(&request.ip_adapter_image_rgb888, request.ip_adapter_image_width, request.ip_adapter_image_height) {
+        return invalid("ControlNet and IP-Adapter images must have positive dimensions and exactly width * height * 3 RGB888 bytes.");
+    }
+    if !request.control_strength.is_finite() || !(0.0..=2.0).contains(&request.control_strength) {
+        return invalid("ControlNet strength must be finite and within 0..=2.");
+    }
+    if !request.ip_adapter_strength.is_finite() || !(0.0..=2.0).contains(&request.ip_adapter_strength) {
+        return invalid("IP-Adapter strength must be finite and within 0..=2.");
     }
     ValidationReport { valid: true, message: "Request fields are internally consistent.".to_owned() }
 }
@@ -889,6 +937,9 @@ mod tests {
             adetailer_enabled: false, adetailer_detector_path: None,
             adetailer_prompt: String::new(), adetailer_negative_prompt: String::new(),
             adetailer_extra_args: String::new(),
+            control_image_rgb888: None, control_image_width: 0, control_image_height: 0,
+            control_strength: 0.9, ip_adapter_image_rgb888: None,
+            ip_adapter_image_width: 0, ip_adapter_image_height: 0, ip_adapter_strength: 1.0,
         }
     }
 
@@ -897,6 +948,7 @@ mod tests {
             model: None, diffusion: None, high_noise: None, uncond: None, clip_l: None,
             clip_g: None, clip_vision: None, t5xxl: None, llm: None, llm_vision: None,
             vae: None, audio_vae: None, taesd: None,
+            control_net: None, ip_adapter: None, embedding: None,
         }
     }
 
@@ -925,6 +977,27 @@ mod tests {
         input.init_image_rgb888 = Some(vec![0; 12]);
         assert!(validate_generation_request(input.clone()).valid);
         input.init_image_rgb888 = Some(vec![0; 11]);
+        assert!(!validate_generation_request(input).valid);
+    }
+
+    #[test]
+    fn validates_controlnet_and_ip_adapter_rgb888_buffers() {
+        let mut input = request();
+        input.control_image_rgb888 = Some(vec![0; 12]);
+        input.control_image_width = 2;
+        input.control_image_height = 2;
+        assert!(validate_generation_request(input.clone()).valid);
+        input.control_image_rgb888 = Some(vec![0; 11]);
+        assert!(!validate_generation_request(input.clone()).valid);
+
+        input.control_image_rgb888 = None;
+        input.control_image_width = 0;
+        input.control_image_height = 0;
+        input.ip_adapter_image_rgb888 = Some(vec![0; 12]);
+        input.ip_adapter_image_width = 2;
+        input.ip_adapter_image_height = 2;
+        assert!(validate_generation_request(input.clone()).valid);
+        input.ip_adapter_image_rgb888 = Some(vec![0; 11]);
         assert!(!validate_generation_request(input).valid);
     }
 

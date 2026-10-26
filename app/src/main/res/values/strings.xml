@@ -591,4 +591,20 @@
     <string name="draw_lora_fusion_failed_detail">Native fusion failed or the generated GGUF did not pass validation.</string>
     <string name="draw_lora_fusion_create_failed">Could not create the output model-set directory.</string>
     <string name="draw_lora_fusion_register_failed">Fusion completed, but Ponko could not register the new model set.</string>
+    <string name="draw_conditioning_title">Image conditioning</string>
+    <string name="draw_conditioning_intro">Select compatible model weights in the model set, then choose optional conditioning images below.</string>
+    <string name="draw_controlnet_label">ControlNet model</string>
+    <string name="draw_ipadapter_label">IP-Adapter model</string>
+    <string name="draw_embedding_label">Textual Inversion embedding</string>
+    <string name="draw_controlnet_pick_image">Choose ControlNet map</string>
+    <string name="draw_controlnet_image_none">No ControlNet map selected</string>
+    <string name="draw_ipadapter_pick_image">Choose IP-Adapter reference</string>
+    <string name="draw_ipadapter_image_none">No IP-Adapter reference selected</string>
+    <string name="draw_conditioning_image_selected">Selected image: %1$d × %2$d</string>
+    <string name="draw_conditioning_clear_image">Clear image</string>
+    <string name="draw_controlnet_strength">ControlNet strength (0 to 2)</string>
+    <string name="draw_controlnet_hint">Choose a compatible preprocessed Canny, depth, pose or line-art map. ControlNet conditioning applies to the base generation.</string>
+    <string name="draw_ipadapter_strength">IP-Adapter strength (0 to 2)</string>
+    <string name="draw_ipadapter_hint">IP-Adapter requires compatible weights in the ip_adapter slot and a compatible CLIP Vision model in clip_vision.</string>
+    <string name="draw_embedding_hint">Add one embedding file to the model set. Its prompt trigger token is the filename without the extension.</string>
 </resources>

@@ -4,7 +4,7 @@ Kotlin now calls the drawing engine through generated UniFFI bindings into Rust.
 
 ## Native API coverage
 
-The facade covers model context creation and release, text-to-image and img2img, all existing sampler/scheduler/ETA controls, caller-provided LoRA sets, HiRes settings, CLIP skip, progress/preview callbacks, cancellation, Vulkan diagnostics, last-parameter logging, backend device enumeration, UNet quantization, and ResAdapter conversion. Existing Kotlin call sites keep their `SdCppEngine` wrapper names, but those wrappers now call the generated UniFFI API rather than hand-written JNI methods.
+The facade covers model context creation and release, text-to-image and img2img, all existing sampler/scheduler/ETA controls, caller-provided LoRA sets, HiRes settings, CLIP skip, optional ControlNet and IP-Adapter image conditioning, one optional Textual Inversion embedding for CLIP-based SD models, progress/preview callbacks, cancellation, Vulkan diagnostics, last-parameter logging, backend device enumeration, UNet quantization, and ResAdapter conversion. Existing Kotlin call sites keep their `SdCppEngine` wrapper names, but those wrappers now call the generated UniFFI API rather than hand-written JNI methods.
 
 The native handle registry blocks context destruction while generate/cancel calls are using a context. Generation remains single-flight because stable-diffusion.cpp's progress and preview callbacks are registered globally.
 

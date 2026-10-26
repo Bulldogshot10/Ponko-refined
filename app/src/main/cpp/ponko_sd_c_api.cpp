@@ -31,10 +31,11 @@
 #define PONKO_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, PONKO_LOG_TAG, __VA_ARGS__)
 
 namespace {
-constexpr size_t kSlotCount = 13;
+constexpr size_t kSlotCount = 16;
 enum SlotIndex {
     SLOT_MODEL = 0, SLOT_DIFFUSION, SLOT_HIGH_NOISE, SLOT_UNCOND, SLOT_CLIP_L, SLOT_CLIP_G,
-    SLOT_CLIP_VISION, SLOT_T5XXL, SLOT_LLM, SLOT_LLM_VISION, SLOT_VAE, SLOT_AUDIO_VAE, SLOT_TAESD
+    SLOT_CLIP_VISION, SLOT_T5XXL, SLOT_LLM, SLOT_LLM_VISION, SLOT_VAE, SLOT_AUDIO_VAE,
+    SLOT_TAESD, SLOT_CONTROL_NET, SLOT_IP_ADAPTER, SLOT_EMBEDDING
 };
 
 struct PonkoHandle {
@@ -45,6 +46,8 @@ struct PonkoHandle {
     std::string backend_name = "auto";
     adetailer_ctx_t* adetailer = nullptr;
     std::string adetailer_detector_path;
+    bool has_control_net = false;
+    bool has_ip_adapter = false;
 };
 
 struct CallbackState {
@@ -282,6 +285,8 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
         }
     }
 
+    std::string embedding_name_storage;
+    sd_embedding_t embedding{};
     sd_ctx_params_t params;
     sd_ctx_params_init(&params);
     const char* effective_model = slot_paths[SLOT_MODEL] != nullptr
@@ -301,6 +306,21 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
     params.vae_path = effective_vae;
     params.audio_vae_path = slot_paths[SLOT_AUDIO_VAE];
     params.taesd_path = slot_paths[SLOT_TAESD];
+    params.control_net_path = slot_paths[SLOT_CONTROL_NET];
+    params.ip_adapter_path = slot_paths[SLOT_IP_ADAPTER];
+    if (slot_paths[SLOT_EMBEDDING] != nullptr) {
+        const char* path = slot_paths[SLOT_EMBEDDING];
+        const char* filename = std::strrchr(path, '/');
+        filename = filename == nullptr ? path : filename + 1;
+        embedding_name_storage = filename;
+        const size_t extension = embedding_name_storage.find_last_of('.');
+        if (extension != std::string::npos && extension > 0) embedding_name_storage.resize(extension);
+        if (embedding_name_storage.empty()) embedding_name_storage = "embedding";
+        embedding.name = embedding_name_storage.c_str();
+        embedding.path = path;
+        params.embeddings = &embedding;
+        params.embedding_count = 1;
+    }
     params.n_threads = n_threads > 0 ? n_threads : sd_get_num_physical_cores();
     if (wtype >= 0) params.wtype = static_cast<enum sd_type_t>(wtype);
     params.enable_mmap = true;
@@ -332,6 +352,8 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
     }
     handle->ctx = context;
     handle->vae_conv_direct = params.vae_conv_direct;
+    handle->has_control_net = slot_paths[SLOT_CONTROL_NET] != nullptr;
+    handle->has_ip_adapter = slot_paths[SLOT_IP_ADAPTER] != nullptr;
     handle->n_threads = params.n_threads;
     handle->backend_name = stringIsNonempty(backend) ? backend : "auto";
     PONKO_LOGI("context created; VAE direct-conv=%d backend=%s",
@@ -358,6 +380,47 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     if (params->width <= 0 || params->height <= 0 || params->steps <= 0) {
         setError("width, height and steps must be positive");
         return 0;
+    }
+    auto validateOptionalRgb888 = [&](const uint8_t* pixels, size_t length,
+                                      int32_t width, int32_t height, const char* label) {
+        if (pixels == nullptr) {
+            if (length != 0 || width != 0 || height != 0) {
+                setError(std::string(label) + " image dimensions/length were set without a pixel buffer");
+                return false;
+            }
+            return true;
+        }
+        if (width <= 0 || height <= 0) {
+            setError(std::string(label) + " image dimensions must be positive");
+            return false;
+        }
+        const uint64_t pixel_count = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+        if (pixel_count > std::numeric_limits<size_t>::max() / 3) {
+            setError(std::string(label) + " image size overflows the RGB888 buffer");
+            return false;
+        }
+        const size_t expected = static_cast<size_t>(pixel_count) * 3;
+        if (length != expected) {
+            setError(std::string(label) + " image length does not match width * height * 3 RGB888 bytes");
+            return false;
+        }
+        return true;
+    };
+    if (!validateOptionalRgb888(params->control_image_rgb888, params->control_image_length,
+                                params->control_image_width, params->control_image_height, "ControlNet") ||
+        !validateOptionalRgb888(params->ip_adapter_image_rgb888, params->ip_adapter_image_length,
+                                params->ip_adapter_image_width, params->ip_adapter_image_height, "IP-Adapter")) return 0;
+    if (!std::isfinite(params->control_strength) || params->control_strength < 0.f || params->control_strength > 2.f) {
+        setError("ControlNet strength must be finite and within 0..2"); return 0;
+    }
+    if (!std::isfinite(params->ip_adapter_strength) || params->ip_adapter_strength < 0.f || params->ip_adapter_strength > 2.f) {
+        setError("IP-Adapter strength must be finite and within 0..2"); return 0;
+    }
+    if (params->control_image_rgb888 != nullptr && !handle->has_control_net) {
+        setError("ControlNet image selected, but the loaded model set has no control_net weight"); return 0;
+    }
+    if (params->ip_adapter_image_rgb888 != nullptr && !handle->has_ip_adapter) {
+        setError("IP-Adapter reference selected, but the loaded model set has no ip_adapter weight"); return 0;
     }
 
     std::unique_lock<std::mutex> generation_guard(g_generation_mutex, std::try_to_lock);
@@ -410,6 +473,20 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     generation.hires.steps = params->hires_steps;
     generation.hires.denoising_strength = params->hires_denoising_strength;
     generation.hires.upscale_tile_size = params->hires_tile_size;
+    generation.control_strength = params->control_strength;
+    generation.ip_adapter_strength = params->ip_adapter_strength;
+    if (params->control_image_rgb888 != nullptr) {
+        generation.control_image.width = static_cast<uint32_t>(params->control_image_width);
+        generation.control_image.height = static_cast<uint32_t>(params->control_image_height);
+        generation.control_image.channel = 3;
+        generation.control_image.data = const_cast<uint8_t*>(params->control_image_rgb888);
+    }
+    if (params->ip_adapter_image_rgb888 != nullptr) {
+        generation.ip_adapter_image.width = static_cast<uint32_t>(params->ip_adapter_image_width);
+        generation.ip_adapter_image.height = static_cast<uint32_t>(params->ip_adapter_image_height);
+        generation.ip_adapter_image.channel = 3;
+        generation.ip_adapter_image.data = const_cast<uint8_t*>(params->ip_adapter_image_rgb888);
+    }
 
     if (params->init_image_rgb888 != nullptr && params->init_image_width > 0 && params->init_image_height > 0) {
         const uint64_t expected = static_cast<uint64_t>(params->init_image_width) *
@@ -494,6 +571,9 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
                 detail_generation.height = 512;
                 detail_generation.strength = 0.4f;
             }
+            // The full-frame ControlNet map does not align with ADetailer's per-detection crop.
+            detail_generation.control_image = {};
+            detail_generation.control_strength = 0.0f;
             sd_image_t* detailed_images = nullptr;
             int detailed_count = 0;
             const bool detail_ok = adetail_image(

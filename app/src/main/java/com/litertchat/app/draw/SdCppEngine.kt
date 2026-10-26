@@ -176,7 +176,8 @@ object SdCppEngine {
         fun slot(index: Int): String? = slots.getOrNull(index)?.takeIf { it.isNotBlank() }
         return com.litertchat.app.ponko.ModelSlots(
             slot(0), slot(1), slot(2), slot(3), slot(4), slot(5), slot(6),
-            slot(7), slot(8), slot(9), slot(10), slot(11), slot(12)
+            slot(7), slot(8), slot(9), slot(10), slot(11), slot(12),
+            slot(13), slot(14), slot(15)
         )
     }
 
@@ -262,6 +263,14 @@ object SdCppEngine {
         initHeight: Int,
         strength: Float,
         adetailer: ADetailerSettings = ADetailerSettings(),
+        controlImage: ByteArray? = null,
+        controlImageWidth: Int = 0,
+        controlImageHeight: Int = 0,
+        controlStrength: Float = 0.9f,
+        ipAdapterImage: ByteArray? = null,
+        ipAdapterImageWidth: Int = 0,
+        ipAdapterImageHeight: Int = 0,
+        ipAdapterStrength: Float = 1.0f,
     ): IntArray? = runCatching {
         val loraCount = minOf(loraPaths.size, loraScales.size)
         val request = com.litertchat.app.ponko.GenerationRequest(
@@ -296,6 +305,14 @@ object SdCppEngine {
             adetailer.prompt,
             adetailer.negativePrompt,
             adetailer.extraArgs,
+            controlImage,
+            controlImageWidth,
+            controlImageHeight,
+            controlStrength,
+            ipAdapterImage,
+            ipAdapterImageWidth,
+            ipAdapterImageHeight,
+            ipAdapterStrength,
         )
         val stepProxy = cb?.let { callback ->
             object : com.litertchat.app.ponko.StepCallback {
@@ -382,6 +399,7 @@ object SdCppEngine {
         "model", "diffusion", "high_noise", "uncond",
         "clip_l", "clip_g", "clip_vision", "t5xxl",
         "llm", "llm_vision", "vae", "audio_vae", "taesd",
+        "control_net", "ip_adapter", "embedding",
     )
 
     /** 把槽位表（key -> 文件绝对路径）转成 JNI 要的定长数组 */
@@ -421,6 +439,14 @@ object SdCppEngine {
         initHeight: Int = 0,
         strength: Float = 1.0f,
         adetailer: ADetailerSettings = ADetailerSettings(),
+        controlImage: ByteArray? = null,
+        controlImageWidth: Int = 0,
+        controlImageHeight: Int = 0,
+        controlStrength: Float = 0.9f,
+        ipAdapterImage: ByteArray? = null,
+        ipAdapterImageWidth: Int = 0,
+        ipAdapterImageHeight: Int = 0,
+        ipAdapterStrength: Float = 1.0f,
     ): Bitmap? {
         val effectiveSeed = if (seed < 0) (System.currentTimeMillis() % 1_000_000_000L) else seed
         val useInit = initImage != null && initImage.isNotEmpty() && initWidth > 0 && initHeight > 0
@@ -439,6 +465,14 @@ object SdCppEngine {
             if (useInit) initHeight else 0,
             if (useInit) strength else 1.0f,
             adetailer,
+            controlImage,
+            controlImageWidth,
+            controlImageHeight,
+            controlStrength,
+            ipAdapterImage,
+            ipAdapterImageWidth,
+            ipAdapterImageHeight,
+            ipAdapterStrength,
         ) ?: return null
         if (px.size < 2) return null
         val outWidth = px[0]

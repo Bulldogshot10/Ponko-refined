@@ -108,6 +108,8 @@ class DrawPage(
         private const val REQ_HIRES_MODEL = 0x5D06
         private const val REQ_ADETAILER_MODEL = 0x5D07
         private const val REQ_LORA_FUSION_IMPORT = 0x5D08
+        private const val REQ_CONTROL_IMAGE = 0x5D09
+        private const val REQ_IP_ADAPTER_IMAGE = 0x5D0A
         private const val HIRES_UPSCALER_DIR = "hires-upscalers"
         private const val ADETAILER_MODEL_DIR = "adetailer-models"
 
@@ -123,6 +125,8 @@ class DrawPage(
         private const val KEY_CPU_THREADS = "drawCpuThreads"
         private const val KEY_TAESD_ENABLED = "drawTaesdEnabled"
         private const val KEY_VAE_CONV_DIRECT = "drawVaeConvDirect"
+        private const val KEY_CONTROL_STRENGTH = "drawControlStrength"
+        private const val KEY_IP_ADAPTER_STRENGTH = "drawIpAdapterStrength"
 
         /** 单文件 / 多文件 */
         const val KIND_SINGLE = "single"
@@ -164,17 +168,34 @@ class DrawPage(
             "llm_vision" -> R.string.s_356
             "vae" -> R.string.s_357
             "taesd" -> R.string.draw_taesd_label
+            "control_net" -> R.string.draw_controlnet_label
+            "ip_adapter" -> R.string.draw_ipadapter_label
+            "embedding" -> R.string.draw_embedding_label
             else -> R.string.s_358
         }
 
         /** 某个类型需要哪些槽位（key to 是否必填）。
          *  多文件模型的配套文件各家不一样，这里按家族给模板；用户选了类型就按模板列槽位。
          *  必填只是「加载前的检查」，不阻止用户尝试（可选槽位留空也允许加载）。 */
-        fun familySlots(kind: String, family: String): List<Pair<String, Boolean>> = when {
+        private fun withConditioningSlots(base: List<Pair<String, Boolean>>): List<Pair<String, Boolean>> {
+            val result = base.toMutableList()
+            val optionalSlots = listOf(
+                "clip_vision" to false,
+                "control_net" to false,
+                "ip_adapter" to false,
+                "embedding" to false,
+            )
+            for (slot in optionalSlots) {
+                if (result.none { it.first == slot.first }) result.add(slot)
+            }
+            return result
+        }
+
+        fun familySlots(kind: String, family: String): List<Pair<String, Boolean>> = withConditioningSlots(when {
             kind == KIND_SINGLE && family == FAM_OTHER -> listOf(
                 "model" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
-                "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
-                "diffusion" to false, "high_noise" to false, "uncond" to false, "audio_vae" to false, "taesd" to false)
+                "t5xxl" to false, "llm" to false, "llm_vision" to false, "diffusion" to false,
+                "high_noise" to false, "uncond" to false, "audio_vae" to false, "taesd" to false)
             kind == KIND_SINGLE && family == FAM_SD15 -> listOf("model" to true, "vae" to false, "taesd" to false)
             kind == KIND_SINGLE -> listOf("model" to true, "vae" to false)
             family == FAM_SDXL -> listOf(
@@ -189,13 +210,13 @@ class DrawPage(
                 "diffusion" to true, "high_noise" to false, "clip_l" to false, "clip_g" to false,
                 "t5xxl" to false, "llm" to false, "vae" to true)
             family == FAM_VIDEO -> listOf(
-                "diffusion" to true, "clip_vision" to false, "t5xxl" to false, "llm" to false,
+                "diffusion" to true, "t5xxl" to false, "llm" to false,
                 "vae" to true, "audio_vae" to false)
             else -> listOf(
                 "diffusion" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
-                "clip_vision" to false, "t5xxl" to false, "llm" to false, "llm_vision" to false,
+                "t5xxl" to false, "llm" to false, "llm_vision" to false,
                 "high_noise" to false, "uncond" to false, "audio_vae" to false)
-        }
+        })
 
         /** SharedPreferences 文件名与键（只存 UI 偏好） */
         private const val PREFS_NAME = "ponko"
@@ -441,6 +462,18 @@ class DrawPage(
 
     /** 图生图选中的参考图（仅内存，进程结束即失效） */
     private var i2iBitmap: Bitmap? = null
+
+    private var controlImageBitmap: Bitmap? = null
+    private var ipAdapterImageBitmap: Bitmap? = null
+    private lateinit var controlImageStatus: TextView
+    private lateinit var ipAdapterImageStatus: TextView
+
+    private data class ConditioningSettings(
+        val controlImage: Bitmap?,
+        val ipAdapterImage: Bitmap?,
+        val controlStrength: Float,
+        val ipAdapterStrength: Float,
+    )
 
     // ---- HiRes Fix controls ----
     private lateinit var tabHiRes: TextView
@@ -702,6 +735,7 @@ class DrawPage(
         paramHost.addView(hiresContent, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         paramPane.addView(paramHost, matchWrap())
+        paramPane.addView(buildConditioningContent(), matchWrap(top = 10))
 
         // ---- 结果面板 ----
         resultPane = LinearLayout(c).apply {
@@ -1184,6 +1218,110 @@ class DrawPage(
             denoisingStrength = adetailerDenoiseEdit.text.toString().toFloatOrNull()?.coerceIn(0.01f, 1f) ?: 0.4f,
             steps = adetailerStepsEdit.text.toString().toIntOrNull()?.coerceIn(0, 150) ?: 8,
         )
+    }
+
+    private fun buildConditioningContent(): View {
+        val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(title(c.getString(R.string.draw_conditioning_title)))
+        box.addView(body(c.getString(R.string.draw_conditioning_intro)))
+
+        val controlCard = card()
+        controlCard.addView(title(c.getString(R.string.draw_controlnet_label)))
+        val controlActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        val controlPickButton = Button(c).apply {
+            text = c.getString(R.string.draw_controlnet_pick_image)
+            setOnClickListener { pickConditioningImage(REQ_CONTROL_IMAGE) }
+        }
+        controlActions.addView(controlPickButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val controlClearButton = Button(c).apply {
+            text = c.getString(R.string.draw_conditioning_clear_image)
+            setOnClickListener { controlImageBitmap = null; refreshConditioningImageStatus() }
+        }
+        controlActions.addView(controlClearButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        controlCard.addView(controlActions, matchWrap(top = 4))
+        controlImageStatus = body(c.getString(R.string.draw_controlnet_image_none))
+        controlCard.addView(controlImageStatus)
+        val controlStrength = smallNumber(loadParam(KEY_CONTROL_STRENGTH, "0.9"))
+        bindParam(controlStrength, KEY_CONTROL_STRENGTH)
+        controlCard.addView(paramRow(c.getString(R.string.draw_controlnet_strength), controlStrength,
+            c.getString(R.string.draw_controlnet_hint)), matchWrap(top = 4))
+        box.addView(controlCard)
+
+        val adapterCard = card()
+        adapterCard.addView(title(c.getString(R.string.draw_ipadapter_label)))
+        val adapterActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        val adapterPickButton = Button(c).apply {
+            text = c.getString(R.string.draw_ipadapter_pick_image)
+            setOnClickListener { pickConditioningImage(REQ_IP_ADAPTER_IMAGE) }
+        }
+        adapterActions.addView(adapterPickButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val adapterClearButton = Button(c).apply {
+            text = c.getString(R.string.draw_conditioning_clear_image)
+            setOnClickListener { ipAdapterImageBitmap = null; refreshConditioningImageStatus() }
+        }
+        adapterActions.addView(adapterClearButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        adapterCard.addView(adapterActions, matchWrap(top = 4))
+        ipAdapterImageStatus = body(c.getString(R.string.draw_ipadapter_image_none))
+        adapterCard.addView(ipAdapterImageStatus)
+        val adapterStrength = smallNumber(loadParam(KEY_IP_ADAPTER_STRENGTH, "1.0"))
+        bindParam(adapterStrength, KEY_IP_ADAPTER_STRENGTH)
+        adapterCard.addView(paramRow(c.getString(R.string.draw_ipadapter_strength), adapterStrength,
+            c.getString(R.string.draw_ipadapter_hint)), matchWrap(top = 4))
+        box.addView(adapterCard)
+        box.addView(body(c.getString(R.string.draw_embedding_hint)))
+        refreshConditioningImageStatus()
+        return box
+    }
+
+    private fun currentConditioningSettings(): ConditioningSettings = ConditioningSettings(
+        controlImage = controlImageBitmap,
+        ipAdapterImage = ipAdapterImageBitmap,
+        controlStrength = loadParam(KEY_CONTROL_STRENGTH, "0.9")
+            .toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0f, 2f) ?: 0.9f,
+        ipAdapterStrength = loadParam(KEY_IP_ADAPTER_STRENGTH, "1.0")
+            .toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0f, 2f) ?: 1.0f,
+    )
+
+    private fun refreshConditioningImageStatus() {
+        if (::controlImageStatus.isInitialized) {
+            val image = controlImageBitmap
+            controlImageStatus.text = if (image == null) c.getString(R.string.draw_controlnet_image_none)
+                else c.getString(R.string.draw_conditioning_image_selected, image.width, image.height)
+        }
+        if (::ipAdapterImageStatus.isInitialized) {
+            val image = ipAdapterImageBitmap
+            ipAdapterImageStatus.text = if (image == null) c.getString(R.string.draw_ipadapter_image_none)
+                else c.getString(R.string.draw_conditioning_image_selected, image.width, image.height)
+        }
+    }
+
+    private fun pickConditioningImage(requestCode: Int) {
+        val title = if (requestCode == REQ_CONTROL_IMAGE) R.string.draw_controlnet_pick_image else R.string.draw_ipadapter_pick_image
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+            putExtra(android.content.Intent.EXTRA_TITLE, c.getString(title))
+        }
+        act.startActivityForResult(intent, requestCode)
+    }
+
+    private fun handleConditioningImagePicked(
+        requestCode: Int, resultCode: Int, data: android.content.Intent?
+    ): Boolean {
+        if (requestCode != REQ_CONTROL_IMAGE && requestCode != REQ_IP_ADAPTER_IMAGE) return false
+        if (resultCode != Activity.RESULT_OK) return true
+        val uri = data?.data ?: return true
+        scope.launch {
+            val bitmap = withContext(Dispatchers.IO) { decodePickedImage(uri) }
+            if (bitmap == null) {
+                toast(c.getString(R.string.s_215))
+            } else {
+                if (requestCode == REQ_CONTROL_IMAGE) controlImageBitmap = bitmap
+                else ipAdapterImageBitmap = bitmap
+                refreshConditioningImageStatus()
+            }
+        }
+        return true
     }
 
     // ================= HiRes Fix 页面 =================
@@ -2984,6 +3122,7 @@ class DrawPage(
         val loras = selectedLoras("t2i")
         val hires = currentHiresSettings()
         val adetailer = currentADetailerSettings()
+        val conditioning = currentConditioningSettings()
         // EditText 必须在主线程读，先取出来再进 IO
         val negative = negEdit.text.toString()
 
@@ -3014,6 +3153,14 @@ class DrawPage(
                     eta = eta,
                     hires = hires,
                     adetailer = adetailer,
+                    controlImage = conditioning.controlImage?.let { SdCppEngine.bitmapToRgb888(it) },
+                    controlImageWidth = conditioning.controlImage?.width ?: 0,
+                    controlImageHeight = conditioning.controlImage?.height ?: 0,
+                    controlStrength = conditioning.controlStrength,
+                    ipAdapterImage = conditioning.ipAdapterImage?.let { SdCppEngine.bitmapToRgb888(it) },
+                    ipAdapterImageWidth = conditioning.ipAdapterImage?.width ?: 0,
+                    ipAdapterImageHeight = conditioning.ipAdapterImage?.height ?: 0,
+                    ipAdapterStrength = conditioning.ipAdapterStrength,
                     cb = { cur, total -> onProgress(cur, total) },
                     onPreview = onPreview?.let { f ->
                         SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -3206,6 +3353,7 @@ class DrawPage(
         val scheduler = pickI2iScheduler(loras.isNotEmpty())
         val hires = currentHiresSettings()
         val adetailer = currentADetailerSettings()
+        val conditioning = currentConditioningSettings()
 
         val bmp = withContext(Dispatchers.IO) {
             val rgb = SdCppEngine.bitmapToRgb888(src)
@@ -3225,6 +3373,14 @@ class DrawPage(
                 eta = eta,
                 hires = hires,
                 adetailer = adetailer,
+                controlImage = conditioning.controlImage?.let { SdCppEngine.bitmapToRgb888(it) },
+                controlImageWidth = conditioning.controlImage?.width ?: 0,
+                controlImageHeight = conditioning.controlImage?.height ?: 0,
+                controlStrength = conditioning.controlStrength,
+                ipAdapterImage = conditioning.ipAdapterImage?.let { SdCppEngine.bitmapToRgb888(it) },
+                ipAdapterImageWidth = conditioning.ipAdapterImage?.width ?: 0,
+                ipAdapterImageHeight = conditioning.ipAdapterImage?.height ?: 0,
+                ipAdapterStrength = conditioning.ipAdapterStrength,
                 cb = { cur, total -> onProgress(cur, total) },
                 onPreview = onPreview?.let { f ->
                     SdCppEngine.PreviewCallback { st, w, h, rgb -> f(st, w, h, rgb) }
@@ -3272,6 +3428,7 @@ class DrawPage(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (handleConditioningImagePicked(requestCode, resultCode, data)) return true
         if (handleLoraFusionPickedFile(requestCode, resultCode, data)) return true
         if (handleHiresUpscalerPickedFile(requestCode, resultCode, data)) return true
         if (handleADetailerPickedFile(requestCode, resultCode, data)) return true
