@@ -34,6 +34,8 @@ use hearth::{
 uniffi::setup_scaffolding!();
 
 const FACADE_API_VERSION: i32 = 4;
+const MAX_IMAGE_DIMENSION: i32 = 2048;
+const MAX_LORA_COUNT: usize = 4;
 static RUNTIME_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn native_error(error: impl std::fmt::Display) -> PonkoError {
@@ -239,8 +241,6 @@ impl NativeEngine {
         if !report.valid {
             return Err(PonkoError::InvalidArgument { details: report.message });
         }
-        init_runtime()?;
-
         let slots = request.slots.as_ref();
         let vocab = slots.and_then(|s| s.clip_l.as_deref()).unwrap_or_default();
         let merges = slots.and_then(|s| s.clip_g.as_deref()).unwrap_or_default();
@@ -261,7 +261,7 @@ impl NativeEngine {
         if merges.trim().is_empty() || !Path::new(merges).is_file() {
             return Err(PonkoError::InvalidArgument { details: "Choose tokenizer merges.txt in the Tokenizer merges slot.".to_owned() });
         }
-        if request.family == "sdxl" && vae_path.is_none() {
+        if is_sdxl_family(&request.family) && vae_path.is_none() {
             return Err(PonkoError::InvalidArgument { details: "SDXL requires the FP16-safe VAE checkpoint in the VAE slot.".to_owned() });
         }
         if let Some(ref path) = vae_path {
@@ -269,6 +269,10 @@ impl NativeEngine {
                 return Err(PonkoError::InvalidArgument { details: format!("VAE must be an existing .safetensors file: {}", path.display()) });
             }
         }
+
+        // Validate local inputs before initializing Vulkan, so invalid paths return actionable errors
+        // without creating the GPU runtime or reserving its resources.
+        init_runtime()?;
 
         let context = HearthContext {
             family: request.family.to_ascii_lowercase(),
@@ -564,10 +568,12 @@ fn tensor_to_rgb(
     let data: Vec<f32> = image.into_data().convert::<f32>().to_vec().map_err(native_error)?;
     let pixels = (width as usize).checked_mul(height as usize)
         .ok_or_else(|| native_error("Image dimensions overflowed"))?;
-    if data.len() != pixels * 3 {
+    let rgb_len = pixels.checked_mul(3)
+        .ok_or_else(|| native_error("RGB image byte count overflowed"))?;
+    if data.len() != rgb_len {
         return Err(native_error(format!("Hearth returned {} values for a {width}x{height} RGB image.", data.len())));
     }
-    let mut rgb888 = vec![0u8; pixels * 3];
+    let mut rgb888 = vec![0u8; rgb_len];
     let to_byte = |v: f32| ((v.clamp(-1.0, 1.0) + 1.0) * 127.5).round() as u8;
     // Burn tensor is NCHW. Convert each planar channel to row-major RGB888.
     for i in 0..pixels {
@@ -608,6 +614,11 @@ pub fn validate_model_slots(slots: ModelSlots) -> ValidationReport {
 }
 
 #[uniffi::export]
+fn is_sdxl_family(family: &str) -> bool {
+    family.eq_ignore_ascii_case("sdxl")
+}
+
+#[uniffi::export]
 pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationReport {
     if !["sd15", "sdxl"].contains(&request.family.to_ascii_lowercase().as_str()) {
         return invalid("Hearth supports only SD 1.5 and SDXL checkpoints.");
@@ -625,7 +636,7 @@ pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationRepor
     if slots.and_then(|s| s.clip_g.as_deref()).is_none_or(|v| v.trim().is_empty()) {
         return invalid("Tokenizer merges.txt path is required in the CLIP-G slot.");
     }
-    if request.family.eq_ignore_ascii_case("sdxl") && request.vae_path.as_deref()
+    if is_sdxl_family(&request.family) && request.vae_path.as_deref()
         .or_else(|| slots.and_then(|s| s.vae.as_deref())).is_none_or(|v| v.trim().is_empty()) {
         return invalid("SDXL requires a separate FP16-safe VAE .safetensors file.");
     }
@@ -634,11 +645,16 @@ pub fn validate_model_load_request(request: ModelLoadRequest) -> ValidationRepor
 
 #[uniffi::export]
 pub fn validate_generation_request(request: GenerationRequest) -> ValidationReport {
-    if request.width < 64 || request.height < 64 || request.width % 8 != 0 || request.height % 8 != 0 {
-        return invalid("Width and height must be >=64 and divisible by 8.");
+    if request.width < 64 || request.height < 64 ||
+        request.width > MAX_IMAGE_DIMENSION || request.height > MAX_IMAGE_DIMENSION ||
+        request.width % 8 != 0 || request.height % 8 != 0 {
+        return invalid("Width and height must be >=64, <=2048, and divisible by 8.");
     }
     if !(1..=150).contains(&request.steps) { return invalid("Steps must be in 1..=150."); }
     if !request.cfg.is_finite() || request.cfg < 0.0 { return invalid("CFG must be finite and >=0."); }
+    if request.lora_paths.len() > MAX_LORA_COUNT {
+        return invalid("Hearth supports at most 4 LoRA adapters per generation.");
+    }
     if request.lora_paths.len() != request.lora_scales.len() { return invalid("LoRA paths and scales must have equal lengths."); }
     if request.lora_scales.iter().any(|v| !v.is_finite()) { return invalid("Every LoRA scale must be finite."); }
     if ![0, 1, 5, 6, 18, 21].contains(&request.sample_method) {
@@ -687,6 +703,9 @@ mod tests {
             family: "sd15".into(),
         };
         assert!(validate_model_load_request(request.clone()).valid);
+        assert!(is_sdxl_family("sdxl"));
+        assert!(is_sdxl_family("SDXL"));
+        assert!(!is_sdxl_family("sd15"));
         request.family = "flux".into();
         assert!(!validate_model_load_request(request).valid);
     }
@@ -705,8 +724,18 @@ mod tests {
             adetailer_negative_prompt: String::new(), adetailer_extra_args: String::new(),
         };
         assert!(validate_generation_request(base.clone()).valid);
-        let mut unsupported = base;
+
+        let mut unsupported = base.clone();
         unsupported.sample_method = 11;
         assert!(!validate_generation_request(unsupported).valid);
+
+        let mut oversized = base.clone();
+        oversized.width = 4096;
+        assert!(!validate_generation_request(oversized).valid);
+
+        let mut too_many_loras = base;
+        too_many_loras.lora_paths = vec!["adapter.safetensors".to_owned(); 5];
+        too_many_loras.lora_scales = vec![1.0; 5];
+        assert!(!validate_generation_request(too_many_loras).valid);
     }
 }
