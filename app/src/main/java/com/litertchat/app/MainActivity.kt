@@ -737,8 +737,10 @@ class MainActivity : Activity() {
         // 绘图引擎：只有「绘图 API 在跑」时才把句柄留给服务继续出图，否则正常释放（别白占内存）。
         // 顺序不能反——先断开 DrawCore 的引用，再真正 free。
         if (!ApiService.isRunning(ApiServer.Role.DRAW)) {
-            DrawCore.release()
-            try { drawPage?.release() } catch (_: Throwable) {}
+            // If a native render is active, leave its handle alone rather than freeing it mid-call.
+            if (DrawCore.release()) {
+                try { drawPage?.release() } catch (_: Throwable) {}
+            }
         }
         if (!ApiService.isRunning(ApiServer.Role.CHAT)) {
             // 对话 API 没开 → 按老规矩把模型放掉
