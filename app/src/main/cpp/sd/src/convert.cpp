@@ -53,6 +53,9 @@ struct LoraFusionContext {
     SDBackendManager backend_manager;
     std::shared_ptr<ModelManager> model_manager;
     std::vector<std::unique_ptr<LoraModel>> lora_models;
+    // Keep only source tensor names resident during fusion. LoRA weight buffers are
+    // loaded for one target tensor at a time and released immediately after applying it.
+    std::vector<std::set<std::string>> lora_source_names;
     std::set<std::string> model_tensor_names;
     std::set<std::string> target_tensor_names;
     SDVersion model_version = VERSION_COUNT;
@@ -76,6 +79,32 @@ struct LoraFusionContext {
             }
         }
         return false;
+    }
+
+    static std::set<std::string> matching_source_names(
+        const std::set<std::string>& source_names, const std::string& tensor_name) {
+        static const char* suffixes[] = {
+            ".lora_down", ".lora_up", ".lora_mid", ".diff", ".alpha", ".scale",
+            ".hada_w1_a", ".hada_w1_b", ".hada_w2_a", ".hada_w2_b",
+            ".lokr_w1", ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2", ".lokr_w2_a", ".lokr_w2_b"
+        };
+        std::set<std::string> matched;
+        const std::string root = "lora." + tensor_name;
+        for (int index = 0; index < 16; ++index) {
+            const std::string key = root + (index == 0 ? "" : "." + std::to_string(index));
+            for (const char* suffix : suffixes) {
+                const std::string name = key + suffix;
+                if (source_names.find(name) != source_names.end()) {
+                    matched.insert(name);
+                }
+            }
+        }
+        return matched;
+    }
+
+    static bool has_source_weight_delta(const std::set<std::string>& source_names,
+                                        const std::string& tensor_name) {
+        return !matching_source_names(source_names, tensor_name).empty();
     }
 
     bool initialize(const std::vector<std::string>& paths,
@@ -127,20 +156,25 @@ struct LoraFusionContext {
         }
 
         lora_models.reserve(specs.size());
+        lora_source_names.reserve(specs.size());
         for (const auto& spec : specs) {
+            // file_tensors is a metadata-only view; do not allocate/register every LoRA
+            // weight up front, because that makes peak RSS grow across the whole export.
+            const auto source_tensors = model_manager->loader().file_tensors(spec.file_id, model_version);
+            std::set<std::string> source_names;
+            for (const auto& entry : source_tensors) {
+                source_names.insert(entry.first);
+            }
+
             auto model = std::make_unique<LoraModel>(
                 spec.path, compute_backend, params_backend, model_manager, spec.file_id, model_version);
             model->multiplier = spec.multiplier;
-            if (!model->init_params(n_threads)) {
-                if (error) *error = "failed to load LoRA tensors from '" + spec.path + "'";
-                return false;
-            }
-            model->preprocess_lora_tensors(model_tensor_names);
             for (const auto& tensor_name : model_tensor_names) {
-                if (has_weight_delta(*model, tensor_name)) {
+                if (has_source_weight_delta(source_names, tensor_name)) {
                     target_tensor_names.insert(tensor_name);
                 }
             }
+            lora_source_names.push_back(std::move(source_names));
             lora_models.push_back(std::move(model));
         }
 
@@ -160,11 +194,35 @@ struct LoraFusionContext {
     bool apply_tensor(const std::string& tensor_name, ggml_tensor* tensor, std::string* error) {
         std::lock_guard<std::mutex> lock(apply_mutex);
         std::map<std::string, ggml_tensor*> target{{tensor_name, tensor}};
-        for (auto& model : lora_models) {
-            if (!has_weight_delta(*model, tensor_name)) continue;
+        for (size_t i = 0; i < lora_models.size(); ++i) {
+            auto& model = lora_models[i];
+            const std::set<std::string> selected_names =
+                matching_source_names(lora_source_names[i], tensor_name);
+            if (selected_names.empty()) continue;
+
+            // Register only this target's LoRA factors. ModelManager otherwise retains
+            // previously used adapter tensors, causing RSS to climb over the full export.
+            if (!model->init_params(n_threads, [&selected_names](const std::string& name) {
+                    return selected_names.find(name) != selected_names.end();
+                })) {
+                model->release_loaded_tensors();
+                if (error) *error = "failed to load LoRA tensors for target '" + tensor_name +
+                                    "' from '" + model->file_path + "'";
+                return false;
+            }
+            model->preprocess_lora_tensors(model_tensor_names);
+            if (!has_weight_delta(*model, tensor_name)) {
+                model->release_loaded_tensors();
+                continue;
+            }
+
             // Reuse the inference engine's LoRA/LoHA/LoKR math so fusion matches runtime
             // scaling, alpha/rank handling, tensor-name conversion, and shape checks.
-            if (!model->apply(target, model_tensor_names, model_version, n_threads, false)) {
+            const bool applied = model->apply(target, model_tensor_names, model_version, n_threads, false);
+            // apply() is synchronous. Unregister the selected parameter buffers before the
+            // next adapter/tensor so peak memory is independent of the number of LoRA targets.
+            model->release_loaded_tensors();
+            if (!applied) {
                 if (error) *error = "failed to apply LoRA delta to tensor '" + tensor_name + "'";
                 return false;
             }
