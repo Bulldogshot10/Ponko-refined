@@ -594,4 +594,5 @@
     <string name="draw_lora_fusion_failed_detail">Native fusion failed or the generated GGUF did not pass validation.</string>
     <string name="draw_lora_fusion_create_failed">Could not create the output model-set directory.</string>
     <string name="draw_lora_fusion_register_failed">Fusion completed, but Ponko could not register the new model set.</string>
+    <string name="draw_hearth_i2i_unavailable">Image-to-image is not available in the current Hearth backend yet.</string>
 </resources>
