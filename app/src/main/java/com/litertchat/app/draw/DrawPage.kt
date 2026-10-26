@@ -621,7 +621,6 @@ class DrawPage(
         bindParam(seedEdit, KEY_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), stepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), cfgEdit, c.getString(R.string.s_178)))
-        paramCard.addView(paramRow(c.getString(R.string.draw_eta_label), etaEdit, c.getString(R.string.draw_eta_hint)))
         paramCard.addView(clipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), seedEdit, c.getString(R.string.s_008)))
 
@@ -962,7 +961,6 @@ class DrawPage(
         bindParam(i2iSeedEdit, KEY_I2I_SEED)
         paramCard.addView(paramRow(c.getString(R.string.s_192), i2iStepsEdit, c.getString(R.string.s_179)))
         paramCard.addView(paramRow(c.getString(R.string.s_013), i2iCfgEdit, c.getString(R.string.s_178)))
-        paramCard.addView(paramRow(c.getString(R.string.draw_eta_label), i2iEtaEdit, c.getString(R.string.draw_eta_hint)))
         paramCard.addView(i2iClipSkipView, matchWrap(top = 6))
         paramCard.addView(paramRow(c.getString(R.string.s_193), i2iSeedEdit, c.getString(R.string.s_008)))
 
@@ -2886,7 +2884,7 @@ class DrawPage(
         // EditText 必须在主线程读，先取出来再进 IO
         val negative = negEdit.text.toString()
 
-        // 采样器/调度器：默认「自动」, 有任意 LoRA 时走 LCM。
+        // Hearth 的自动采样器映射到 Euler a；当前 adapter 未实现 LCM sampler。
         val sampler = pickSampler(loras.isNotEmpty())
         val scheduler = pickScheduler(loras.isNotEmpty())
 
