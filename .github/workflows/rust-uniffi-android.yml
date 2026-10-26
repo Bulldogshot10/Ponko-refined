@@ -101,6 +101,8 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
+          # tee opens its output before Gradle can create app/build, so create it first.
+          mkdir -p app/build
           ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee app/build/ponko-gradle-build.log
 
       - name: Verify APK has no sd.cpp backend
