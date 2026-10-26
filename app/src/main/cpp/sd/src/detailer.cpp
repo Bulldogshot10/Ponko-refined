@@ -418,38 +418,45 @@ static Mask gaussian_blur_mask(const Mask& source, int radius) {
     return output;
 }
 
+static Mask make_mask_for_detection(const ADetailerDetection& detection,
+                                         int width,
+                                         int height,
+                                         const ADetailerParams& params) {
+    Mask mask = bbox_mask(detection, width, height);
+    if (params.x_offset != 0 || params.y_offset != 0) {
+        mask = offset_mask(mask, params.x_offset, params.y_offset);
+    }
+    return morphology_mask(mask, params.dilate_erode);
+}
+
+// Used only for merge_masks. Merge each detection immediately instead of retaining
+// one full-resolution mask per detection, which can otherwise consume hundreds of MiB.
 static std::vector<Mask> make_masks(const std::vector<ADetailerDetection>& detections,
                                     int width,
                                     int height,
                                     const ADetailerParams& params) {
-    std::vector<Mask> masks;
+    if (detections.empty()) return {};
+
+    Mask merged{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height, 0)};
+    bool has_pixels = false;
     for (const auto& detection : detections) {
-        Mask mask = bbox_mask(detection, width, height);
-        if (params.x_offset != 0 || params.y_offset != 0) {
-            mask = offset_mask(mask, params.x_offset, params.y_offset);
-        }
-        mask = morphology_mask(mask, params.dilate_erode);
-        if (std::any_of(mask.data.begin(), mask.data.end(), [](uint8_t value) { return value != 0; })) {
-            masks.push_back(std::move(mask));
+        Mask mask = make_mask_for_detection(detection, width, height, params);
+        const bool nonempty = std::any_of(mask.data.begin(), mask.data.end(),
+                                          [](uint8_t value) { return value != 0; });
+        if (!nonempty) continue;
+        has_pixels = true;
+        for (size_t i = 0; i < merged.data.size(); ++i) {
+            merged.data[i] = std::max(merged.data[i], mask.data[i]);
         }
     }
-    if (params.merge_masks && !masks.empty()) {
-        Mask merged{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height, 0)};
-        for (const Mask& mask : masks) {
-            for (size_t i = 0; i < merged.data.size(); ++i) {
-                merged.data[i] = std::max(merged.data[i], mask.data[i]);
-            }
-        }
-        masks = {std::move(merged)};
-    }
+    if (!has_pixels) return {};
+
     if (params.invert_mask) {
-        for (Mask& mask : masks) {
-            for (uint8_t& value : mask.data) {
-                value = 255 - value;
-            }
-        }
+        for (uint8_t& value : merged.data) value = 255 - value;
     }
-    return masks;
+    std::vector<Mask> result;
+    result.push_back(std::move(merged));
+    return result;
 }
 
 static bool mask_bbox(const Mask& mask, CropRegion* region) {
@@ -918,7 +925,12 @@ bool adetail_image(adetailer_ctx_t* context,
 
     auto detections = context->detailer->predict(input_image, params);
     filter_and_sort_detections(&detections, input_image.width, input_image.height, params);
-    auto masks = make_masks(detections, input_image.width, input_image.height, params);
+    // Non-merged masks are produced and consumed one at a time. Only merged mode
+    // retains a full-frame mask, and its helper now merges incrementally.
+    std::vector<Mask> merged_masks;
+    if (params.merge_masks) {
+        merged_masks = make_masks(detections, input_image.width, input_image.height, params);
+    }
 
     sd_image_t current = copy_as_rgb(input_image);
     if (current.data == nullptr) {
@@ -926,7 +938,21 @@ bool adetail_image(adetailer_ctx_t* context,
     }
 
     int applied = 0;
-    for (size_t i = 0; i < masks.size(); ++i) {
+    const size_t mask_count = params.merge_masks ? merged_masks.size() : detections.size();
+    size_t mask_index = 0;
+    for (size_t detection_index = 0; detection_index < mask_count; ++detection_index) {
+        Mask mask = params.merge_masks
+            ? std::move(merged_masks[detection_index])
+            : make_mask_for_detection(detections[detection_index], input_image.width, input_image.height, params);
+        if (!params.merge_masks) {
+            const bool nonempty = std::any_of(mask.data.begin(), mask.data.end(),
+                                              [](uint8_t value) { return value != 0; });
+            if (!nonempty) continue;
+            if (params.invert_mask) {
+                for (uint8_t& value : mask.data) value = 255 - value;
+            }
+        }
+        const size_t i = mask_index++;
         std::string prompt          = resolve_prompt(params.prompt, inpaint_params->prompt, static_cast<int>(i));
         std::string negative_prompt = resolve_prompt(params.negative_prompt,
                                                      inpaint_params->negative_prompt,
@@ -936,7 +962,7 @@ bool adetail_image(adetailer_ctx_t* context,
         }
 
         CropRegion crop;
-        if (!mask_bbox(masks[i], &crop)) {
+        if (!mask_bbox(mask, &crop)) {
             continue;
         }
         crop                   = expand_crop(crop,
@@ -946,7 +972,7 @@ bool adetail_image(adetailer_ctx_t* context,
                                              params.inpaint_width,
                                              params.inpaint_height);
         sd_image_t local_image = resize_crop_image(current, crop, params.inpaint_width, params.inpaint_height);
-        sd_image_t local_mask  = resize_crop_mask(masks[i], crop, params.inpaint_width, params.inpaint_height);
+        sd_image_t local_mask  = resize_crop_mask(mask, crop, params.inpaint_width, params.inpaint_height);
         if (local_image.data == nullptr || local_mask.data == nullptr) {
             free(local_image.data);
             free(local_mask.data);
@@ -996,7 +1022,7 @@ bool adetail_image(adetailer_ctx_t* context,
             return false;
         }
 
-        Mask feather = gaussian_blur_mask(masks[i], params.mask_blur);
+        Mask feather = gaussian_blur_mask(mask, params.mask_blur);
         composite_crop(&current, generated[0], feather, crop);
         free_sd_images(generated, generated_count);
         ++applied;
