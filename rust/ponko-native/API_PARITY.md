@@ -14,6 +14,7 @@
 | Samplers | Euler, Euler a, DPM++ 2M, DPM++ SDE |
 | Schedules | Normal, Karras |
 | Progress/cancel | Step callbacks; cancellation checked between denoising steps |
+| Intermediate preview | Not implemented; current callback emits the decoded image after generation finishes |
 | Request validation | Dimensions from 64 to 2048 px, divisible by 8; at most 4 LoRAs |
 | Drawing GGUF / quantization | Not implemented |
 | Img2img / HiRes Fix / ADetailer | Not implemented in this adapter |
