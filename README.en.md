@@ -51,7 +51,7 @@ Two model formats are supported:
 - **Markdown rendering**: headings, bold/italic, strikethrough, ordered/unordered lists, inline code and code blocks, quotes, dividers, tables, tappable links.
 - **Streaming UX**: token-by-token output; auto-follow scrolling that pauses the moment you scroll up, with a floating "back to bottom" button; interrupt anytime, and keep typing while generating.
 - **Regenerate**: one tap to rerun, and it **carries the images and files of that turn along** (restored to the attachment strip above the input box, so you can see them); a random seed keeps results from repeating.
-- **Image input (multimodal)**: the "+" button left of the input box opens an upward drawer with **Take photo / Gallery**, up to 4 images per message. Images appear inline in the bubble: **tap to view fullscreen (pinch-zoom / pan / double-tap)** and **long-press** for a menu: Save to gallery / Quote (put it into the input bar) / Send to Image-to-Image / Send to Tagger
+- **Image input (multimodal)**: the "+" button left of the input box opens an upward drawer with **Take photo / Gallery**, up to 4 images per message. Images appear inline in the bubble: **tap to view fullscreen (pinch-zoom / pan / double-tap)** and **long-press** for a menu: Save to gallery / Quote (put it into the input bar)
   - `.litertlm`: needs a **multimodal model** (e.g. Gemma 3n). The app probes the model and tells you right away if it has no vision input
   - `.gguf`: needs a **vision model plus its matching `mmproj` file**. Import and select the mmproj on the Models/API page, Chat model, and **pick the mmproj before loading the model**
 - **File and document input**: the third item in the same "+" drawer, **File**, up to 2 per message
@@ -118,7 +118,7 @@ Serves the **already loaded** drawing model over an OpenAI-compatible text-to-im
 - **On-device** image-to-tags: import a Danbooru-style ONNX tagger (`.onnx`, e.g. WD14) plus its matching tag list (`selected_tags.csv`) - nothing is bundled or downloaded
 - The "Tagger" page: pick an image → set threshold (default 0.35) / max tags (default 40) / **channel order** (BGR by default) → get tags
   - "Channel order" exists for different preprocessing: the official WD-family pipeline is BGR; a few re-exported models baked BGR into their weights, so those need RGB (switch it if colours / hair colour come out wrong)
-- Send the tags to **Text-to-Image / Image-to-Image** (with a confirmation prompt); from the Result view you can also send a generated image to **Image-to-Image** or to **Tagger**
+- Send the tags to **Text-to-Image** (with a confirmation prompt); from the Result view you can send a generated image to **Tagger**. Image-to-Image is not supported by the Hearth backend yet, so its entry points are hidden.
 - Multiple taggers / tag lists can be switched from the list on the Models/API page; "Load / Unload tagger" loads on demand and frees memory when you are done
 - A loaded tagger can also be called as a **tool by chat models that cannot see images** (the model emits a `<tag>` command, the app tags the image, the tags are sent back and the model answers from them) - see the Chat section
 - Backend follows the Models/API page run mode: CPU, or NNAPI when GPU is selected
