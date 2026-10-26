@@ -269,6 +269,11 @@ object HearthEngine {
         adetailer: ADetailerSettings = ADetailerSettings(),
     ): IntArray? = runCatching {
         lastNativeError = ""
+        require(initData == null || initData.isEmpty()) {
+            "Hearth img2img is not implemented."
+        }
+        require(!hiresEnabled) { "Hearth HiRes Fix is not implemented." }
+        require(!adetailer.enabled) { "Hearth ADetailer is not implemented." }
         require(loraPaths.size == loraScales.size) {
             "LoRA paths and weights must have equal lengths."
         }
@@ -409,7 +414,7 @@ object HearthEngine {
 
     /** 生成一张图；失败返回 null。
      *
-     *  当前 Hearth adapter 只支持文生图；传入 initImage 会由 adapter 明确拒绝。
+     *  当前 Hearth adapter 只支持文生图；图生图、HiRes Fix、ADetailer 会明确报错。
      *  strength(<1) 决定从第几步开始去噪（越小越接近原图）。
      */
     fun render(
@@ -437,6 +442,9 @@ object HearthEngine {
     ): Bitmap? {
         val effectiveSeed = if (seed < 0) (System.currentTimeMillis() % 1_000_000_000L) else seed
         val useInit = initImage != null && initImage.isNotEmpty() && initWidth > 0 && initHeight > 0
+        require(!useInit) { "Hearth img2img is not implemented." }
+        require(!hires.enabled) { "Hearth HiRes Fix is not implemented." }
+        require(!adetailer.enabled) { "Hearth ADetailer is not implemented." }
         val loraPaths = loras.map { it.path }.toTypedArray()
         val loraScales = loras.map { it.scale }.toFloatArray()
         val px = nativeGenerate(
