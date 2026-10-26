@@ -95,3 +95,21 @@ Real-device Xclipse 940 validation is pending. No fresh CI/build/device result i
 - Added Burn/WGPU memory cleanup between CLIP and UNet loading, and a scope guard that syncs/cleans cached backend allocations when either SD 1.5 or SDXL render exits early with an error.
 - Updated `API_PARITY.md` to clarify the SD 1.5 CLIP Skip normalization behavior.
 - These changes are source-reviewed but **not compiled or tested** here due the checkout/DNS blocker. The next validation run must confirm Rust 0.20 API compatibility for `LayerNorm` construction and exercise repeated SD 1.5/SDXL generations plus cancellation/error paths.
+
+
+### Final audit pass (2026-10-26)
+
+- Hardened cancellation reset: the new `reset_cancel` method now refuses to clear a cancellation flag while a generation holds the native generation lock. Kotlin calls it immediately before the blocking UniFFI generation call; Rust no longer resets the flag after the request may already have been cancelled.
+- Added memory cleanup between CLIP and UNet loading, plus a scope guard to sync and release cached Burn/WGPU allocations on successful and early-error render exits.
+- Implemented SD 1.5 CLIP Skip with the checkpoint's final LayerNorm applied to the selected hidden state. The helper reopens a SafeTensors view through Hearth's public `SafeTensorsFile` API to avoid adding an undeclared transitive crate dependency.
+- Corrected the result-process-page text in English and Chinese: Hearth updates step progress during generation, but its current preview callback only produces an image after decode finishes.
+- The image API now rejects `n` outside 1–4 and rejects `size` dimensions that overflow integer parsing instead of silently falling back to app defaults.
+- Re-fetched touched source files after remote writes and checked patch anchors. No local compile/test or device test could be run because this environment cannot resolve `github.com`; the latest commit had no status checks returned by the available GitHub status query. No successful build/test is claimed.
+
+### Remaining validation / limitations
+
+1. Run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`.
+2. Run `cargo test --manifest-path rust/ponko-native/Cargo.toml`.
+3. With recursive Hearth/Burn/CubeCL/Cubek submodules initialized, run `./gradlew --no-daemon :app:assembleDebug`.
+4. On Exynos 2400e / Xclipse 940, test SD 1.5 generation at CLIP Skip 1 and 2, a mismatched or invalid checkpoint, cancellation immediately after tapping stop, overlapping generation rejection, repeated renders for GPU-memory growth, and SDXL VAE decoding.
+5. The current Hearth adapter still does not support img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion, LoRA fusion, or intermediate image previews. These should remain unadvertised as active features until real implementations exist.
