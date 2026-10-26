@@ -768,6 +768,8 @@ class DrawPage(
         resultCard.addView(saveBtn, matchWrap(top = 10))
 
         resultToI2iBtn = Button(c).apply {
+            // Hearth currently supports text-to-image only; do not advertise a dead img2img path.
+            visibility = View.GONE
             text = c.getString(R.string.s_225)
             textSize = 13f
             setTextColor(primary)
@@ -1275,21 +1277,12 @@ class DrawPage(
     private fun currentHiresSettings(): HearthEngine.HiResSettings = HearthEngine.HiResSettings()
 
     private fun sendResultToI2i() {
-        val b = lastImage
-        if (b == null) { toast(c.getString(R.string.s_183)); return }
-        applyPickedImage(b)
-        switchMode(1)
-        switchPane(toResult = false)
-        scrollTop(paramScroll)
-        toast(c.getString(R.string.s_239))
+        toast(c.getString(R.string.draw_hearth_i2i_unavailable))
     }
 
-    fun sendImageToI2i(b: Bitmap) {
-        applyPickedImage(b)
-        switchMode(1)
-        switchPane(toResult = false)
-        scrollTop(paramScroll)
-        toast(c.getString(R.string.s_239))
+    fun sendImageToI2i(@Suppress("UNUSED_PARAMETER") b: Bitmap) {
+        // Callers must not be told an image was queued when the img2img page is intentionally hidden.
+        toast(c.getString(R.string.draw_hearth_i2i_unavailable))
     }
 
     /** 从相册/文件选择参考图 */
@@ -1922,6 +1915,11 @@ class DrawPage(
             statusText.post { statusText.text = c.getString(R.string.s_114) }
             return c.getString(R.string.s_114)
         }
+        if (DrawCore.busy || DrawCore.uiBusy) {
+            val message = c.getString(R.string.s_428)
+            statusText.post { statusText.text = message }
+            return message
+        }
 
         val slots = LinkedHashMap<String, String>()
         set.files.forEach { (key, file) -> slots[key] = file.absolutePath }
@@ -1943,6 +1941,9 @@ class DrawPage(
         stage("Heap: ${Runtime.getRuntime().maxMemory() / 1048576} MB; storage: ${root.usableSpace / 1048576} MB")
 
         return try {
+            // Detach the process-wide API reference before freeing its native handle. If loading
+            // the replacement fails, the API must stay detached instead of calling a stale handle.
+            DrawCore.release()
             if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
             sdHandle = 0L
             stage(HearthEngine.info())
@@ -1989,6 +1990,9 @@ class DrawPage(
     }
 
     fun unloadModel() {
+        if (DrawCore.busy || DrawCore.uiBusy) {
+            throw IllegalStateException(c.getString(R.string.s_428))
+        }
         DrawCore.release()   // 先清引用，别让 API 拿到已经 free 的句柄
         if (sdHandle != 0L) runCatching { HearthEngine.nativeFree(sdHandle) }
         sdHandle = 0L
@@ -2045,7 +2049,7 @@ class DrawPage(
     // ================= UNet-only quantizer =================
 
     private fun showUnetQuantizer() {
-        if (generating || DrawCore.busy) {
+        if (generating || DrawCore.busy || DrawCore.uiBusy) {
             Toast.makeText(c, c.getString(R.string.draw_unet_quantize_busy), Toast.LENGTH_LONG).show()
             return
         }
@@ -2171,7 +2175,7 @@ class DrawPage(
     // ================= Native LoRA fusion =================
 
     private fun showLoraFusionWizard(preselectName: String? = null) {
-        if (generating || DrawCore.busy) {
+        if (generating || DrawCore.busy || DrawCore.uiBusy) {
             Toast.makeText(c, c.getString(R.string.draw_lora_fusion_busy), Toast.LENGTH_LONG).show()
             return
         }
@@ -2395,7 +2399,7 @@ class DrawPage(
         scales: List<Float>,
         quantType: String,
     ) {
-        if (generating || DrawCore.busy) {
+        if (generating || DrawCore.busy || DrawCore.uiBusy) {
             toast(c.getString(R.string.draw_lora_fusion_busy))
             return
         }
@@ -2478,7 +2482,7 @@ class DrawPage(
     // ================= ResAdapter (LoRA + normalization weights) =================
 
     private fun showResAdapterWizard() {
-        if (generating || DrawCore.busy) {
+        if (generating || DrawCore.busy || DrawCore.uiBusy) {
             Toast.makeText(c, c.getString(R.string.draw_resadapter_busy), Toast.LENGTH_LONG).show()
             return
         }
