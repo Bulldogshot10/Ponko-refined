@@ -226,8 +226,12 @@ class ApiServer(
             return
         }
 
-        val n = req.optInt("n", 1).coerceIn(1, 4)
-        // size: "512x512" / "1024x1024"；认不出来就交给 App 当前设置
+        val n = if (req.has("n")) req.optInt("n", -1) else 1
+        if (n !in 1..4) {
+            respondJson(s, 400, errJson("n must be an integer from 1 to 4", "invalid_request_error"))
+            return
+        }
+        // size: "512x512" / "1024x1024"；未提供时沿用 App 当前设置
         var w: Int? = null
         var hgt: Int? = null
         val sizeStr = req.optString("size", "").trim()
@@ -238,8 +242,14 @@ class ApiServer(
                     "size must look like \"512x512\"", "invalid_request_error"))
                 return
             }
-            w = m.groupValues[1].toIntOrNull()
-            hgt = m.groupValues[2].toIntOrNull()
+            val parsedWidth = m.groupValues[1].toIntOrNull()
+            val parsedHeight = m.groupValues[2].toIntOrNull()
+            if (parsedWidth == null || parsedHeight == null) {
+                respondJson(s, 400, errJson("size dimensions must be valid integers", "invalid_request_error"))
+                return
+            }
+            w = parsedWidth
+            hgt = parsedHeight
         }
         val steps = when {
             req.has("steps") -> req.optInt("steps")
