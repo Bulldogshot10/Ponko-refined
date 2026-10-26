@@ -214,6 +214,23 @@ struct HearthContext {
     merges_path: PathBuf,
 }
 
+/// Releases Burn/WGPU's cached allocations after every render, including early errors.
+struct BackendMemoryGuard<'a> {
+    device: &'a Device<Backend>,
+}
+
+impl Drop for BackendMemoryGuard<'_> {
+    fn drop(&mut self) {
+        let _ = Backend::sync(self.device);
+        Backend::memory_cleanup(self.device);
+    }
+}
+
+fn cleanup_backend_memory(device: &Device<Backend>) {
+    let _ = Backend::sync(device);
+    Backend::memory_cleanup(device);
+}
+
 #[derive(uniffi::Object)]
 pub struct NativeEngine {
     next_id: AtomicI64,
@@ -427,6 +444,7 @@ fn render_sd15(
 ) -> Result<GeneratedImage, PonkoError> {
     init_runtime()?;
     let device: Device<Backend> = Default::default();
+    let _memory_guard = BackendMemoryGuard { device: &device };
     let checkpoint = SafeTensorsFile::open(&context.model_path).map_err(native_error)?;
     let tensors = checkpoint.tensors().map_err(native_error)?;
     let tokenizer = ClipTokenizer::from_files(&context.vocab_path, &context.merges_path).map_err(native_error)?;
@@ -457,6 +475,9 @@ fn render_sd15(
     let positive = Sd15Conditioning::new(positive_hidden);
     let negative = Sd15Conditioning::new(negative_hidden);
     drop(clip);
+    // Clip weights and attention scratch are no longer needed; free cached allocations
+    // before loading the much larger UNet while retaining the prompt conditioning tensors.
+    cleanup_backend_memory(&device);
 
     let mut unet = Sd15Unet2D::load(&tensors, &device).map_err(native_error)?;
     for (i, lora_file) in lora_files.iter().enumerate() {
@@ -495,8 +516,7 @@ fn render_sd15(
     drop(unet);
     drop(positive);
     drop(negative);
-    let _ = Backend::sync(&device);
-    Backend::memory_cleanup(&device);
+    cleanup_backend_memory(&device);
 
     let decoded = if let Some(vae_path) = context.vae_path.as_ref() {
         let vae_file = SafeTensorsFile::open(vae_path).map_err(native_error)?;
@@ -510,8 +530,7 @@ fn render_sd15(
     let output = tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback);
     // Release VAE decoder allocations after the GPU work and host copy complete, including on
     // conversion errors, so repeated generations don't accumulate cached decode buffers.
-    let _ = Backend::sync(&device);
-    Backend::memory_cleanup(&device);
+    cleanup_backend_memory(&device);
     output
 }
 
@@ -524,6 +543,7 @@ fn render_sdxl(
 ) -> Result<GeneratedImage, PonkoError> {
     init_runtime()?;
     let device: Device<Backend> = Default::default();
+    let _memory_guard = BackendMemoryGuard { device: &device };
     let checkpoint = SafeTensorsFile::open(&context.model_path).map_err(native_error)?;
     let tensors = checkpoint.tensors().map_err(native_error)?;
     let tokenizer = ClipTokenizer::from_files(&context.vocab_path, &context.merges_path).map_err(native_error)?;
@@ -554,6 +574,7 @@ fn render_sdxl(
     let negative = SdxlConditioning::new(neg_l_hidden, neg_g_hidden, neg_pooled, (h, w), (0.0, 0.0), (h, w), &device);
     drop(clip_l);
     drop(clip_g);
+    cleanup_backend_memory(&device);
 
     let mut unet = SdxlUnet2D::load(&tensors, &device).map_err(native_error)?;
     for (i, lora_file) in lora_files.iter().enumerate() {
@@ -592,8 +613,7 @@ fn render_sdxl(
     drop(unet);
     drop(positive);
     drop(negative);
-    let _ = Backend::sync(&device);
-    Backend::memory_cleanup(&device);
+    cleanup_backend_memory(&device);
 
     let vae_path = context.vae_path.as_ref().ok_or_else(|| PonkoError::InvalidArgument {
         details: "SDXL requires a separate FP16-safe VAE SafeTensors file.".to_owned(),
@@ -605,8 +625,7 @@ fn render_sdxl(
     let output = tensor_to_rgb(decoded, request.width, request.height, request.steps, step_callback, preview_callback);
     // Release VAE decoder allocations after the GPU work and host copy complete, including on
     // conversion errors, so repeated generations don't accumulate cached decode buffers.
-    let _ = Backend::sync(&device);
-    Backend::memory_cleanup(&device);
+    cleanup_backend_memory(&device);
     output
 }
 
