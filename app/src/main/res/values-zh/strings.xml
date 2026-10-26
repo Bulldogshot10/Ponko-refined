@@ -563,4 +563,5 @@
     <string name="draw_lora_fusion_failed_detail">原生融合失败，或生成的 GGUF 未通过验证。</string>
     <string name="draw_lora_fusion_create_failed">无法创建输出模型集目录。</string>
     <string name="draw_lora_fusion_register_failed">融合已完成，但无法注册新的模型集。</string>
+    <string name="draw_hearth_i2i_unavailable">当前 Hearth 绘图后端暂不支持图生图。</string>
 </resources>
