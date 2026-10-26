@@ -606,5 +606,5 @@
     <string name="draw_controlnet_hint">Choose a compatible preprocessed Canny, depth, pose or line-art map. ControlNet conditioning applies to the base generation.</string>
     <string name="draw_ipadapter_strength">IP-Adapter strength (0 to 2)</string>
     <string name="draw_ipadapter_hint">IP-Adapter requires compatible weights in the ip_adapter slot and a compatible CLIP Vision model in clip_vision.</string>
-    <string name="draw_embedding_hint">Add one embedding file to the model set. Its prompt trigger token is the filename without the extension.</string>
+    <string name="draw_embedding_hint">For SD1.x, SD2.x or SDXL, add one embedding file to the model set. Its prompt trigger token is the filename without the extension.</string>
 </resources>

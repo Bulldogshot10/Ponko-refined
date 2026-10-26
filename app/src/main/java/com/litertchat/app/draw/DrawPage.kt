@@ -177,14 +177,16 @@ class DrawPage(
         /** 某个类型需要哪些槽位（key to 是否必填）。
          *  多文件模型的配套文件各家不一样，这里按家族给模板；用户选了类型就按模板列槽位。
          *  必填只是「加载前的检查」，不阻止用户尝试（可选槽位留空也允许加载）。 */
-        private fun withConditioningSlots(base: List<Pair<String, Boolean>>): List<Pair<String, Boolean>> {
+        private fun withConditioningSlots(base: List<Pair<String, Boolean>>, family: String): List<Pair<String, Boolean>> {
             val result = base.toMutableList()
-            val optionalSlots = listOf(
+            val optionalSlots = mutableListOf(
                 "clip_vision" to false,
                 "control_net" to false,
                 "ip_adapter" to false,
-                "embedding" to false,
             )
+            if (family == FAM_SD15 || family == FAM_SDXL || family == FAM_OTHER) {
+                optionalSlots.add("embedding" to false)
+            }
             for (slot in optionalSlots) {
                 if (result.none { it.first == slot.first }) result.add(slot)
             }
@@ -216,7 +218,7 @@ class DrawPage(
                 "diffusion" to true, "vae" to false, "clip_l" to false, "clip_g" to false,
                 "t5xxl" to false, "llm" to false, "llm_vision" to false,
                 "high_noise" to false, "uncond" to false, "audio_vae" to false)
-        })
+        }, family)
 
         /** SharedPreferences 文件名与键（只存 UI 偏好） */
         private const val PREFS_NAME = "ponko"
