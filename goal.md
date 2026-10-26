@@ -84,10 +84,13 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 
 ## Conditioning upload UI correction (2026-10-26)
 
-- **Bug confirmed from source:** the Conditioning panel showed image pickers for ControlNet and IP-Adapter but did not offer explicit model-weight import buttons in that panel. The ControlNet card's only pick button opened the image picker, confusing model weights with the condition-map image.
-- **Fix committed for verification:** add distinct import/replace buttons for ControlNet weights, IP-Adapter weights, CLIP Vision weights, and Textual Inversion embedding. These route into the existing model-set slot picker/import pipeline. The ControlNet map and IP-Adapter reference remain separate image-only actions. The UI shows selected weight filenames and reminds users that the drawing model must be reloaded after changing weights.
-- **Guardrails:** require a selected model set before importing a slot and reject slots not listed for the active family.
-- **Validation:** waiting for Android/Rust CI build. Do not deliver a replacement APK until the workflow passes and the fresh artifact is inspected.
+- **Bug confirmed and fixed:** the Conditioning panel previously showed image pickers for ControlNet and IP-Adapter but no explicit model-weight import buttons in that panel. The ControlNet card's only pick button opened the image picker, confusing model weights with the condition-map image.
+- **Implemented:** added distinct import/replace controls for ControlNet weights (`control_net`), IP-Adapter weights (`ip_adapter`), CLIP Vision weights (`clip_vision`), and Textual Inversion embedding (`embedding`). These route into the existing selected-model-set slot importer. ControlNet map and IP-Adapter reference image pickers remain separate image-only actions.
+- **UI and validation:** the panel now displays selected weight filenames and reminds users to reload the drawing model after changing weights. Import is blocked until a model set is selected; slots not supported by the current model family are rejected.
+- **Build validation succeeded on the exact source commit** `cea024c1ae1b709abe58233a4f40d242256bde26`: [CPU/Exynos APK build #40315970274](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40315970274) and [Rust-UniFFI APK build #40315970261](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40315970261) both passed. Rust formatting/tests, Gradle APK build, UniFFI Kotlin binding generation, and packaged native-library verification all succeeded.
+- **Fresh CPU APK:** artifact `ponko-cpu-exynos2400e-debug-apk-40315970274`; APK SHA-256 `62b3fc322b98914b4eb0bb979fd8a04cf34c0cc9b86a96a07dc1900863e89a78`. The downloaded APK hash matches the CI-produced checksum.
+- **Still pending:** there has not yet been an install/device test with real ControlNet and IP-Adapter weights. Build success proves compilation and packaging, not successful image generation on-device.
+- **Next step:** install the freshly built APK on the target phone, confirm the four model import buttons open the model-slot picker, verify the two image buttons open the image picker, then test actual compatible ControlNet/IP-Adapter weights and trigger embedding.
 
 ## CPU APK build follow-up (2026-10-26)
 
