@@ -36,3 +36,27 @@ Replace the drawing inference backend completely with Rust Hearth + Burn/WGPU Vu
 
 ## Current blocker
 Real-device Xclipse 940 validation is pending. No fresh CI/build/device result is claimed here.
+## Peer review audit (2026-10-26)
+
+### Changes made on `feat/hearth-native-rewrite`
+
+- Hardened Rust generation request validation: dimensions are limited to 64–2048 pixels per edge and must be divisible by 8; no more than four LoRAs are accepted. Added regression assertions for oversize dimensions, excessive LoRAs, and case-insensitive SDXL family matching.
+- Added checked multiplication for the RGB output byte count, preventing integer overflow before the output buffer allocation.
+- Moved Burn/WGPU initialization until after checkpoint, tokenizer, and VAE path checks so invalid local inputs return useful validation errors before Vulkan startup.
+- Prevented API generation from entering the same Hearth handle while the UI/chat generation flag is active.
+- Guarded model changes and native unloads while generation is active. Model replacement detaches `DrawCore` before freeing the previous native handle, so a failed replacement cannot leave the API referencing a freed handle.
+- Hid the result-page img2img action and removed img2img from the chat image menu because the current Hearth adapter is text-to-image only. Added localized user feedback if an old caller still invokes the img2img entry point.
+- Fixed the Android validation workflow's pull-request path filter so changes under `scripts/**`, including the CubeCL Android compatibility patch, are included in CI.
+- Updated both README languages and `API_PARITY.md` to match the actual Hearth feature boundary and request limits.
+
+### Validation status
+
+- Source-level audit and patch-anchor checks completed through the GitHub repository API.
+- `cargo fmt`, `cargo test`, and `./gradlew :app:assembleDebug` were **not run** in this environment: a local checkout failed because the environment could not resolve `github.com`. No build or test pass is claimed.
+- GitHub Actions was not manually triggered. Before device testing, run `cargo fmt --manifest-path rust/ponko-native/Cargo.toml --all -- --check`, `cargo test --manifest-path rust/ponko-native/Cargo.toml`, and `./gradlew --no-daemon :app:assembleDebug` in a recursive-submodule checkout.
+- Still required: a real SD 1.5 SafeTensors text-to-image smoke test and a memory/cancellation check on Exynos 2400e / Xclipse 940; SDXL needs its own load/generation test where device memory allows.
+
+### Remaining Hearth limitations
+
+- Drawing GGUF/quantization, img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion, and LoRA fusion remain unsupported and must stay out of the active drawing UI.
+- The repository's current device-validation status remains pending until real-device logs are available.
