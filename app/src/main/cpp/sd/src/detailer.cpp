@@ -826,10 +826,11 @@ std::vector<ADetailerDetection> ADetailerGGML::predict(sd_image_t image,
     const auto decode_start = std::chrono::steady_clock::now();
     auto detections = decode_detections(raw, detector->config, input, image, params);
     const double decode_seconds = elapsed_seconds(decode_start);
-    LOG_INFO("ADetailer timing: preprocess=%.2fs inference=%.2fs decode_nms=%.2fs total=%.2fs input=%dx%d detector_size=%d detections=%zu",
+    LOG_INFO("ADetailer timing: preprocess=%.2fs inference=%.2fs decode_nms=%.2fs total=%.2fs input=%ux%u detector_size=%d detections=%zu",
              preprocess_seconds, inference_seconds, decode_seconds,
              preprocess_seconds + inference_seconds + decode_seconds,
-             image.width, image.height, params.input_size, detections.size());
+             static_cast<unsigned int>(image.width), static_cast<unsigned int>(image.height),
+             params.input_size, detections.size());
     for (size_t i = 0; i < detections.size(); ++i) {
         const auto& detection = detections[i];
         std::string object    = "class_" + std::to_string(detection.class_id);
