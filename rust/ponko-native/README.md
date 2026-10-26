@@ -5,7 +5,7 @@ This branch fully replaces the drawing inference path with Hearth. There is no s
 ## Current inference scope
 
 - SD 1.5 and SDXL checkpoints in SafeTensors format.
-- Matching CLIP tokenizer assets: `vocab.json` and `merges.txt`.
+- Bundled OpenAI CLIP ViT-L/14 tokenizer assets (`vocab.json` and `merges.txt`); model sets may optionally override either file.
 - SD 1.5 VAE embedded in the checkpoint or imported separately.
 - SDXL with a separate FP16-safe VAE.
 - LoRA application to the supported CLIP and UNet layers, with per-adapter strength.

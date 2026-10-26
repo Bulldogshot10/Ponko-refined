@@ -471,9 +471,9 @@
     <string name="draw_taesd_need_model">请先导入或选择绘图模型，再添加 TAESD 权重。</string>
     <string name="draw_taesd_reload_hint">卸载并重新加载绘图模型后，TAESD 设置才会生效。</string>
     <string name="draw_taesd_hint">请选择兼容 sd.cpp 的 TAESD .safetensors 或 .gguf 权重。madebyollin/taesd 的 diffusion_pytorch_model.safetensors 可用；键名为 decoder.layers.* 的 decoder-only 文件也可用。ComfyUI 的 taesd_decoder.pth 不能直接使用。TAESD 会替代标准 VAE 解码器，输出可能有所不同。</string>
-    <string name="draw_tokenizer_vocab">Tokenizer 词表（vocab.json）</string>
-    <string name="draw_tokenizer_merges">Tokenizer 合并表（merges.txt）</string>
-    <string name="draw_hearth_file_type">Hearth 绘图模型请按槽位导入 .safetensors 权重、vocab.json 或 merges.txt。</string>
+    <string name="draw_tokenizer_vocab">Tokenizer 词表（内置默认，可选覆盖）</string>
+    <string name="draw_tokenizer_merges">Tokenizer 合并表（内置默认，可选覆盖）</string>
+    <string name="draw_hearth_file_type">Hearth 需要 .safetensors 主模型；单独 VAE 取决于模型类型。自定义 vocab.json / merges.txt 仅用于覆盖内置 tokenizer。</string>
     <string name="draw_cpu_threads">CPU 线程数</string>
     <string name="draw_cpu_threads_hint">下次加载绘图模型时生效。</string>
     <string name="draw_vae_conv_direct_enable">使用 VAE 直接 Conv2D（基准测试）</string>

@@ -471,9 +471,9 @@
     <string name="draw_taesd_need_model">Import or select a drawing model before adding TAESD weights.</string>
     <string name="draw_taesd_reload_hint">TAESD changes apply after unloading and reloading the drawing model.</string>
     <string name="draw_taesd_hint">Choose compatible sd.cpp TAESD .safetensors or .gguf weights. The official madebyollin/taesd diffusion_pytorch_model.safetensors works; decoder-only files with decoder.layers.* keys also work. ComfyUI taesd_decoder.pth is not directly compatible. TAESD replaces the standard VAE decoder, and output may differ.</string>
-    <string name="draw_tokenizer_vocab">Tokenizer vocab.json</string>
-    <string name="draw_tokenizer_merges">Tokenizer merges.txt</string>
-    <string name="draw_hearth_file_type">Hearth drawing imports require a .safetensors checkpoint/VAE, vocab.json, or merges.txt, depending on the selected slot.</string>
+    <string name="draw_tokenizer_vocab">Tokenizer vocab.json (built-in default)</string>
+    <string name="draw_tokenizer_merges">Tokenizer merges.txt (built-in default)</string>
+    <string name="draw_hearth_file_type">Hearth needs a .safetensors checkpoint; a separate VAE is model-dependent. Custom vocab.json / merges.txt tokenizer files are optional.</string>
     <string name="draw_cpu_threads">CPU threads</string>
     <string name="draw_cpu_threads_hint">Applies the next time you load the drawing model.</string>
     <string name="draw_vae_conv_direct_enable">Use direct Conv2D for VAE (benchmark)</string>

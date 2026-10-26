@@ -6,7 +6,7 @@
 | Drawing engine | Hearth / Burn / WGPU Vulkan only |
 | Checkpoint format | SafeTensors |
 | Families | SD 1.5 and SDXL |
-| Tokenizer | External vocab.json and merges.txt |
+| Tokenizer | Bundled OpenAI CLIP ViT-L/14 vocab.json + merges.txt; optional external overrides |
 | SD 1.5 VAE | Embedded or separate SafeTensors |
 | SDXL VAE | Separate FP16-safe SafeTensors |
 | LoRA | Applies supported adapter weights to CLIP/UNet; maximum 4 adapters per request |

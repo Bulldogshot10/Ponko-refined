@@ -43,7 +43,7 @@ class GenerationCancelledException : RuntimeException("Generation cancelled")
  * 绘图页（文生图）。
  *
  * 绘图引擎为 **Hearth + Burn/WGPU Vulkan**，读取支持的 SafeTensors checkpoint
- * （支持 SD 1.5 与 SDXL；每个模型集需要 tokenizer 的 vocab.json / merges.txt）。
+ * （支持 SD 1.5 与 SDXL；内置 CLIP tokenizer，vocab.json / merges.txt 槽位可选用于覆盖默认值）。
  *
  * 加速有两条**互相独立**的线，可以叠加：
  *  - **量化**：由模型文件本身决定（Q4_0 每步比 Q8_0 便宜不少）。App 只读取并展示，不能凭空转换。
@@ -172,9 +172,9 @@ class DrawPage(
          *  必填只是「加载前的检查」，不阻止用户尝试（可选槽位留空也允许加载）。 */
         fun familySlots(kind: String, family: String): List<Pair<String, Boolean>> = when {
             kind == KIND_SINGLE && family == FAM_SD15 ->
-                listOf("model" to true, "clip_l" to true, "clip_g" to true, "vae" to false)
+                listOf("model" to true, "clip_l" to false, "clip_g" to false, "vae" to false)
             kind == KIND_SINGLE && family == FAM_SDXL ->
-                listOf("model" to true, "clip_l" to true, "clip_g" to true, "vae" to true)
+                listOf("model" to true, "clip_l" to false, "clip_g" to false, "vae" to true)
             else -> emptyList()
         }
 
@@ -1908,6 +1908,54 @@ class DrawPage(
             .listFiles { f -> f.isFile && f.name.endsWith(".safetensors", ignoreCase = true) }
             ?.sortedByDescending { it.lastModified() } ?: emptyList()
 
+    /**
+     * Install the built-in OpenAI CLIP ViT-L/14 BPE data into app-private storage.
+     * The Rust Hearth tokenizer reads ordinary files, so bundled assets are copied only once.
+     */
+    private fun installBuiltinTokenizerFile(assetName: String): File {
+        val directory = File(c.filesDir, "$DIR_NAME/tokenizer/clip-vit-large-patch14").apply {
+            if (!exists() && !mkdirs()) {
+                throw IllegalStateException("Unable to create built-in tokenizer directory: $absolutePath")
+            }
+        }
+        val destination = File(directory, assetName)
+        if (destination.isFile && destination.length() > 0L) return destination
+
+        val temporary = File(directory, ".$assetName.${Thread.currentThread().id}.tmp")
+        try {
+            c.assets.open("hearth-tokenizer/$assetName").use { input ->
+                temporary.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (!temporary.isFile || temporary.length() == 0L) {
+                throw IllegalStateException("Bundled CLIP tokenizer asset is empty: $assetName")
+            }
+            if (!temporary.renameTo(destination)) {
+                if (!destination.isFile || destination.length() == 0L) {
+                    temporary.copyTo(destination, overwrite = true)
+                }
+                temporary.delete()
+            }
+            if (!destination.isFile || destination.length() == 0L) {
+                throw IllegalStateException("Unable to install bundled CLIP tokenizer asset: $assetName")
+            }
+            return destination
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw IllegalStateException("Unable to prepare bundled CLIP tokenizer asset '$assetName': ${error.message}", error)
+        }
+    }
+
+    /** Apply the bundled SD 1.x CLIP BPE files unless a model set specifies custom overrides. */
+    private fun applyBuiltinTokenizerDefaults(slots: MutableMap<String, String>, family: String) {
+        if (family.lowercase() != FAM_SD15 && family.lowercase() != FAM_SDXL) return
+        if (slots["clip_l"].isNullOrBlank()) {
+            slots["clip_l"] = installBuiltinTokenizerFile("vocab.json").absolutePath
+        }
+        if (slots["clip_g"].isNullOrBlank()) {
+            slots["clip_g"] = installBuiltinTokenizerFile("merges.txt").absolutePath
+        }
+    }
+
     private suspend fun loadSet(set: ModelSet?): String? {
         if (set == null) {
             statusText.post { statusText.text = c.getString(R.string.s_114) }
@@ -1921,6 +1969,9 @@ class DrawPage(
 
         val slots = LinkedHashMap<String, String>()
         set.files.forEach { (key, file) -> slots[key] = file.absolutePath }
+        // SD 1.5 / SDXL don't require users to import CLIP BPE files: use the packaged defaults
+        // while preserving an explicitly selected vocab.json or merges.txt as an override.
+        applyBuiltinTokenizerDefaults(slots, set.family)
         val missing = slotMissingIds(set).map { c.getString(slotLabelRes(it)) }
         if (missing.isNotEmpty()) {
             val message = c.getString(R.string.s_363, missing.joinToString("、"))

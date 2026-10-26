@@ -113,3 +113,11 @@ Real-device Xclipse 940 validation is pending. No fresh CI/build/device result i
 3. With recursive Hearth/Burn/CubeCL/Cubek submodules initialized, run `./gradlew --no-daemon :app:assembleDebug`.
 4. On Exynos 2400e / Xclipse 940, test SD 1.5 generation at CLIP Skip 1 and 2, a mismatched or invalid checkpoint, cancellation immediately after tapping stop, overlapping generation rejection, repeated renders for GPU-memory growth, and SDXL VAE decoding.
 5. The current Hearth adapter still does not support img2img, HiRes Fix, ADetailer, UNet quantization, ResAdapter conversion, LoRA fusion, or intermediate image previews. These should remain unadvertised as active features until real implementations exist.
+
+
+### Built-in CLIP tokenizer follow-up (2026-10-26)
+
+- The app now packages the standard OpenAI CLIP ViT-L/14 `vocab.json` and `merges.txt` assets under `app/src/main/assets/hearth-tokenizer/`.
+- SD 1.5 / SDXL single-checkpoint imports no longer mark tokenizer slots as required. During model load, missing custom tokenizer paths are filled from the bundled assets copied into app-private storage; user-selected paths still override each default independently.
+- The default VAE behavior is unchanged: SD 1.5 can decode from embedded checkpoint VAE weights or a separate VAE; SDXL still requires a separate VAE in the current adapter.
+- Automated validation for this follow-up is pending the GitHub Actions run for the implementation commit. The assets are sourced from the CLIP ViT-L/14 tokenizer files; model loading and prompt tokenization still need an on-device SD 1.5 smoke test after installing the resulting APK.
