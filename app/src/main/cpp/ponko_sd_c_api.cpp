@@ -82,9 +82,24 @@ bool stringIsNonempty(const char* text) {
     return text != nullptr && text[0] != '\0';
 }
 
+void captureNativeErrorLog(const char* text) {
+    constexpr size_t kMaxDiagnosticBytes = 8192;
+    if (text == nullptr || text[0] == '\0' ||
+        g_last_native_error_log.size() >= kMaxDiagnosticBytes ||
+        g_last_native_error_log.find(text) != std::string::npos) {
+        return;
+    }
+    if (!g_last_native_error_log.empty() && g_last_native_error_log.back() != '\n' &&
+        g_last_native_error_log.size() < kMaxDiagnosticBytes) {
+        g_last_native_error_log.push_back('\n');
+    }
+    const size_t remaining = kMaxDiagnosticBytes - g_last_native_error_log.size();
+    g_last_native_error_log.append(text, std::min(std::strlen(text), remaining));
+}
+
 void ponkoLogCallback(enum ggml_log_level level, const char* text, void*) {
     if (text == nullptr || text[0] == '\0') return;
-    if (level == GGML_LOG_LEVEL_ERROR) g_last_native_error_log.assign(text);
+    if (level == GGML_LOG_LEVEL_ERROR) captureNativeErrorLog(text);
     std::fputs(text, stderr);
     std::fflush(stderr);
     const bool warning = level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR;
@@ -111,7 +126,7 @@ void ponkoLogCallback(enum ggml_log_level level, const char* text, void*) {
 // Without this callback, fusion-stage and RSS diagnostics are silently dropped.
 void ponkoSdLogCallback(enum sd_log_level_t level, const char* text, void*) {
     if (text == nullptr || text[0] == '\0') return;
-    if (level == SD_LOG_ERROR) g_last_native_error_log.assign(text);
+    if (level == SD_LOG_ERROR) captureNativeErrorLog(text);
     std::fputs(text, stderr);
     std::fflush(stderr);
     const int priority = level == SD_LOG_ERROR ? ANDROID_LOG_ERROR :

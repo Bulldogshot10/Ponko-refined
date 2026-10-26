@@ -2291,7 +2291,7 @@ class DrawPage(
                 return if (nativeError.isBlank()) {
                     c.getString(R.string.s_059)
                 } else {
-                    c.getString(R.string.s_059) + "\n" + nativeError
+                    c.getString(R.string.s_059) + "\n" + nativeError.take(800)
                 }
             }
             sdHandle = h
