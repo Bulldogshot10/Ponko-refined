@@ -787,6 +787,14 @@ class MainActivity : Activity() {
                 refreshDrawApiUi()   // 绘图接口那边要跟着显示「绘图模型：xxx」
             }
         }
+        dpg.onPickConditioningModel = { key ->
+            if (dpg.activeSetOrSelected() == null) {
+                toast(getString(R.string.draw_conditioning_need_model_set))
+            } else {
+                dpg.pendingNewSet = false
+                pickDrawSlot(key)
+            }
+        }
         dpg.onSaveImage = { bmp, name -> saveImageToGallery(bmp, name) }
         dpg.onStatus = { text, isError ->
             runOnUiThread { setStatus(text, if (isError) C_ERR else C_WARN) }
@@ -3523,9 +3531,10 @@ class MainActivity : Activity() {
         refreshVaeConvDirectUi()
         refreshTaesdUi()
         refreshDrawToggle()
+        val dpg = drawPage
+        dpg?.refreshConditioningModelStatus()
         val box = drawSavedContainer ?: return
         box.removeAllViews()
-        val dpg = drawPage
         val sets = dpg?.listSets().orEmpty()
         if (sets.isEmpty()) {
             box.visibility = View.GONE

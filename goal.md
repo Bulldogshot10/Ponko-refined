@@ -82,6 +82,13 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - **Build validation:** CI build succeeded on 2026-10-26 in [run 40310371991](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40310371991), building source commit `566b39d3faef8ba134016064960af61839252517`. Rust formatting/tests, Gradle APK build, required-library verification, and artifact upload all passed.
 - **Needs device verification:** compiled wiring has not yet been exercised on-device with actual compatible weights. Test a compatible SD1.5 ControlNet map, IP-Adapter weights with CLIP Vision, and the embedding trigger token.
 
+## Conditioning upload UI correction (2026-10-26)
+
+- **Bug confirmed from source:** the Conditioning panel showed image pickers for ControlNet and IP-Adapter but did not offer explicit model-weight import buttons in that panel. The ControlNet card's only pick button opened the image picker, confusing model weights with the condition-map image.
+- **Fix committed for verification:** add distinct import/replace buttons for ControlNet weights, IP-Adapter weights, CLIP Vision weights, and Textual Inversion embedding. These route into the existing model-set slot picker/import pipeline. The ControlNet map and IP-Adapter reference remain separate image-only actions. The UI shows selected weight filenames and reminds users that the drawing model must be reloaded after changing weights.
+- **Guardrails:** require a selected model set before importing a slot and reject slots not listed for the active family.
+- **Validation:** waiting for Android/Rust CI build. Do not deliver a replacement APK until the workflow passes and the fresh artifact is inspected.
+
 ## CPU APK build follow-up (2026-10-26)
 
 - **Build trigger enabled:** `.github/workflows/ponko-app-apk.yml` now also runs when `goal.md` changes, so documented build/validation handoffs can request a fresh APK build without touching application source. The workflow-file change triggered this build against the conditioning-enabled branch head.

@@ -298,8 +298,11 @@ class DrawPage(
     /** 外部（MainActivity）通知：当前已加载语言模型。用于「生成」按钮给出更准确的提示。 */
     var llmLoaded: Boolean = false
 
-    /** 状态回调：把绘图页的进度/结果同步到主界面顶栏。(文本, 是否出错) */
+    /** Status callback to the host activity. */
     var onStatus: ((String, Boolean) -> Unit)? = null
+
+    /** Open the model-set slot picker for a conditioning weight. */
+    var onPickConditioningModel: ((String) -> Unit)? = null
 
     /** 运行方式：true = 尝试 GPU（Vulkan），false = 纯 CPU。由模型页的「运行方式」决定。 */
     var useGpu: Boolean = false
@@ -467,6 +470,10 @@ class DrawPage(
 
     private var controlImageBitmap: Bitmap? = null
     private var ipAdapterImageBitmap: Bitmap? = null
+    private lateinit var controlModelStatus: TextView
+    private lateinit var ipAdapterModelStatus: TextView
+    private lateinit var clipVisionModelStatus: TextView
+    private lateinit var embeddingModelStatus: TextView
     private lateinit var controlImageStatus: TextView
     private lateinit var ipAdapterImageStatus: TextView
 
@@ -1227,20 +1234,35 @@ class DrawPage(
         box.addView(title(c.getString(R.string.draw_conditioning_title)))
         box.addView(body(c.getString(R.string.draw_conditioning_intro)))
 
+        // Model weights and the ControlNet condition-map image are separate inputs.
         val controlCard = card()
         controlCard.addView(title(c.getString(R.string.draw_controlnet_label)))
-        val controlActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
-        val controlPickButton = Button(c).apply {
+        val controlModelButton = Button(c).apply {
+            text = c.getString(R.string.draw_controlnet_pick_model)
+            setOnClickListener { requestConditioningModel("control_net") }
+        }
+        controlCard.addView(controlModelButton, matchWrap(top = 4))
+        controlModelStatus = body("")
+        controlCard.addView(controlModelStatus)
+
+        val controlImageActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        val controlPickImageButton = Button(c).apply {
             text = c.getString(R.string.draw_controlnet_pick_image)
             setOnClickListener { pickConditioningImage(REQ_CONTROL_IMAGE) }
         }
-        controlActions.addView(controlPickButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        controlImageActions.addView(
+            controlPickImageButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
         val controlClearButton = Button(c).apply {
             text = c.getString(R.string.draw_conditioning_clear_image)
             setOnClickListener { controlImageBitmap = null; refreshConditioningImageStatus() }
         }
-        controlActions.addView(controlClearButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        controlCard.addView(controlActions, matchWrap(top = 4))
+        controlImageActions.addView(
+            controlClearButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        controlCard.addView(controlImageActions, matchWrap(top = 4))
         controlImageStatus = body(c.getString(R.string.draw_controlnet_image_none))
         controlCard.addView(controlImageStatus)
         val controlStrength = smallNumber(loadParam(KEY_CONTROL_STRENGTH, "0.9"))
@@ -1249,20 +1271,43 @@ class DrawPage(
             c.getString(R.string.draw_controlnet_hint)), matchWrap(top = 4))
         box.addView(controlCard)
 
+        // IP-Adapter weights, CLIP Vision weights and the reference image are separate inputs.
         val adapterCard = card()
         adapterCard.addView(title(c.getString(R.string.draw_ipadapter_label)))
-        val adapterActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
-        val adapterPickButton = Button(c).apply {
+        val adapterModelButton = Button(c).apply {
+            text = c.getString(R.string.draw_ipadapter_pick_model)
+            setOnClickListener { requestConditioningModel("ip_adapter") }
+        }
+        adapterCard.addView(adapterModelButton, matchWrap(top = 4))
+        ipAdapterModelStatus = body("")
+        adapterCard.addView(ipAdapterModelStatus)
+
+        val clipVisionButton = Button(c).apply {
+            text = c.getString(R.string.draw_clipvision_pick_model)
+            setOnClickListener { requestConditioningModel("clip_vision") }
+        }
+        adapterCard.addView(clipVisionButton, matchWrap(top = 4))
+        clipVisionModelStatus = body("")
+        adapterCard.addView(clipVisionModelStatus)
+
+        val adapterImageActions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        val adapterPickImageButton = Button(c).apply {
             text = c.getString(R.string.draw_ipadapter_pick_image)
             setOnClickListener { pickConditioningImage(REQ_IP_ADAPTER_IMAGE) }
         }
-        adapterActions.addView(adapterPickButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        adapterImageActions.addView(
+            adapterPickImageButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
         val adapterClearButton = Button(c).apply {
             text = c.getString(R.string.draw_conditioning_clear_image)
             setOnClickListener { ipAdapterImageBitmap = null; refreshConditioningImageStatus() }
         }
-        adapterActions.addView(adapterClearButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        adapterCard.addView(adapterActions, matchWrap(top = 4))
+        adapterImageActions.addView(
+            adapterClearButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        adapterCard.addView(adapterImageActions, matchWrap(top = 4))
         ipAdapterImageStatus = body(c.getString(R.string.draw_ipadapter_image_none))
         adapterCard.addView(ipAdapterImageStatus)
         val adapterStrength = smallNumber(loadParam(KEY_IP_ADAPTER_STRENGTH, "1.0"))
@@ -1270,9 +1315,64 @@ class DrawPage(
         adapterCard.addView(paramRow(c.getString(R.string.draw_ipadapter_strength), adapterStrength,
             c.getString(R.string.draw_ipadapter_hint)), matchWrap(top = 4))
         box.addView(adapterCard)
-        box.addView(body(c.getString(R.string.draw_embedding_hint)))
+
+        val embeddingCard = card()
+        embeddingCard.addView(title(c.getString(R.string.draw_embedding_label)))
+        val embeddingButton = Button(c).apply {
+            text = c.getString(R.string.draw_embedding_pick_model)
+            setOnClickListener { requestConditioningModel("embedding") }
+        }
+        embeddingCard.addView(embeddingButton, matchWrap(top = 4))
+        embeddingModelStatus = body("")
+        embeddingCard.addView(embeddingModelStatus)
+        embeddingCard.addView(body(c.getString(R.string.draw_embedding_hint)), matchWrap(top = 4))
+        box.addView(embeddingCard)
+
         refreshConditioningImageStatus()
+        refreshConditioningModelStatus()
         return box
+    }
+
+    private fun requestConditioningModel(slotKey: String) {
+        val set = activeSetOrSelected()
+        if (set == null) {
+            toast(c.getString(R.string.draw_conditioning_need_model_set))
+            return
+        }
+        if (familySlots(set.kind, set.family).none { it.first == slotKey }) {
+            toast(c.getString(R.string.draw_conditioning_slot_unsupported))
+            return
+        }
+        val picker = onPickConditioningModel
+        if (picker == null) {
+            toast(c.getString(R.string.draw_conditioning_model_picker_unavailable))
+            return
+        }
+        picker(slotKey)
+    }
+
+    /** Refresh weight filenames after a model set is selected or one of its slots is imported. */
+    fun refreshConditioningModelStatus() {
+        fun displayName(slotKey: String, noneRes: Int): String {
+            val model = activeSetOrSelected()?.files?.get(slotKey)?.takeIf { it.isFile }
+            return if (model != null) {
+                c.getString(R.string.draw_conditioning_model_selected, model.name)
+            } else {
+                c.getString(noneRes)
+            }
+        }
+        if (::controlModelStatus.isInitialized) {
+            controlModelStatus.text = displayName("control_net", R.string.draw_controlnet_model_none)
+        }
+        if (::ipAdapterModelStatus.isInitialized) {
+            ipAdapterModelStatus.text = displayName("ip_adapter", R.string.draw_ipadapter_model_none)
+        }
+        if (::clipVisionModelStatus.isInitialized) {
+            clipVisionModelStatus.text = displayName("clip_vision", R.string.draw_clipvision_model_none)
+        }
+        if (::embeddingModelStatus.isInitialized) {
+            embeddingModelStatus.text = displayName("embedding", R.string.draw_embedding_model_none)
+        }
     }
 
     private fun currentConditioningSettings(): ConditioningSettings = ConditioningSettings(
