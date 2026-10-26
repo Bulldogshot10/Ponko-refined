@@ -87,3 +87,11 @@ Real-device Xclipse 940 validation is pending. No fresh CI/build/device result i
 
 - Added a UniFFI `reset_cancel(handle_id)` method and call it immediately before Kotlin enters the blocking `generate_image` call. Removed the second reset from Rust generation startup, preventing a cancel request arriving during native-call startup from being cleared.
 - Validation remains source-only because local GitHub DNS resolution prevents checkout. Re-run Rust formatting/tests and the Android debug build using the commands above; test cancel immediately after the UI button changes to “stop” and verify a subsequent generation still starts normally.
+
+
+### Memory and CLIP conditioning follow-up (2026-10-26)
+
+- Added final LayerNorm after selecting an earlier SD 1.5 CLIP hidden state for CLIP Skip; standard CLIP conditioning normalizes skipped hidden states too.
+- Added Burn/WGPU memory cleanup between CLIP and UNet loading, and a scope guard that syncs/cleans cached backend allocations when either SD 1.5 or SDXL render exits early with an error.
+- Updated `API_PARITY.md` to clarify the SD 1.5 CLIP Skip normalization behavior.
+- These changes are source-reviewed but **not compiled or tested** here due the checkout/DNS blocker. The next validation run must confirm Rust 0.20 API compatibility for `LayerNorm` construction and exercise repeated SD 1.5/SDXL generations plus cancellation/error paths.
