@@ -410,8 +410,8 @@
     <string name="s_370">主模型已复制。点「配套文件」补齐其余槽位。</string>
     <string name="s_371">模型槽位（%1$d/%2$d）</string>
     <string name="s_373">过程</string>
-    <string name="s_374">预览是低分辨率的近似图（latent 投影），生成结束后显示最终结果。</string>
-    <string name="s_375">生成开始后，这里会逐步刷新预览。</string>
+    <string name="s_374">Hearth 目前会在生成时更新步骤进度，图片预览会在生成结束后显示。</string>
+    <string name="s_375">当前 Hearth 后端暂不提供生成过程中的中间图像预览。</string>
     <string name="s_376">主题</string>
     <string name="s_377">跟随系统</string>
     <string name="s_378">亮</string>
