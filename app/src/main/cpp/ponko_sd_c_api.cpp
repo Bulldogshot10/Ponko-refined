@@ -63,6 +63,7 @@ std::mutex g_vulkan_diagnostics_mutex;
 std::string g_last_params;
 std::string g_vulkan_diagnostics;
 thread_local std::string g_last_error;
+thread_local std::string g_last_native_error_log;
 
 void setError(std::string message) {
     g_last_error = std::move(message);
@@ -83,6 +84,7 @@ bool stringIsNonempty(const char* text) {
 
 void ponkoLogCallback(enum ggml_log_level level, const char* text, void*) {
     if (text == nullptr || text[0] == '\0') return;
+    if (level == GGML_LOG_LEVEL_ERROR) g_last_native_error_log.assign(text);
     std::fputs(text, stderr);
     std::fflush(stderr);
     const bool warning = level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR;
@@ -109,6 +111,7 @@ void ponkoLogCallback(enum ggml_log_level level, const char* text, void*) {
 // Without this callback, fusion-stage and RSS diagnostics are silently dropped.
 void ponkoSdLogCallback(enum sd_log_level_t level, const char* text, void*) {
     if (text == nullptr || text[0] == '\0') return;
+    if (level == SD_LOG_ERROR) g_last_native_error_log.assign(text);
     std::fputs(text, stderr);
     std::fflush(stderr);
     const int priority = level == SD_LOG_ERROR ? ANDROID_LOG_ERROR :
@@ -262,6 +265,7 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
                                   const char* backend, const char* const* slots, size_t slot_count) {
     g_last_error.clear();
     initializePonkoLogging();
+    g_last_native_error_log.clear();
     if (model_path == nullptr && (slots == nullptr || slot_count == 0)) {
         setError("model path or slot paths are required");
         return nullptr;
@@ -341,7 +345,15 @@ extern "C" void* ponko_sd_create(const char* model_path, const char* vae_path, i
 
     sd_ctx_t* context = new_sd_ctx(&params);
     if (context == nullptr) {
-        setError("stable-diffusion.cpp could not create a model context");
+        std::string detail = g_last_native_error_log;
+        while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r')) {
+            detail.pop_back();
+        }
+        if (detail.empty()) {
+            setError("stable-diffusion.cpp could not create a model context");
+        } else {
+            setError("stable-diffusion.cpp could not create a model context: " + detail);
+        }
         return nullptr;
     }
     auto* handle = new (std::nothrow) PonkoHandle();

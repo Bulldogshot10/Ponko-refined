@@ -2284,9 +2284,15 @@ class DrawPage(
             activeBackend = used
             if (h == 0L) {
                 stage(c.getString(R.string.s_012))
+                val nativeError = SdCppEngine.lastCreateError()?.trim().orEmpty()
+                if (nativeError.isNotEmpty()) stage("Native error: $nativeError")
                 runCatching { stage(c.getString(R.string.s_010) + SdCppEngine.lastParams().replace("\n", "  |  ")) }
-                runCatching { stageFile.delete() }
-                return c.getString(R.string.s_059)
+                // Keep the diagnostic file available to the existing "View load log" action.
+                return if (nativeError.isBlank()) {
+                    c.getString(R.string.s_059)
+                } else {
+                    c.getString(R.string.s_059) + "\n" + nativeError
+                }
             }
             sdHandle = h
             activeVulkanDiagnostic = if (used.contains("vulkan", ignoreCase = true)) {

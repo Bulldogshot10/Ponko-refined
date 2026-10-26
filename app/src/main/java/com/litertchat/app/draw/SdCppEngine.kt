@@ -10,6 +10,11 @@ import android.graphics.Bitmap
  */
 object SdCppEngine {
 
+    @Volatile
+    private var lastCreateErrorValue: String? = null
+
+    fun lastCreateError(): String? = lastCreateErrorValue
+
     init {
         // Rust/UniFFI owns the Kotlin-facing API; ponko_sd.so exports a plain C ABI.
         // Load the C++ bridge first so Rust can resolve it through libloading.
@@ -191,13 +196,21 @@ object SdCppEngine {
         vaeConvDirect: Boolean,
         backend: String?,
         slots: Array<String?>?,
-    ): Long = runCatching {
-        nativeEngine.createContext(
-            com.litertchat.app.ponko.ModelLoadRequest(
-                modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, modelSlots(slots)
-            )
-        )
-    }.getOrDefault(0L)
+    ): Long {
+        lastCreateErrorValue = null
+        return try {
+            nativeEngine.createContext(
+                com.litertchat.app.ponko.ModelLoadRequest(
+                    modelPath, vaePath, nThreads, wtype, flashAttn, vaeConvDirect, backend, modelSlots(slots)
+                )
+            ).also { handle ->
+                if (handle == 0L) lastCreateErrorValue = "Native model context returned an empty handle"
+            }
+        } catch (error: Throwable) {
+            lastCreateErrorValue = error.message ?: error.javaClass.simpleName
+            0L
+        }
+    }
 
     data class Lora(val path: String, val scale: Float)
 

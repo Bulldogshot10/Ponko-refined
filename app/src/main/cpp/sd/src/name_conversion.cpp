@@ -864,6 +864,40 @@ std::string convert_diffusers_controlnet_to_original_sdxl(std::string name) {
     return name;
 }
 
+// Convert Diffusers ControlNet weights for SD1.x / SD2.x to the LDM layout.
+std::string convert_diffusers_controlnet_to_original_sd1(std::string name) {
+    name = convert_diffusers_unet_to_original_sd1(std::move(name));
+
+    static const std::vector<std::pair<std::string, std::string>> prefix_map = {
+        {"controlnet_cond_embedding.conv_in.", "input_hint_block.0."},
+        {"controlnet_cond_embedding.blocks.0.", "input_hint_block.2."},
+        {"controlnet_cond_embedding.blocks.1.", "input_hint_block.4."},
+        {"controlnet_cond_embedding.blocks.2.", "input_hint_block.6."},
+        {"controlnet_cond_embedding.blocks.3.", "input_hint_block.8."},
+        {"controlnet_cond_embedding.blocks.4.", "input_hint_block.10."},
+        {"controlnet_cond_embedding.blocks.5.", "input_hint_block.12."},
+        {"controlnet_cond_embedding.conv_out.", "input_hint_block.14."},
+        {"controlnet_mid_block.", "middle_block_out.0."},
+    };
+    for (const auto& p : prefix_map) {
+        if (starts_with(name, p.first)) {
+            return p.second + name.substr(p.first.size());
+        }
+    }
+
+    static const std::string controlnet_down_prefix = "controlnet_down_blocks.";
+    if (starts_with(name, controlnet_down_prefix)) {
+        const size_t rest_start = controlnet_down_prefix.size();
+        const size_t dot = name.find('.', rest_start);
+        if (dot != std::string::npos) {
+            const std::string idx = name.substr(rest_start, dot - rest_start);
+            return "zero_convs." + idx + ".0" + name.substr(dot);
+        }
+    }
+
+    return name;
+}
+
 static bool is_diffusers_controlnet_name(const std::string& name) {
     static const std::vector<std::string> heads = {
         "controlnet_cond_embedding.",
@@ -1566,8 +1600,12 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
                 name = name.substr(pos + 1);
             }
         }
-        if (sd_version_is_sdxl(version) && is_diffusers_controlnet_name(name)) {
-            name = convert_diffusers_controlnet_to_original_sdxl(name);
+        if (is_diffusers_controlnet_name(name)) {
+            if (sd_version_is_sdxl(version)) {
+                name = convert_diffusers_controlnet_to_original_sdxl(name);
+            } else if (sd_version_is_sd1(version) || sd_version_is_sd2(version)) {
+                name = convert_diffusers_controlnet_to_original_sd1(name);
+            }
         }
     }
 
