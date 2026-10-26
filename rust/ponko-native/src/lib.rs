@@ -467,8 +467,8 @@ fn render_sd15(
             let positive_hidden = clip.forward_hidden_layer(positive_tokens, Some(layer));
             let negative_hidden = clip.forward_hidden_layer(negative_tokens, Some(layer));
             (
-                apply_sd15_final_layer_norm(positive_hidden, &tensors, &device)?,
-                apply_sd15_final_layer_norm(negative_hidden, &tensors, &device)?,
+                apply_sd15_final_layer_norm(positive_hidden, &checkpoint, &device)?,
+                apply_sd15_final_layer_norm(negative_hidden, &checkpoint, &device)?,
             )
         }
     };
@@ -764,19 +764,22 @@ pub fn validate_lora_fusion_request(_request: LoraFusionRequest) -> ValidationRe
 
 fn apply_sd15_final_layer_norm(
     hidden: Tensor<Backend, 3>,
-    tensors: &SafeTensors<'_>,
+    checkpoint: &SafeTensorsFile,
     device: &Device<Backend>,
 ) -> Result<Tensor<Backend, 3>, PonkoError> {
+    // Re-create the SafeTensors view through Hearth's public loader API so this crate does
+    // not rely on a transitive safetensors dependency.
+    let tensors = checkpoint.tensors().map_err(native_error)?;
     // Hearth's hidden-layer API intentionally omits final_layer_norm for SDXL's raw CLIP-L
     // conditioning. SD 1.5 clip-skip follows the usual CLIP convention and normalizes the
     // selected hidden state before it becomes conditioning.
     let weight = hearth::model_loader::load_tensor_1d(
-        tensors,
+        &tensors,
         "cond_stage_model.transformer.text_model.final_layer_norm.weight",
         device,
     ).map_err(native_error)?;
     let bias = hearth::model_loader::load_tensor_1d(
-        tensors,
+        &tensors,
         "cond_stage_model.transformer.text_model.final_layer_norm.bias",
         device,
     ).map_err(native_error)?;
