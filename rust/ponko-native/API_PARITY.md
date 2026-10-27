@@ -30,6 +30,7 @@ The Kotlin-facing JNI declarations have been removed from the active build. Kotl
 | LoRA fusion | `LoraFusionRequest` -> `NativeEngine.fuseLoras` -> `ponko_sd_fuse_loras` -> `fuse_loras_to_file` | Multi-LoRA weighted fusion to a new GGUF; F16 or Q4/Q5/Q8 UNet output; streamed export, original inputs preserved |
 | `nativeQuantizeUnet` | `QuantizeUnetRequest` -> `ponko_sd_quantize_unet` | q4_0/q5_0/q8_0, source checks, temporary GGUF, tensor/type/payload validation, atomic publish |
 | `nativeApplyResAdapter` | `ResAdapterRequest` -> `ponko_sd_apply_resadapter` | Optional VAE, normalization merge, same quantization rules and output validation |
+| PyTorch `.bin` conversion | `NativeEngine.convertTorchBinToSafetensors` -> `ponko_sd_convert_torch_bin_to_safetensors` -> `convert` | Streams checkpoint tensors into safetensors while preserving tensor names and stored dtypes; validates output and publishes atomically; source file remains untouched |
 | Single-flight generation | C++ generation mutex + global callback reset | Conflicting generation attempts fail as busy instead of racing global callback state |
 | Bitmap conversion / output size | Rust RGB888 result -> Kotlin's ARGB result contract | Existing `DrawPage` and image API call sites keep the same interface |
 | CPU profile / Vulkan | CMake profile and backend options | Keeps `-march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4` by default; Vulkan is disabled by the current build default unless explicitly enabled |
@@ -42,4 +43,4 @@ The Kotlin-facing JNI declarations have been removed from the active build. Kotl
 4. Compare representative outputs and timings against the previous build before declaring runtime parity complete.
 5. On compatible SD1.5/SDXL model sets, test ControlNet with a matching preprocessed map, IP-Adapter with matching weights and CLIP Vision, and Textual Inversion using the embedding filename stem as the prompt token. Build and device verification are still required.
 
-The old `sdcpp_jni.cpp` source is no longer part of the build. The Kotlin-facing JNI interface is replaced; stable-diffusion.cpp and GGML remain C++ by design. The UniFFI facade contract version is 4.
+The old `sdcpp_jni.cpp` source is no longer part of the build. The Kotlin-facing JNI interface is replaced; stable-diffusion.cpp and GGML remain C++ by design. The UniFFI facade contract version is 5.

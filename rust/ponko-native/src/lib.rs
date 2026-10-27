@@ -17,7 +17,7 @@ use std::{
 
 uniffi::setup_scaffolding!();
 
-pub const FACADE_API_VERSION: u32 = 4;
+pub const FACADE_API_VERSION: u32 = 5;
 
 type StepFn = unsafe extern "C" fn(*mut c_void, i32, i32);
 type PreviewFn = unsafe extern "C" fn(*mut c_void, i32, i32, i32, *const u8, usize);
@@ -89,6 +89,7 @@ type FuseLorasFn = unsafe extern "C" fn(
 type ResAdapterFn = unsafe extern "C" fn(
     *const c_char, *const c_char, *const c_char, *const c_char, *const c_char, i32,
 ) -> i32;
+type ConvertTorchBinToSafetensorsFn = unsafe extern "C" fn(*const c_char, *const c_char) -> i32;
 
 struct NativeApi {
     // Keep the shared library loaded for as long as any function pointer/context is alive.
@@ -106,6 +107,7 @@ struct NativeApi {
     quantize_unet: QuantizeFn,
     fuse_loras: FuseLorasFn,
     apply_resadapter: ResAdapterFn,
+    convert_torch_bin_to_safetensors: ConvertTorchBinToSafetensorsFn,
 }
 
 impl NativeApi {
@@ -141,6 +143,7 @@ impl NativeApi {
                 quantize_unet: symbol(&library, b"ponko_sd_quantize_unet\0")?,
                 fuse_loras: symbol(&library, b"ponko_sd_fuse_loras\0")?,
                 apply_resadapter: symbol(&library, b"ponko_sd_apply_resadapter\0")?,
+                convert_torch_bin_to_safetensors: symbol(&library, b"ponko_sd_convert_torch_bin_to_safetensors\0")?,
                 _library: library,
             }
         };
@@ -573,6 +576,24 @@ impl NativeEngine {
             )
         };
         self.api.check_native(result, "ResAdapter")
+    }
+
+    pub fn convert_torch_bin_to_safetensors(&self, input_path: String, output_path: String) -> Result<(), PonkoError> {
+        if !input_path.to_ascii_lowercase().ends_with(".bin") {
+            return Err(PonkoError::InvalidArgument { details: "source must be a PyTorch checkpoint with the .bin extension".to_owned() });
+        }
+        if !output_path.to_ascii_lowercase().ends_with(".safetensors") {
+            return Err(PonkoError::InvalidArgument { details: "output path must end in .safetensors".to_owned() });
+        }
+        if input_path == output_path {
+            return Err(PonkoError::InvalidArgument { details: "input and output paths must be different".to_owned() });
+        }
+        let input = NativeApi::cstring(&input_path, "input_path")?;
+        let output = NativeApi::cstring(&output_path, "output_path")?;
+        let result = unsafe {
+            (self.api.convert_torch_bin_to_safetensors)(input.as_ptr(), output.as_ptr())
+        };
+        self.api.check_native(result, "PyTorch .bin to safetensors conversion")
     }
 
 }

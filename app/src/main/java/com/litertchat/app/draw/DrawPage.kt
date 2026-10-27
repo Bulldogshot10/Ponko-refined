@@ -73,6 +73,9 @@ class DrawPage(
     /** 换配色（下次 build() 生效） */
     fun setPalette(p: PonkoTheme) { pal = p }
 
+    private var pendingTorchBinInputUri: Uri? = null
+    private var pendingTorchBinInputName: String = "model.bin"
+
     /** 是否正在出图（换主题要重建视图，出图途中不适合重建） */
     fun isBusy(): Boolean = generating
 
@@ -112,6 +115,8 @@ class DrawPage(
         private const val REQ_LORA_FUSION_IMPORT = 0x5D08
         private const val REQ_CONTROL_IMAGE = 0x5D09
         private const val REQ_IP_ADAPTER_IMAGE = 0x5D0A
+        private const val REQ_TORCH_BIN_CONVERT_INPUT = 0x5D0B
+        private const val REQ_TORCH_BIN_CONVERT_OUTPUT = 0x5D0C
         private const val HIRES_UPSCALER_DIR = "hires-upscalers"
         private const val ADETAILER_MODEL_DIR = "adetailer-models"
 
@@ -602,6 +607,12 @@ class DrawPage(
             setOnClickListener { showLoraFusionWizard() }
         }
         modelCard.addView(fuseLoraButton, matchWrap(top = 4))
+        val convertTorchBinButton = Button(c).apply {
+            text = c.getString(R.string.draw_bin_conversion_button)
+            setOnClickListener { pickTorchBinForConversion() }
+        }
+        modelCard.addView(convertTorchBinButton, matchWrap(top = 4))
+        modelCard.addView(body(c.getString(R.string.draw_bin_conversion_hint)), matchWrap(top = 2))
         paramPane.addView(modelCard)
 
         // ---- 模式子标签：文生图 / 图生图 ----
@@ -3106,6 +3117,128 @@ class DrawPage(
         }
     }
 
+    // ================= PyTorch .bin -> safetensors =================
+
+    private fun pickTorchBinForConversion() {
+        if (generating || DrawCore.busy) {
+            toast(c.getString(R.string.draw_bin_conversion_busy))
+            return
+        }
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(android.content.Intent.EXTRA_TITLE, c.getString(R.string.draw_bin_conversion_pick_input))
+        }
+        act.startActivityForResult(intent, REQ_TORCH_BIN_CONVERT_INPUT)
+    }
+
+    private fun handleTorchBinConversionPickedFile(
+        requestCode: Int,
+        resultCode: Int,
+        data: android.content.Intent?,
+    ): Boolean {
+        if (requestCode != REQ_TORCH_BIN_CONVERT_INPUT && requestCode != REQ_TORCH_BIN_CONVERT_OUTPUT) {
+            return false
+        }
+        if (resultCode != Activity.RESULT_OK) {
+            if (requestCode == REQ_TORCH_BIN_CONVERT_OUTPUT) {
+                pendingTorchBinInputUri = null
+                pendingTorchBinInputName = "model.bin"
+            }
+            return true
+        }
+        val uri = data?.data
+        if (uri == null) {
+            pendingTorchBinInputUri = null
+            pendingTorchBinInputName = "model.bin"
+            toast(c.getString(R.string.draw_bin_conversion_failed, c.getString(R.string.s_106)))
+            return true
+        }
+
+        if (requestCode == REQ_TORCH_BIN_CONVERT_INPUT) {
+            val name = queryDisplayName(uri).orEmpty().ifBlank { "model.bin" }
+            if (!name.endsWith(".bin", ignoreCase = true)) {
+                toast(c.getString(R.string.draw_bin_conversion_bad_source))
+                return true
+            }
+            pendingTorchBinInputUri = uri
+            pendingTorchBinInputName = File(name).name
+            val outputName = File(name).nameWithoutExtension + ".safetensors"
+            val outputIntent = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                type = "application/octet-stream"
+                putExtra(android.content.Intent.EXTRA_TITLE, outputName)
+            }
+            act.startActivityForResult(outputIntent, REQ_TORCH_BIN_CONVERT_OUTPUT)
+            return true
+        }
+
+        val sourceUri = pendingTorchBinInputUri
+        val sourceName = pendingTorchBinInputName
+        pendingTorchBinInputUri = null
+        pendingTorchBinInputName = "model.bin"
+        if (sourceUri == null) {
+            toast(c.getString(R.string.draw_bin_conversion_failed, c.getString(R.string.s_106)))
+            return true
+        }
+
+        val progress = android.app.AlertDialog.Builder(act)
+            .setTitle(c.getString(R.string.draw_bin_conversion_title))
+            .setMessage(c.getString(R.string.draw_bin_conversion_working))
+            .setCancelable(false)
+            .create()
+        progress.show()
+        scope.launch {
+            val workDir = File(c.cacheDir, "ponko-bin-convert-${System.currentTimeMillis()}")
+            try {
+                // Checkpoint conversion can need substantial RAM; release mapped drawing weights first.
+                unloadModel()
+                withContext(Dispatchers.IO) {
+                    if (!workDir.mkdirs()) {
+                        throw IllegalStateException(c.getString(R.string.draw_bin_conversion_workdir_failed))
+                    }
+                    val safeName = File(sourceName).name
+                        .replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                        .take(120)
+                        .ifBlank { "model.bin" }
+                    val stagedInput = File(workDir, safeName)
+                    val stagedOutput = File(workDir, "converted.safetensors")
+                    copyContentUri(sourceUri, stagedInput)
+
+                    val nativeError = SdCppEngine.nativeConvertTorchBinToSafetensors(
+                        stagedInput.absolutePath,
+                        stagedOutput.absolutePath,
+                    )
+                    if (nativeError != null) {
+                        throw IllegalStateException(nativeError)
+                    }
+                    if (!stagedOutput.isFile || stagedOutput.length() <= 0L) {
+                        throw IllegalStateException(c.getString(R.string.draw_bin_conversion_failed_detail))
+                    }
+
+                    val outputStream = c.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IllegalStateException(c.getString(R.string.draw_bin_conversion_output_failed))
+                    stagedOutput.inputStream().buffered().use { input ->
+                        outputStream.buffered().use { output -> input.copyTo(output, 1 shl 20) }
+                    }
+                }
+                toast(c.getString(R.string.draw_bin_conversion_success))
+            } catch (error: Throwable) {
+                toast(c.getString(
+                    R.string.draw_bin_conversion_failed,
+                    error.message ?: error.javaClass.simpleName,
+                ))
+                runCatching {
+                    android.provider.DocumentsContract.deleteDocument(c.contentResolver, uri)
+                }
+            } finally {
+                withContext(Dispatchers.IO) { runCatching { workDir.deleteRecursively() } }
+                progress.dismiss()
+            }
+        }
+        return true
+    }
+
     // ================= ResAdapter (LoRA + normalization weights) =================
 
     private fun showResAdapterWizard() {
@@ -3873,6 +4006,7 @@ class DrawPage(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (handleTorchBinConversionPickedFile(requestCode, resultCode, data)) return true
         if (handleConditioningImagePicked(requestCode, resultCode, data)) return true
         if (handleLoraFusionPickedFile(requestCode, resultCode, data)) return true
         if (handleHiresUpscalerPickedFile(requestCode, resultCode, data)) return true

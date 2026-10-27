@@ -82,6 +82,7 @@ int32_t ponko_sd_quantize_unet(const char* input_path, const char* output_path,
 int32_t ponko_sd_apply_resadapter(const char* input_model_path, const char* vae_path,
                                   const char* normalization_path, const char* output_path,
                                   const char* quant_type, int32_t n_threads);
+int32_t ponko_sd_convert_torch_bin_to_safetensors(const char* input_path, const char* output_path);
 
 #ifdef __cplusplus
 }

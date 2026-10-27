@@ -604,4 +604,16 @@
     <string name="draw_ipadapter_hint">IP-Adapter 需要兼容的 ip_adapter 权重；根据模型配置，可能还需要在 clip_vision 槽位添加匹配的 CLIP Vision 模型。</string>
     <string name="draw_embedding_hint">适用于 SD1.x、SD2.x 或 SDXL。添加一个嵌入文件到模型集，并在提示词中使用不含扩展名的文件名作为触发词。</string>
 
+    <string name="draw_bin_conversion_button">转换 .bin → .safetensors</string>
+    <string name="draw_bin_conversion_title">将 PyTorch .bin 转换为 safetensors</string>
+    <string name="draw_bin_conversion_pick_input">选择 PyTorch 检查点（.bin）</string>
+    <string name="draw_bin_conversion_hint">保留张量名称和值，仅更改文件容器格式。此操作不会为后端尚未实现的适配器变体增加推理支持。</string>
+    <string name="draw_bin_conversion_busy">请等待图像生成完成后再转换检查点。</string>
+    <string name="draw_bin_conversion_bad_source">请选择扩展名为 .bin 的 PyTorch 检查点。</string>
+    <string name="draw_bin_conversion_working">正在读取检查点并将张量流式写入 safetensors。请保持 Ponko 运行；为释放内存，会先卸载当前绘图上下文。</string>
+    <string name="draw_bin_conversion_workdir_failed">无法创建临时转换目录。</string>
+    <string name="draw_bin_conversion_output_failed">无法写入所选输出文件。</string>
+    <string name="draw_bin_conversion_failed_detail">转换失败：检查点格式或其中某个张量数据类型可能不受支持。</string>
+    <string name="draw_bin_conversion_success">转换完成。原始 .bin 未被修改；safetensors 文件已保存到所选位置。再次绘图前请重新加载模型。</string>
+    <string name="draw_bin_conversion_failed">无法转换检查点：%1$s</string>
 </resources>

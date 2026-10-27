@@ -170,6 +170,14 @@ object SdCppEngine {
         true
     }.getOrDefault(false)
 
+    /** Convert a supported PyTorch .bin state_dict to safetensors, surfacing native errors. */
+    fun nativeConvertTorchBinToSafetensors(inputPath: String, outputPath: String): String? = try {
+        nativeEngine.convertTorchBinToSafetensors(inputPath, outputPath)
+        null
+    } catch (error: Throwable) {
+        error.message ?: error.javaClass.simpleName
+    }
+
     fun vulkanDiagnostics(): String =
         runCatching { nativeVulkanDiagnostics() }.getOrDefault("")
 

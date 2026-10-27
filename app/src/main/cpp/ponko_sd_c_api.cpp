@@ -25,6 +25,7 @@
 #include "ggml-vulkan.h"
 #endif
 #include "stable-diffusion.h"
+#include "sd/src/model_io/safetensors_io.h"
 
 #define PONKO_LOG_TAG "PonkoSdRust"
 #define PONKO_LOGI(...) __android_log_print(ANDROID_LOG_INFO, PONKO_LOG_TAG, __VA_ARGS__)
@@ -936,4 +937,75 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
     PONKO_LOGI("ResAdapter complete: tensors=%lld selected_type=%lld output=%s",
                static_cast<long long>(unet_count), static_cast<long long>(quantized_count), output_path);
     return 1;
+}
+
+// Convert a PyTorch checkpoint container to safetensors without renaming or quantizing tensors.
+extern "C" int32_t ponko_sd_convert_torch_bin_to_safetensors(const char* input_path,
+                                                               const char* output_path) {
+    g_last_error.clear();
+    initializePonkoLogging();
+    try {
+        if (!stringIsNonempty(input_path) || !stringIsNonempty(output_path)) {
+            setError("PyTorch .bin conversion requires input and output paths");
+            return 0;
+        }
+        const std::string input_name(input_path);
+        const std::string output_name(output_path);
+        constexpr size_t suffix_length = sizeof(".safetensors") - 1;
+        if (output_name.size() < suffix_length ||
+            output_name.compare(output_name.size() - suffix_length, suffix_length, ".safetensors") != 0) {
+            setError("conversion output must use the .safetensors extension");
+            return 0;
+        }
+        if (input_name == output_name) {
+            setError("conversion output must be different from the source checkpoint");
+            return 0;
+        }
+        std::ifstream source(input_path, std::ios::binary);
+        if (!source.good()) {
+            setError("PyTorch .bin source file does not exist or cannot be read");
+            return 0;
+        }
+        std::ifstream existing_output(output_path, std::ios::binary);
+        if (existing_output.good()) {
+            setError("refusing to overwrite an existing safetensors output");
+            return 0;
+        }
+        // Keep the staging suffix recognizable to the converter's format-selecting writer.
+        const std::string temporary = output_name + ".partial.safetensors";
+        std::remove(temporary.c_str());
+        const bool converted = convert(input_path, nullptr, temporary.c_str(), SD_TYPE_COUNT, nullptr, false);
+        if (!converted) {
+            std::remove(temporary.c_str());
+            setError("stable-diffusion.cpp could not convert this PyTorch checkpoint; inspect native logs for the unsupported format or tensor");
+            return 0;
+        }
+        std::vector<TensorStorage> tensors;
+        std::string validation_error;
+        const bool valid = is_safetensors_file(temporary) &&
+                           read_safetensors_file(temporary, tensors, &validation_error) &&
+                           !tensors.empty();
+        if (!valid) {
+            std::remove(temporary.c_str());
+            setError(validation_error.empty()
+                         ? "converted safetensors output failed validation or contains no tensors"
+                         : "converted safetensors output failed validation: " + validation_error);
+            return 0;
+        }
+        if (std::rename(temporary.c_str(), output_path) != 0) {
+            std::remove(temporary.c_str());
+            setError("failed to publish the validated safetensors output");
+            return 0;
+        }
+        PONKO_LOGI("PyTorch checkpoint conversion complete: tensors=%zu output=%s", tensors.size(), output_path);
+        return 1;
+    } catch (const std::exception& e) {
+        setError(std::string("PyTorch .bin conversion caught native exception: ") + e.what());
+        PONKO_LOGE("PyTorch .bin conversion exception: %s", e.what());
+        return 0;
+    } catch (...) {
+        setError("PyTorch .bin conversion caught an unknown native exception");
+        PONKO_LOGE("PyTorch .bin conversion caught an unknown native exception");
+        return 0;
+    }
 }

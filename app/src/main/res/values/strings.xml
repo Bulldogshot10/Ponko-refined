@@ -634,4 +634,16 @@
     <string name="draw_ipadapter_strength">IP-Adapter strength (0 to 2)</string>
     <string name="draw_ipadapter_hint">IP-Adapter requires compatible weights in the ip_adapter slot and a compatible CLIP Vision model in clip_vision.</string>
     <string name="draw_embedding_hint">For SD1.x, SD2.x or SDXL, add one embedding file to the model set. Its prompt trigger token is the filename without the extension.</string>
+    <string name="draw_bin_conversion_button">Convert .bin → .safetensors</string>
+    <string name="draw_bin_conversion_title">Convert PyTorch .bin to safetensors</string>
+    <string name="draw_bin_conversion_pick_input">Choose PyTorch checkpoint (.bin)</string>
+    <string name="draw_bin_conversion_hint">Preserves tensor names and values while changing the file container. This does not add inference support for adapter variants the backend does not implement.</string>
+    <string name="draw_bin_conversion_busy">Wait for image generation to finish before converting a checkpoint.</string>
+    <string name="draw_bin_conversion_bad_source">Choose a PyTorch checkpoint file with the .bin extension.</string>
+    <string name="draw_bin_conversion_working">Reading the checkpoint and streaming tensors into safetensors. Keep Ponko open; the active drawing context is unloaded to free memory.</string>
+    <string name="draw_bin_conversion_workdir_failed">Could not create a temporary conversion workspace.</string>
+    <string name="draw_bin_conversion_output_failed">Could not open the selected output document for writing.</string>
+    <string name="draw_bin_conversion_failed_detail">Conversion failed. The checkpoint format or one of its tensor data types may not be supported.</string>
+    <string name="draw_bin_conversion_success">Conversion complete. The original .bin is unchanged; the safetensors file was saved to your chosen location. Reload your drawing model before generating again.</string>
+    <string name="draw_bin_conversion_failed">Could not convert the checkpoint: %1$s</string>
 </resources>
