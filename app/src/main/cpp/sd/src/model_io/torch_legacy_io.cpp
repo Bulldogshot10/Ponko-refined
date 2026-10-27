@@ -40,6 +40,9 @@
 //      - PyTorch writes storages after the pickles, ordered by storage key
 //      - each storage has an 8-byte legacy storage header followed by raw bytes
 static constexpr size_t LEGACY_STORAGE_HEADER_SIZE = 8;
+// Legacy checkpoint parsing needs only the pickle metadata prefix, not the raw tensor payload.
+// Keep non-ZIP checkpoints from being copied wholesale into RAM on Android.
+static constexpr size_t LEGACY_PICKLE_METADATA_WINDOW = 64u * 1024u * 1024u;
 
 static void set_error(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -105,18 +108,32 @@ bool read_torch_legacy_file(const std::string& file_path,
     }
 
     file.seekg(0, file.end);
-    size_t file_size = (size_t)file.tellg();
+    const std::streamoff file_end = file.tellg();
+    if (file_end < 0) {
+        set_error(error, "failed to determine file size for '" + file_path + "'");
+        return false;
+    }
+    const size_t file_size = static_cast<size_t>(file_end);
     file.seekg(0, file.beg);
     if (file_size == 0) {
         set_error(error, "empty file '" + file_path + "'");
         return false;
     }
 
-    std::vector<uint8_t> buffer(file_size);
-    file.read((char*)buffer.data(), file_size);
-    if (!file) {
-        set_error(error, "failed to read '" + file_path + "'");
+    // The pickle and storage-key metadata precede the tensor payload. Reading the full
+    // multi-GB legacy checkpoint here duplicates the entire model in process memory and can
+    // trigger Android's low-memory killer. Parse a bounded prefix; tensor bytes are read later
+    // from the original file by ModelLoader.
+    const size_t metadata_size = std::min(file_size, LEGACY_PICKLE_METADATA_WINDOW);
+    std::vector<uint8_t> buffer(metadata_size);
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
+    if (file.gcount() != static_cast<std::streamsize>(buffer.size())) {
+        set_error(error, "failed to read checkpoint metadata from '" + file_path + "'");
         return false;
+    }
+    if (metadata_size < file_size) {
+        LOG_INFO("legacy PyTorch checkpoint metadata scan limited to %zu MiB (file size %zu MiB)",
+                 metadata_size / (1024u * 1024u), file_size / (1024u * 1024u));
     }
 
     auto finalize_tensor_offsets = [&](size_t storage_data_offset,
