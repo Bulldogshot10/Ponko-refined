@@ -552,8 +552,7 @@ static bool stream_tensor_data(ModelLoader& model_loader,
     auto reserve_memory = [&](size_t bytes) -> bool {
         std::unique_lock<std::mutex> lock(work_mutex);
         memory_cv.wait(lock, [&]() {
-            return failed || reserved_bytes == 0 ||
-                   (bytes <= memory_budget && reserved_bytes <= memory_budget - bytes);
+            return failed || (bytes <= memory_budget && reserved_bytes <= memory_budget - bytes);
         });
         if (failed) {
             return false;
@@ -599,9 +598,22 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                     tensor_index = next_tensor_index++;
                 }
 
-                size_t tensor_bytes = export_tensor_nbytes(tensors[tensor_index]);
+                const TensorExportInfo& tensor_info = tensors[tensor_index];
+                const size_t output_tensor_bytes = export_tensor_nbytes(tensor_info);
+                const int64_t source_nbytes_raw = tensor_info.storage.nbytes_to_read();
+                const size_t source_tensor_bytes = source_nbytes_raw > 0
+                    ? static_cast<size_t>(source_nbytes_raw) : 0;
+                size_t tensor_bytes = output_tensor_bytes;
+                // The current export path keeps both the ggml destination tensor and a
+                // job.data copy alive through the write, while ZIP/legacy readers may also
+                // hold a source-storage buffer. Reserve for all three, not just the output.
+                if (output_tensor_bytes > (SIZE_MAX - source_tensor_bytes) / 2) {
+                    tensor_bytes = SIZE_MAX;
+                } else {
+                    tensor_bytes = source_tensor_bytes + output_tensor_bytes * 2;
+                }
                 const bool fusion_target = fusion != nullptr &&
-                    fusion->targets(tensors[tensor_index].storage.name);
+                    fusion->targets(tensor_info.storage.name);
                 if (fusion_target) {
                     const int64_t raw_elements = tensors[tensor_index].storage.nelements();
                     const size_t elements = raw_elements > 0 ? static_cast<size_t>(raw_elements) : 0;
@@ -613,13 +625,19 @@ static bool stream_tensor_data(ModelLoader& model_loader,
                     const size_t fusion_bytes = float_bytes > SIZE_MAX / 3 ? SIZE_MAX : float_bytes * 3;
                     tensor_bytes = std::max(tensor_bytes, fusion_bytes);
                     log_fusion_memory("tensor-start", tensors[tensor_index].storage.name, tensor_bytes);
-                    if (tensor_bytes > memory_budget) {
-                        fail("LoRA fusion stopped before allocation: tensor '" +
-                             tensors[tensor_index].storage.name + "' estimates " +
-                             std::to_string(tensor_bytes / (1024ull * 1024ull)) +
-                             " MiB transient memory, above the 384 MiB safe per-tensor limit");
-                        return;
-                    }
+                }
+                // A zero outstanding reservation must not bypass the budget: the old
+                // predicate allowed a single oversized tensor through and could OOM-kill
+                // the entire Android process before C++ error handling ran.
+                if (tensor_bytes > memory_budget) {
+                    const char* operation = fusion != nullptr ? "LoRA fusion/export" : "streaming conversion";
+                    fail(std::string(operation) + " stopped before allocation: tensor '" +
+                         tensor_info.storage.name + "' estimates " +
+                         std::to_string(tensor_bytes / (1024ull * 1024ull)) +
+                         " MiB transient memory, above the " +
+                         std::to_string(memory_budget / (1024ull * 1024ull)) +
+                         " MiB per-tensor working-set budget");
+                    return;
                 }
                 if (!reserve_memory(tensor_bytes)) {
                     return;
