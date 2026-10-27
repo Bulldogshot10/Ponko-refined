@@ -974,17 +974,28 @@ extern "C" int32_t ponko_sd_convert_torch_bin_to_safetensors(const char* input_p
         // Keep the staging suffix recognizable to the converter's format-selecting writer.
         const std::string temporary = output_name + ".partial.safetensors";
         std::remove(temporary.c_str());
-        const bool converted = convert(input_path, nullptr, temporary.c_str(), SD_TYPE_COUNT, nullptr, false);
+        // On Android, avoid parallel tensor export workers for this conversion. Each worker
+        // can hold a source ZIP storage buffer, the destination tensor, and a serialized copy
+        // at the same time. The generic convert() wrapper selects all physical cores.
+        PONKO_LOGI("PyTorch .bin conversion start: input=%s output=%s writer_threads=1",
+                   input_path, output_path);
+        const bool converted = convert_with_components(
+            input_path, nullptr, nullptr, nullptr, nullptr, nullptr,
+            temporary.c_str(), SD_TYPE_COUNT, nullptr, false, 1);
+        PONKO_LOGI("PyTorch .bin streaming conversion returned: success=%d", converted ? 1 : 0);
         if (!converted) {
             std::remove(temporary.c_str());
             setError("stable-diffusion.cpp could not convert this PyTorch checkpoint; inspect native logs for the unsupported format or tensor");
             return 0;
         }
+        PONKO_LOGI("PyTorch .bin conversion validating safetensors output");
         std::vector<TensorStorage> tensors;
         std::string validation_error;
         const bool valid = is_safetensors_file(temporary) &&
                            read_safetensors_file(temporary, tensors, &validation_error) &&
                            !tensors.empty();
+        PONKO_LOGI("PyTorch .bin safetensors validation returned: valid=%d tensors=%zu",
+                   valid ? 1 : 0, tensors.size());
         if (!valid) {
             std::remove(temporary.c_str());
             setError(validation_error.empty()
