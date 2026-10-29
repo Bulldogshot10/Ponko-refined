@@ -713,7 +713,7 @@
 
 --- a/app/src/main/cpp/sd/src/core/backend_fit.cpp
 +++ b/app/src/main/cpp/sd/src/core/backend_fit.cpp
-@@ -481,35 +481,35 @@
+@@ -481,38 +481,36 @@
      bool prepare_vae_decode_retry_tiling(sd_tiling_params_t& tiling_params,
                                           bool prefer_temporal_tiling,
                                           ggml_status status,
