@@ -820,18 +820,11 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
     const std::string temporary = std::string(output_path) + ".partial.gguf";
     std::remove(temporary.c_str());
     const int threads = 1; // Low-RAM device path: serialize fusion tensor workers.
-    std::vector<sd_lora_t> loras;
-    loras.reserve(lora_count);
-    for (size_t i = 0; i < lora_count; ++i) {
-        loras.push_back(sd_lora_t{false, lora_scales[i], lora_paths[i]});
-    }
-
-    PONKO_LOGI("LoRA fusion entering upstream conversion path: output=%s threads=%d adapters=%zu",
-               output_path, threads, loras.size());
-    const bool converted = convert_with_components(
-        input_model_path, nullptr, nullptr, nullptr, nullptr, nullptr, temporary.c_str(),
-        SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads,
-        loras.data(), static_cast<int>(loras.size()));
+    PONKO_LOGI("LoRA fusion entering streaming converter: output=%s threads=%d adapters=%zu",
+               output_path, threads, lora_count);
+    const bool converted = fuse_loras_to_file(
+        input_model_path, lora_paths, lora_scales, lora_count, temporary.c_str(),
+        SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads);
     PONKO_LOGI("LoRA fusion converter returned: success=%d", converted ? 1 : 0);
     if (!converted) {
         std::remove(temporary.c_str());
@@ -905,7 +898,7 @@ extern "C" int32_t ponko_sd_quantize_unet(const char* input_path, const char* ou
     const char* diffusion = diffusion_slot != 0 ? input_path : nullptr;
     const int threads = std::max(1, std::min(6, n_threads));
     const bool converted = convert_with_components(model, nullptr, nullptr, nullptr, diffusion, nullptr,
-                                                    temporary.c_str(), SD_TYPE_F16, rules.c_str(), true, threads);
+                                                    temporary.c_str(), SD_TYPE_F16, rules.c_str(), true, threads, nullptr, 0);
     if (!converted) {
         std::remove(temporary.c_str());
         setError("stable-diffusion.cpp quantization conversion failed");
@@ -956,7 +949,7 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
     const int threads = std::max(1, std::min(6, n_threads));
     const bool converted = convert_with_components(input_model_path, nullptr, nullptr, nullptr,
         normalization_path, stringIsNonempty(vae_path) ? vae_path : nullptr, temporary.c_str(),
-        SD_TYPE_F16, rules.c_str(), true, threads);
+        SD_TYPE_F16, rules.c_str(), true, threads, nullptr, 0);
     if (!converted) {
         std::remove(temporary.c_str());
         setError("ResAdapter normalization merge/conversion failed");
@@ -1021,7 +1014,7 @@ extern "C" int32_t ponko_sd_convert_torch_bin_to_safetensors(const char* input_p
                    input_path, output_path);
         const bool converted = convert_with_components(
             input_path, nullptr, nullptr, nullptr, nullptr, nullptr,
-            temporary.c_str(), SD_TYPE_COUNT, nullptr, false, 1);
+            temporary.c_str(), SD_TYPE_COUNT, nullptr, false, 1, nullptr, 0);
         PONKO_LOGI("PyTorch .bin streaming conversion returned: success=%d", converted ? 1 : 0);
         if (!converted) {
             std::remove(temporary.c_str());

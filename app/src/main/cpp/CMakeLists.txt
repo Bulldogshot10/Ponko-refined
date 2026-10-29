@@ -161,6 +161,16 @@ if(EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
         if(NOT PONKO_SDCpp_RESET_RESULT EQUAL 0)
             message(FATAL_ERROR "Could not reset the pinned stable-diffusion.cpp worktree before reapplying the feature overlay.")
         endif()
+        if(EXISTS "${PONKO_SDCpp_DIR}/ggml/CMakeLists.txt")
+            execute_process(
+                COMMAND "${PONKO_GIT_EXECUTABLE}" checkout -- .
+                WORKING_DIRECTORY "${PONKO_SDCpp_DIR}/ggml"
+                RESULT_VARIABLE PONKO_GGML_RESET_RESULT
+            )
+            if(NOT PONKO_GGML_RESET_RESULT EQUAL 0)
+                message(FATAL_ERROR "Could not reset the pinned GGML worktree before reapplying the feature overlay.")
+            endif()
+        endif()
     endif()
 endif()
 
