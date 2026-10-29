@@ -2402,7 +2402,7 @@
 
 --- /dev/null
 +++ b/app/src/main/cpp/sd/src/tokenizers/gpt_oss_tokenizer.cpp
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,92 @@
 +#include "gpt_oss_tokenizer.h"
 +
 +#include "core/util.h"
@@ -2453,7 +2453,8 @@
 +    bpe_len = rank;
 +}
 +
-+GPTOSSTokenizer::GPTOSSTokenizer(const std::string& merges_utf8_str, const std::string& vocab_utf8_str) {
++GPTOSSTokenizer::GPTOSSTokenizer(const std::string& merges_utf8_str, const std::string& vocab_utf8_str)
++    : BPETokenizer(R"([^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+)") {
 +    BOS_TOKEN = "<|startoftext|>";
 +    UNK_TOKEN = "<|endoftext|>";
 +    EOS_TOKEN = "<|endoftext|>";
