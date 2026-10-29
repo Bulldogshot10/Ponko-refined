@@ -19,6 +19,7 @@ on:
     paths:
       - "app/**"
       - "rust/ponko-native/**"
+      - "rust/ponko-cpu-kernels/**"
       - "experiments/ponko-compute/**"
       - "build.gradle.kts"
       - "settings.gradle.kts"
@@ -74,7 +75,7 @@ jobs:
           set -euo pipefail
           cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml -- --check
           cargo test --manifest-path rust/ponko-cpu-kernels/Cargo.toml
-          cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android
+          cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android --features exynos2400e
 
       - name: Install Android SDK packages and ccache
         shell: bash

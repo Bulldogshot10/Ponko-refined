@@ -152,14 +152,15 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 
 ## Standalone Rust CPU kernel library (2026-10-29)
 
-### Implemented in source; CI validation pending
+### Foundation validated; Exynos kernel integration in progress
 - Added the independent crate rust/ponko-cpu-kernels. It is not yet wired into the inference runtime and does not claim to improve Stable Diffusion generation speed.
 - Added a safe row-major FP32 matmul API with checked shape arithmetic and buffer validation, plus a scalar reference implementation.
 - Added an AArch64 NEON FP32 kernel using four-column vector accumulation and a scalar tail. On non-AArch64 hosts, the dispatcher selects the reference implementation.
 - Added tests for known products, odd matrix dimensions/tail columns, invalid buffers, zero-sized outputs, overflow detection, and selected dispatch path.
 - Added a dependency-free microbenchmark and instructions for running host tests, Android ARM64 cargo check, and local benchmarking.
 - Updated .github/workflows/ponko-app-apk.yml to run formatting/tests for the new crate and cross-check it for aarch64-linux-android; enabled this branch in the workflow trigger.
-- Not implemented yet: Q4_0/Q8_0 GGUF block handling, quantized dot products, DOTPROD/I8MM specializations, explicit tensor strides, multithreading, C ABI exposure, GGML operator integration, and on-device performance measurement.
+- Follow-up integration on this branch adds Q4_0 block handling, GGML-compatible Q8_0 activation quantization, a C ABI, NEON F32 MUL_MAT, DOTPROD single-dot/tail kernels, I8MM SMMLA 2x2 tiles, and an opt-in hook in the patched GGML CPU MUL_MAT path. Only contiguous 2D F32×F32 and Q4_0×F32 shapes use the Rust fast paths; unsupported layouts/dtypes remain on GGML.
 - First CI attempt, run [40852716972](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40852716972), stopped at rustfmt's formatting check before tests ran. The follow-up formats the reported files and makes empty-output shapes a no-op without requiring unread input buffers; CI must be rerun to validate the change.
-- Validation planned by CI: cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml -- --check, cargo test --manifest-path rust/ponko-cpu-kernels/Cargo.toml, cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android, followed by the existing debug APK build and native-library packaging checks.
-- Next step after CI: inspect all test and cross-target results. If they pass, benchmark on the Exynos 2400E and profile SD1.5/SDXL before selecting the first quantized kernel; do not integrate into the inference graph until correctness and performance are measured.
+- CI validation for the foundation passed in run [40852911419](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40852911419), including rustfmt, host tests, Android ARM64 cargo check, Rust facade tests, APK build, and native-library checks.
+- This follow-up builds libponko_cpu_kernels.a with the exynos2400e Cargo feature and links it into the GGML CPU backend. Gradle property ponkoRustCpuKernels=OFF preserves the original GGML baseline for A/B comparison; ON enables the Exynos-specific integrated path.
+- The next CI run validates SMMLA assembly, the C ABI link, patched GGML compilation, and APK packaging together. Device correctness and performance still need a run on the Exynos 2400E; the patched GGML source logs once when either Rust path is actually reached.

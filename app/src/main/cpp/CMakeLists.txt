@@ -25,6 +25,20 @@ option(PONKO_EXYNOS_2400E_CPU_PROFILE
        "Tune native code for Exynos 2400e (Cortex-X4/A720/A520 with I8MM)" ON)
 option(PONKO_ENABLE_VULKAN
        "Build the Vulkan backend and its shader toolchain" OFF)
+option(PONKO_ENABLE_RUST_CPU_KERNELS
+       "Link Ponko's Exynos 2400E Rust kernels into GGML CPU MUL_MAT" OFF)
+set(PONKO_CPU_KERNELS_STATIC_LIB "" CACHE FILEPATH
+    "Path to libponko_cpu_kernels.a built for Android arm64-v8a")
+if (PONKO_ENABLE_RUST_CPU_KERNELS)
+    if (NOT PONKO_EXYNOS_2400E_CPU_PROFILE)
+        message(FATAL_ERROR "Ponko Rust CPU kernels currently target the Exynos 2400E profile only")
+    endif()
+    if (NOT EXISTS "${PONKO_CPU_KERNELS_STATIC_LIB}")
+        message(FATAL_ERROR "PONKO_ENABLE_RUST_CPU_KERNELS requires PONKO_CPU_KERNELS_STATIC_LIB to exist")
+    endif()
+    # Define the opt-in hook before GGML's subdirectories are configured.
+    add_compile_definitions(PONKO_ENABLE_RUST_CPU_KERNELS=1)
+endif()
 if (PONKO_EXYNOS_2400E_CPU_PROFILE)
     set(PONKO_CPU_ARCH_FLAGS -march=armv8.6-a+dotprod+i8mm+fp16 -mtune=cortex-x4)
     message(STATUS "Ponko CPU profile: Exynos 2400e (ARMv8.6-A + dotprod + I8MM + FP16, tuned for Cortex-X4)")
@@ -338,6 +352,16 @@ endif()
 endif ()
 
 add_subdirectory(sd)
+
+if (PONKO_ENABLE_RUST_CPU_KERNELS)
+    add_library(ponko_cpu_kernels STATIC IMPORTED GLOBAL)
+    set_target_properties(ponko_cpu_kernels PROPERTIES
+        IMPORTED_LOCATION "${PONKO_CPU_KERNELS_STATIC_LIB}")
+    if (NOT TARGET ggml-cpu)
+        message(FATAL_ERROR "Ponko Rust CPU integration expected the GGML target ggml-cpu")
+    endif()
+    target_link_libraries(ggml-cpu PRIVATE ponko_cpu_kernels)
+endif()
 
 if(PONKO_SO_OUT)
     foreach(_sfx "" _RELEASE _RELWITHDEBINFO _DEBUG)

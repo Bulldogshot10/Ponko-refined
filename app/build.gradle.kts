@@ -19,6 +19,37 @@ val ponkoRustDir = rootProject.file("rust/ponko-native")
 val ponkoRustJniLibsDir = layout.buildDirectory.dir("generated/ponkoRustJniLibs")
 val ponkoUniffiKotlinDir = layout.buildDirectory.dir("generated/source/uniffi/main/java")
 val ponkoCargoTargetDir = layout.buildDirectory.dir("ponko-cargo-target")
+val ponkoRustCpuKernelsEnabled = providers.gradleProperty("ponkoRustCpuKernels").orElse("ON").get()
+val ponkoCpuKernelsDir = rootProject.file("rust/ponko-cpu-kernels")
+val ponkoCpuKernelsManifest = ponkoCpuKernelsDir.resolve("Cargo.toml").absolutePath
+val ponkoCpuKernelsStaticLib = ponkoCargoTargetDir.map {
+    it.file("aarch64-linux-android/release/libponko_cpu_kernels.a")
+}
+
+val buildPonkoCpuKernelsAndroid = tasks.register<Exec>("buildPonkoCpuKernelsAndroid") {
+    group = "build"
+    description = "Build the Exynos 2400E Rust CPU kernels as an Android ARM64 static library."
+    enabled = ponkoRustCpuKernelsEnabled.equals("ON", ignoreCase = true)
+    workingDir(ponkoCpuKernelsDir)
+    inputs.files(fileTree(ponkoCpuKernelsDir) {
+        include("Cargo.toml", "src/**")
+    })
+    outputs.file(ponkoCpuKernelsStaticLib)
+    environment("CARGO_TARGET_DIR", ponkoCargoTargetDir.get().asFile.absolutePath)
+    doFirst {
+        check(ponkoExynosCpuProfile.equals("ON", ignoreCase = true)) {
+            "ponkoRustCpuKernels=ON requires ponkoExynosCpuProfile=ON (Exynos 2400E only)."
+        }
+        check(ponkoCpuKernelsDir.resolve("Cargo.toml").isFile) {
+            "Missing Rust CPU kernels manifest: $ponkoCpuKernelsManifest"
+        }
+    }
+    commandLine(
+        "cargo", "ndk", "-t", "arm64-v8a",
+        "build", "--release", "--features", "exynos2400e",
+        "--manifest-path", ponkoCpuKernelsManifest
+    )
+}
 
 android {
     namespace = "com.litertchat.app"
@@ -42,6 +73,8 @@ android {
                     "-DPONKO_ENABLE_VULKAN=${ponkoEnableVulkan}",
                     "-DPONKO_EXYNOS_2400E_CPU_PROFILE=${ponkoExynosCpuProfile}",
                     "-DPONKO_ENABLE_COMPILER_CACHE=${ponkoEnableCompilerCache}",
+                    "-DPONKO_ENABLE_RUST_CPU_KERNELS=${ponkoRustCpuKernelsEnabled}",
+                    "-DPONKO_CPU_KERNELS_STATIC_LIB=${ponkoCpuKernelsStaticLib.get().asFile.absolutePath}",
                 )
             }
         }
@@ -112,6 +145,16 @@ dependencies {
 
 // Generate UniFFI Kotlin bindings and build Rust for Android arm64-v8a as part of the app build.
 // Generated artifacts stay under app/build so no machine-specific .so is committed.
+if (ponkoRustCpuKernelsEnabled.equals("ON", ignoreCase = true)) {
+    tasks.matching {
+        it.name.startsWith("configureCMake") ||
+        it.name.startsWith("buildCMake") ||
+        it.name.startsWith("externalNativeBuild")
+    }.configureEach {
+        dependsOn(buildPonkoCpuKernelsAndroid)
+    }
+}
+
 if (ponkoRustFacadeEnabled) {
     val rustNativeLibrary = ponkoRustJniLibsDir.map { it.file("arm64-v8a/libponko_native.so") }
     val rustManifest = ponkoRustDir.resolve("Cargo.toml").absolutePath
