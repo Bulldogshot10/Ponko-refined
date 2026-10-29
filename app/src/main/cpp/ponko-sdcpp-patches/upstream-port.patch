@@ -2644,10 +2644,13 @@
 +#endif
 --- a/app/src/main/cpp/sd/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/app/src/main/cpp/sd/ggml/src/ggml-cpu/ggml-cpu.c
-@@ -1409,2 +1409,60 @@
-    const struct ggml_tensor * src0 = dst->src[0];
-    const struct ggml_tensor * src1 = dst->src[1];
-+
+@@ -1405,6 +1405,63 @@
+ void ggml_compute_forward_mul_mat(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+ 
+     const struct ggml_tensor * src0 = dst->src[0];
+     const struct ggml_tensor * src1 = dst->src[1];
 +#ifdef PONKO_ENABLE_RUST_CPU_KERNELS
 +    if (!params->use_ref &&
 +        src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
