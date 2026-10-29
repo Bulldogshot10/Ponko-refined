@@ -1,6 +1,6 @@
 # Project Goal and Handoff
 
-Branch: `feat/rust-uniffi-native-facade`. This inventory is specific to the UniFFI facade branch and must not be confused with the Hearth full-replacement branch.
+Branch: feat/rust-cpu-kernels, created from feat/sdcpp-ggml-upstream-port. The historical inventory below contains earlier facade-branch notes; the active CPU-kernel experiment is documented at the end.
 
 ## Goal
 Move the Kotlin-to-native API into Rust through generated UniFFI bindings, with Rust owning request validation, callback routing, native handle management, and safe lifecycle coordination. The inference backend on this branch remains stable-diffusion.cpp + GGML behind a plain C ABI.
@@ -148,3 +148,17 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - **Earlier CI failures traced:** run [40842595609](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40842595609) failed while applying the converter overlay because of upstream line endings; the next revision added line-ending normalization and advanced to C++ compilation. Run [40839420956](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40839420956) had an earlier \`backend_fit.cpp\` patch-context failure; later overlay revisions advanced beyond configuration and compiled that source.
 - **Validation: SUCCESS —** [CI run 40850000105](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40850000105) completed successfully on commit `81a373fadcea1fd0f63da0069d6c5d8b264cbd9a`. Rust formatting, all 13 Rust unit tests, `:app:assembleDebug`, APK existence, required native-library verification, and artifact upload passed. This validates CI compilation and packaging; target-device runtime behavior remains unverified.
 - **Next step:** install the uploaded debug APK on the Exynos 2400E and smoke-test app startup, model loading, and a short SD1.5 generation. Keep this run's success as build/packaging evidence, not proof of device runtime behavior.
+
+
+## Standalone Rust CPU kernel library (2026-10-29)
+
+### Implemented in source; CI validation pending
+- Added the independent crate rust/ponko-cpu-kernels. It is not yet wired into the inference runtime and does not claim to improve Stable Diffusion generation speed.
+- Added a safe row-major FP32 matmul API with checked shape arithmetic and buffer validation, plus a scalar reference implementation.
+- Added an AArch64 NEON FP32 kernel using four-column vector accumulation and a scalar tail. On non-AArch64 hosts, the dispatcher selects the reference implementation.
+- Added tests for known products, odd matrix dimensions/tail columns, invalid buffers, zero-sized outputs, overflow detection, and selected dispatch path.
+- Added a dependency-free microbenchmark and instructions for running host tests, Android ARM64 cargo check, and local benchmarking.
+- Updated .github/workflows/ponko-app-apk.yml to run formatting/tests for the new crate and cross-check it for aarch64-linux-android; enabled this branch in the workflow trigger.
+- Not implemented yet: Q4_0/Q8_0 GGUF block handling, quantized dot products, DOTPROD/I8MM specializations, explicit tensor strides, multithreading, C ABI exposure, GGML operator integration, and on-device performance measurement.
+- Validation planned by CI: cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml -- --check, cargo test --manifest-path rust/ponko-cpu-kernels/Cargo.toml, cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android, followed by the existing debug APK build and native-library packaging checks.
+- Next step after CI: inspect all test and cross-target results. If they pass, benchmark on the Exynos 2400E and profile SD1.5/SDXL before selecting the first quantized kernel; do not integrate into the inference graph until correctness and performance are measured.

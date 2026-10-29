@@ -1,0 +1,13 @@
+[package]
+name = "ponko-cpu-kernels"
+version = "0.1.0"
+edition = "2021"
+description = "Independent, testable CPU kernel experiments for Ponko"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bench]]
+name = "matmul"
+harness = false

@@ -2,10 +2,11 @@ name: Ponko Android APK (CPU / Exynos 2400E)
 
 on:
   push:
-    branches: [feat/rust-uniffi-native-facade, feat/sdcpp-ggml-upstream-port]
+    branches: [feat/rust-uniffi-native-facade, feat/sdcpp-ggml-upstream-port, feat/rust-cpu-kernels]
     paths:
       - "app/**"
       - "rust/ponko-native/**"
+      - "rust/ponko-cpu-kernels/**"
       - "experiments/ponko-compute/**"
       - "build.gradle.kts"
       - "settings.gradle.kts"
@@ -66,6 +67,14 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: rustfmt
+
+      - name: Test standalone Rust CPU kernels
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml -- --check
+          cargo test --manifest-path rust/ponko-cpu-kernels/Cargo.toml
+          cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android
 
       - name: Install Android SDK packages and ccache
         shell: bash
