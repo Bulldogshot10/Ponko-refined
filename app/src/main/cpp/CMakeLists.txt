@@ -133,6 +133,29 @@ set(GGML_NATIVE         OFF CACHE BOOL "" FORCE)
 set(GGML_CCACHE         ${PONKO_ENABLE_COMPILER_CACHE} CACHE BOOL "" FORCE)  # Use ccache/sccache when installed; gracefully falls back when absent.
 
 # ---------------------------------------------------------------------------
+# Apply the pinned upstream source plus Ponko's feature overlay before configuration.
+# A clean checkout starts without the marker; the build workspace is patched only once.
+set(PONKO_SDCpp_PATCH_MARKER "${CMAKE_CURRENT_SOURCE_DIR}/sd/.ponko-patches-applied")
+if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
+    find_program(PONKO_PATCH_EXECUTABLE NAMES patch)
+    if(NOT PONKO_PATCH_EXECUTABLE)
+        message(FATAL_ERROR "Ponko requires the patch utility to port native feature changes.")
+    endif()
+    execute_process(
+        COMMAND "${PONKO_PATCH_EXECUTABLE}" --batch --forward -p6 -F3
+                -i "${CMAKE_CURRENT_SOURCE_DIR}/ponko-sdcpp-patches/upstream-port.patch"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/sd"
+        RESULT_VARIABLE PONKO_SDCpp_PATCH_RESULT
+        OUTPUT_VARIABLE PONKO_SDCpp_PATCH_STDOUT
+        ERROR_VARIABLE PONKO_SDCpp_PATCH_STDERR
+    )
+    if(NOT PONKO_SDCpp_PATCH_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to apply the Ponko feature patch.\n${PONKO_SDCpp_PATCH_STDOUT}\n${PONKO_SDCpp_PATCH_STDERR}")
+    endif()
+    file(WRITE "${PONKO_SDCpp_PATCH_MARKER}" "upstream=77b72a2efed78f55de26892c7e909cee001e8b83\n")
+    message(STATUS "Ponko native feature patches applied to upstream source")
+endif()
+
 # 引入 sd.cpp
 # ---------------------------------------------------------------------------
 # AGP 期望 .so 落在 CMAKE_LIBRARY_OUTPUT_DIRECTORY；而 sd.cpp 顶层会把它改成

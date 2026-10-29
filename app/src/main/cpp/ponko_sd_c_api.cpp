@@ -539,10 +539,32 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     PONKO_LOGI("generate_image: %s", dump == nullptr ? "(null)" : dump);
     if (dump != nullptr) std::free(dump);
 
+    sd_image_generation_result_t* image_result = nullptr;
+    std::vector<sd_image_t> images_storage;
     sd_image_t* images = nullptr;
     int image_count = 0;
+    auto refresh_images = [&]() {
+        images_storage.clear();
+        images = nullptr;
+        image_count = 0;
+        if (image_result == nullptr || image_result->items == nullptr || image_result->count <= 0) return;
+        images_storage.reserve(static_cast<size_t>(image_result->count));
+        for (int i = 0; i < image_result->count; ++i) {
+            images_storage.push_back(image_result->items[i].image);
+        }
+        images = images_storage.data();
+        image_count = static_cast<int>(images_storage.size());
+    };
+    auto release_images = [&]() {
+        if (image_result != nullptr) free_sd_image_generation_result(image_result);
+        image_result = nullptr;
+        images_storage.clear();
+        images = nullptr;
+        image_count = 0;
+    };
     const auto start = std::chrono::steady_clock::now();
-    bool ok = generate_image(handle->ctx, &generation, &images, &image_count);
+    bool ok = generate_image(handle->ctx, &generation, &image_result);
+    refresh_images();
     const auto base_generation_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
     PONKO_LOGI("BENCHMARK base generation elapsed_ms=%lld", static_cast<long long>(base_generation_ms));
@@ -579,7 +601,7 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
         }
 
         if (!detector_ready) {
-            free_sd_images(images, image_count);
+            release_images();
             images = nullptr;
             image_count = 0;
             ok = false;
@@ -602,23 +624,34 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
             // The full-frame ControlNet map does not align with ADetailer's per-detection crop.
             detail_generation.control_image = {};
             detail_generation.control_strength = 0.0f;
-            sd_image_t* detailed_images = nullptr;
-            int detailed_count = 0;
+            sd_image_generation_result_t* detailed_result = nullptr;
+            std::vector<sd_image_t> detailed_storage;
             const bool detail_ok = adetail_image(
                 handle->adetailer, handle->ctx, images[0], &detailer_params,
-                &detail_generation, &detailed_images, &detailed_count);
+                &detail_generation, &detailed_result);
+            if (detailed_result != nullptr && detailed_result->items != nullptr && detailed_result->count > 0) {
+                detailed_storage.reserve(static_cast<size_t>(detailed_result->count));
+                for (int i = 0; i < detailed_result->count; ++i) {
+                    detailed_storage.push_back(detailed_result->items[i].image);
+                }
+            }
+            sd_image_t* detailed_images = detailed_storage.empty() ? nullptr : detailed_storage.data();
+            int detailed_count = static_cast<int>(detailed_storage.size());
             if (!detail_ok || detailed_count <= 0 || detailed_images == nullptr ||
                 detailed_images[0].data == nullptr) {
-                if (detailed_images != nullptr) free_sd_images(detailed_images, detailed_count);
-                free_sd_images(images, image_count);
+                if (detailed_images != nullptr) free_sd_image_generation_result(detailed_result);
+                release_images();
                 images = nullptr;
                 image_count = 0;
                 ok = false;
                 setError("ADetailer failed; check detector compatibility and the selected diffusion model");
             } else {
-                free_sd_images(images, image_count);
-                images = detailed_images;
-                image_count = detailed_count;
+                release_images();
+                image_result = detailed_result;
+                detailed_result = nullptr;
+                images_storage = std::move(detailed_storage);
+                images = images_storage.data();
+                image_count = static_cast<int>(images_storage.size());
                 ok = true;
                 PONKO_LOGI("ADetailer completed using detector=%s", detector_path);
             }
@@ -662,7 +695,7 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     } else {
         if (g_last_error.empty()) setError("stable-diffusion.cpp generation failed");
     }
-    if (images != nullptr) free_sd_images(images, image_count);
+    if (images != nullptr) release_images();
     sd_set_progress_callback(nullptr, nullptr);
     sd_set_preview_callback(nullptr, PREVIEW_NONE, 1, true, false, nullptr);
     return success;
@@ -787,11 +820,18 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
     const std::string temporary = std::string(output_path) + ".partial.gguf";
     std::remove(temporary.c_str());
     const int threads = 1; // Low-RAM device path: serialize fusion tensor workers.
+    std::vector<sd_lora_t> loras;
+    loras.reserve(lora_count);
+    for (size_t i = 0; i < lora_count; ++i) {
+        loras.push_back(sd_lora_t{false, lora_scales[i], lora_paths[i]});
+    }
 
-    PONKO_LOGI("LoRA fusion entering converter: output=%s threads=%d", output_path, threads);
-    const bool converted = fuse_loras_to_file(
-        input_model_path, lora_paths, lora_scales, lora_count, temporary.c_str(),
-        SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads);
+    PONKO_LOGI("LoRA fusion entering upstream conversion path: output=%s threads=%d adapters=%zu",
+               output_path, threads, loras.size());
+    const bool converted = convert_with_components(
+        input_model_path, nullptr, nullptr, nullptr, nullptr, nullptr, temporary.c_str(),
+        SD_TYPE_F16, keep_f16 ? nullptr : rules.c_str(), true, threads,
+        loras.data(), static_cast<int>(loras.size()));
     PONKO_LOGI("LoRA fusion converter returned: success=%d", converted ? 1 : 0);
     if (!converted) {
         std::remove(temporary.c_str());

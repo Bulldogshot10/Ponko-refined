@@ -1,0 +1,1023 @@
+--- a/app/src/main/cpp/sd/ggml/include/ggml-vulkan.h
++++ b/app/src/main/cpp/sd/ggml/include/ggml-vulkan.h
+@@ -16,6 +16,7 @@ GGML_BACKEND_API ggml_backend_t ggml_backend_vk_init(size_t dev_num);
+ GGML_BACKEND_API bool ggml_backend_is_vk(ggml_backend_t backend);
+ GGML_BACKEND_API int  ggml_backend_vk_get_device_count(void);
+ GGML_BACKEND_API void ggml_backend_vk_get_device_description(int device, char * description, size_t description_size);
++GGML_BACKEND_API void ggml_backend_vk_get_device_diagnostics(int device, char * diagnostics, size_t diagnostics_size);
+ GGML_BACKEND_API void ggml_backend_vk_get_device_memory(int device, size_t * free, size_t * total);
+ 
+ GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_vk_buffer_type(size_t dev_num);
+
+--- a/app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -50,6 +50,8 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
++#include <exception>
+ #include <iomanip>
+ #include <iostream>
+ #include <tuple>
+@@ -401,9 +403,22 @@ enum vk_device_architecture {
+     NVIDIA_TURING,
+ };
+ 
++// Samsung reports the integrated Xclipse GPU under its own vendor ID on stock Android.
++// Xclipse 940 is RDNA3-derived, but the upstream AMD-vendor check below can otherwise
++// classify it as OTHER and skip architecture-aware tuning paths.
++static bool ggml_vk_is_xclipse_940(const vk::PhysicalDeviceProperties& props) {
++    return std::string(props.deviceName.data()).find("Xclipse 940") != std::string::npos;
++}
++
+ static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
+     vk::PhysicalDeviceProperties props = device.getProperties();
+ 
++    // Identify by the Vulkan device name, not by assuming an AMD vendor ID.
++    // Runtime feature checks below still decide which optional shader paths are safe.
++    if (ggml_vk_is_xclipse_940(props)) {
++        return vk_device_architecture::AMD_RDNA3;
++    }
++
+     if (props.vendorID == VK_VENDOR_ID_AMD) {
+         const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
+ 
+@@ -4299,8 +4314,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
+             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
+             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
+-        } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && device->driver_id != vk::DriverId::eAmdProprietary) {
+-            // This is intentionally using tx_m values, slight performance increase
++        } else if (device->coopmat_support &&
++                   ((device->vendor_id == VK_VENDOR_ID_AMD && device->driver_id != vk::DriverId::eAmdProprietary) ||
++                    ggml_vk_is_xclipse_940(device->properties))) {
++            // This is intentionally using tx_m values, slight performance increase.
++            // Xclipse 940 exposes the RDNA3 hardware family under Samsung's vendor/driver ID,
++            // so apply these RDNA3 tile presets only for this exact GPU and only when
++            // VK_KHR_cooperative_matrix is available in both the build and runtime driver.
+             l_warptile = { 256, 128, 128, 16, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
+             l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
+             l_warptile_mmq_int_k = { 256, 128, 128, 32, subgroup_size_16, 64, 1, 4, 2, 1, subgroup_size_16 };
+@@ -6452,6 +6472,21 @@ static vk_device ggml_vk_get_device(size_t idx) {
+ 
+         device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
+ 
++        if (ggml_vk_is_xclipse_940(device->properties)) {
++            GGML_LOG_INFO("ggml_vulkan: Xclipse 940 profile detected"
++                          " (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d). %s\n",
++                          static_cast<unsigned int>(VK_VERSION_MAJOR(device->properties.apiVersion)),
++                          static_cast<unsigned int>(VK_VERSION_MINOR(device->properties.apiVersion)),
++                          static_cast<unsigned int>(device->driver_id),
++                          static_cast<unsigned int>(device->subgroup_size),
++                          device->fp16 ? 1 : 0,
++                          device->integer_dot_product ? 1 : 0,
++                          device->coopmat_support ? 1 : 0,
++                          device->coopmat_support
++                              ? "RDNA3 cooperative-matrix matmul tuning is available."
++                              : "Keeping standard Vulkan matmul kernels because cooperative-matrix support is unavailable.");
++        }
++
+         device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
+ 
+         device->max_workgroup_size_log2 = uint32_t(log2f(float(device->properties.limits.maxComputeWorkGroupInvocations)));
+@@ -17974,6 +18009,45 @@ void ggml_backend_vk_get_device_description(int device, char * description, size
+     ggml_vk_get_device_description(dev_idx, description, description_size);
+ }
+ 
++void ggml_backend_vk_get_device_diagnostics(int device_idx, char * diagnostics, size_t diagnostics_size) {
++    if (diagnostics == nullptr || diagnostics_size == 0) {
++        return;
++    }
++    diagnostics[0] = '\0';
++
++    const int count = ggml_vk_get_device_count();
++    if (device_idx < 0 || device_idx >= count) {
++        std::snprintf(diagnostics, diagnostics_size, "Vulkan device index out of range (index %d, count %d)", device_idx, count);
++        return;
++    }
++
++    try {
++        // Read the exact ggml-vulkan device state used for backend selection and shader tuning.
++        const vk_device device = ggml_vk_get_device(static_cast<size_t>(device_idx));
++        const vk::PhysicalDeviceProperties & props = device->properties;
++        const char * label = ggml_vk_is_xclipse_940(props)
++            ? "Xclipse 940 profile detected"
++            : props.deviceName.data();
++        std::snprintf(diagnostics, diagnostics_size,
++            "%s (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d, UMA %d, shader cores %u, max shared memory %u)",
++            label,
++            static_cast<unsigned int>(VK_VERSION_MAJOR(props.apiVersion)),
++            static_cast<unsigned int>(VK_VERSION_MINOR(props.apiVersion)),
++            static_cast<unsigned int>(device->driver_id),
++            static_cast<unsigned int>(device->subgroup_size),
++            device->fp16 ? 1 : 0,
++            device->integer_dot_product ? 1 : 0,
++            device->coopmat_support ? 1 : 0,
++            device->uma ? 1 : 0,
++            static_cast<unsigned int>(device->shader_core_count),
++            static_cast<unsigned int>(props.limits.maxComputeSharedMemorySize));
++    } catch (const std::exception & e) {
++        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: %s", e.what());
++    } catch (...) {
++        std::snprintf(diagnostics, diagnostics_size, "Vulkan device diagnostics failed: unknown exception");
++    }
++}
++
+ void ggml_backend_vk_get_device_memory(int device, size_t * free, size_t * total) {
+     GGML_ASSERT(device < (int) vk_instance.device_indices.size());
+     GGML_ASSERT(device < (int) vk_instance.device_supports_membudget.size());
+
+--- a/app/src/main/cpp/sd/include/stable-diffusion.h
++++ b/app/src/main/cpp/sd/include/stable-diffusion.h
+@@ -57,6 +57,7 @@ enum sample_method_t {
+     DPMPP2M_SDE_SAMPLE_METHOD,
+     DPMPP2M_SDE_BT_SAMPLE_METHOD,
+     LMS_SAMPLE_METHOD,
++    DPMPP_SDE_SAMPLE_METHOD,
+     SAMPLE_METHOD_COUNT
+ };
+ 
+@@ -79,6 +80,7 @@ enum scheduler_t {
+     FLUX2_SCHEDULER,
+     FLUX_SCHEDULER,
+     BETA_SCHEDULER,
++    TCD_SCHEDULER,
+     SCHEDULER_COUNT
+ };
+ 
+@@ -579,6 +581,16 @@ SD_API bool convert_with_components(const char* model_path,
+                                     bool convert_name,
+                                     int n_threads);
+ 
++SD_API bool fuse_loras_to_file(const char* input_model_path,
++                                const char* const* lora_paths,
++                                const float* lora_scales,
++                                size_t lora_count,
++                                const char* output_path,
++                                enum sd_type_t output_type,
++                                const char* tensor_type_rules,
++                                bool convert_name,
++                                int n_threads);
++
+ SD_API bool preprocess_canny(sd_image_t image,
+                              float high_threshold,
+                              float low_threshold,
+
+--- a/app/src/main/cpp/sd/src/detailer.cpp
++++ b/app/src/main/cpp/sd/src/detailer.cpp
+@@ -1,11 +1,13 @@
+ #include "detailer.h"
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cctype>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+ #include <limits>
++#include <new>
+ #include <sstream>
+ #include <utility>
+ 
+@@ -15,6 +17,26 @@
+ 
+ struct adetailer_ctx_t {
+     ADetailerGGML* detailer = nullptr;
++    std::string detector_path;
++    int n_threads = 1;
++    std::string backend_spec = "cpu";
++    std::string params_backend_spec = "cpu";
++
++    bool ensure_loaded() {
++        if (detailer != nullptr) return true;
++        auto* candidate = new (std::nothrow) ADetailerGGML(n_threads, backend_spec, params_backend_spec);
++        if (candidate == nullptr || !candidate->load_from_file(detector_path)) {
++            delete candidate;
++            return false;
++        }
++        detailer = candidate;
++        return true;
++    }
++
++    void unload() {
++        delete detailer;
++        detailer = nullptr;
++    }
+ };
+ 
+ struct LetterboxInput {
+@@ -37,6 +59,10 @@ struct CropRegion {
+     int y2 = 0;
+ };
+ 
++static double elapsed_seconds(const std::chrono::steady_clock::time_point& start) {
++    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
++}
++
+ static std::string trim_copy(const std::string& value) {
+     size_t first = value.find_first_not_of(" \t\r\n");
+     if (first == std::string::npos) {
+@@ -352,24 +378,63 @@ static Mask morphology_mask(const Mask& source, int amount) {
+     if (amount == 0) {
+         return source;
+     }
+-    int kernel = std::abs(amount);
+-    int before = kernel / 2;
+-    int after  = kernel - before - 1;
+-    Mask output{source.width, source.height, std::vector<uint8_t>(source.data.size(), amount > 0 ? 0 : 255)};
+-    for (int y = 0; y < source.height; ++y) {
+-        for (int x = 0; x < source.width; ++x) {
++    const int width  = source.width;
++    const int height = source.height;
++    const int kernel = std::abs(amount);
++    const int before = kernel / 2;
++    const int after  = kernel - before - 1;
++    Mask output{width, height, std::vector<uint8_t>(source.data.size(), 0)};
++    if (width <= 0 || height <= 0 || source.data.empty()) {
++        return output;
++    }
++
++    // Find the occupied region once, then run morphology only where its result can
++    // be nonzero. The previous full-frame kernel scan was repeated for every box.
++    int min_x = width;
++    int min_y = height;
++    int max_x = -1;
++    int max_y = -1;
++    for (int y = 0; y < height; ++y) {
++        const size_t row = static_cast<size_t>(y) * width;
++        for (int x = 0; x < width; ++x) {
++            if (source.data[row + x] != 0) {
++                min_x = std::min(min_x, x);
++                min_y = std::min(min_y, y);
++                max_x = std::max(max_x, x);
++                max_y = std::max(max_y, y);
++            }
++        }
++    }
++    if (max_x < min_x || max_y < min_y) {
++        return output;
++    }
++
++    int x_begin = min_x;
++    int y_begin = min_y;
++    int x_end   = max_x + 1;
++    int y_end   = max_y + 1;
++    if (amount > 0) {
++        // With even-sized kernels, dilation extends asymmetrically on each side.
++        x_begin = std::max(0, x_begin - after);
++        y_begin = std::max(0, y_begin - after);
++        x_end   = std::min(width, x_end + before);
++        y_end   = std::min(height, y_end + before);
++    }
++
++    for (int y = y_begin; y < y_end; ++y) {
++        for (int x = x_begin; x < x_end; ++x) {
+             uint8_t value = amount > 0 ? 0 : 255;
+             for (int ky = -before; ky <= after; ++ky) {
+                 for (int kx = -before; kx <= after; ++kx) {
+-                    int sx         = x + kx;
+-                    int sy         = y + ky;
+-                    uint8_t sample = (sx >= 0 && sx < source.width && sy >= 0 && sy < source.height)
+-                                         ? source.data[static_cast<size_t>(sy) * source.width + sx]
+-                                         : 0;
+-                    value          = amount > 0 ? std::max(value, sample) : std::min(value, sample);
++                    const int sx = x + kx;
++                    const int sy = y + ky;
++                    const uint8_t sample = (sx >= 0 && sx < width && sy >= 0 && sy < height)
++                        ? source.data[static_cast<size_t>(sy) * width + sx]
++                        : 0;
++                    value = amount > 0 ? std::max(value, sample) : std::min(value, sample);
+                 }
+             }
+-            output.data[static_cast<size_t>(y) * source.width + x] = value;
++            output.data[static_cast<size_t>(y) * width + x] = value;
+         }
+     }
+     return output;
+@@ -418,38 +483,45 @@ static Mask gaussian_blur_mask(const Mask& source, int radius) {
+     return output;
+ }
+ 
++static Mask make_mask_for_detection(const ADetailerDetection& detection,
++                                         int width,
++                                         int height,
++                                         const ADetailerParams& params) {
++    Mask mask = bbox_mask(detection, width, height);
++    if (params.x_offset != 0 || params.y_offset != 0) {
++        mask = offset_mask(mask, params.x_offset, params.y_offset);
++    }
++    return morphology_mask(mask, params.dilate_erode);
++}
++
++// Used only for merge_masks. Merge each detection immediately instead of retaining
++// one full-resolution mask per detection, which can otherwise consume hundreds of MiB.
+ static std::vector<Mask> make_masks(const std::vector<ADetailerDetection>& detections,
+                                     int width,
+                                     int height,
+                                     const ADetailerParams& params) {
+-    std::vector<Mask> masks;
++    if (detections.empty()) return {};
++
++    Mask merged{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height, 0)};
++    bool has_pixels = false;
+     for (const auto& detection : detections) {
+-        Mask mask = bbox_mask(detection, width, height);
+-        if (params.x_offset != 0 || params.y_offset != 0) {
+-            mask = offset_mask(mask, params.x_offset, params.y_offset);
+-        }
+-        mask = morphology_mask(mask, params.dilate_erode);
+-        if (std::any_of(mask.data.begin(), mask.data.end(), [](uint8_t value) { return value != 0; })) {
+-            masks.push_back(std::move(mask));
++        Mask mask = make_mask_for_detection(detection, width, height, params);
++        const bool nonempty = std::any_of(mask.data.begin(), mask.data.end(),
++                                          [](uint8_t value) { return value != 0; });
++        if (!nonempty) continue;
++        has_pixels = true;
++        for (size_t i = 0; i < merged.data.size(); ++i) {
++            merged.data[i] = std::max(merged.data[i], mask.data[i]);
+         }
+     }
+-    if (params.merge_masks && !masks.empty()) {
+-        Mask merged{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height, 0)};
+-        for (const Mask& mask : masks) {
+-            for (size_t i = 0; i < merged.data.size(); ++i) {
+-                merged.data[i] = std::max(merged.data[i], mask.data[i]);
+-            }
+-        }
+-        masks = {std::move(merged)};
+-    }
++    if (!has_pixels) return {};
++
+     if (params.invert_mask) {
+-        for (Mask& mask : masks) {
+-            for (uint8_t& value : mask.data) {
+-                value = 255 - value;
+-            }
+-        }
++        for (uint8_t& value : merged.data) value = 255 - value;
+     }
+-    return masks;
++    std::vector<Mask> result;
++    result.push_back(std::move(merged));
++    return result;
+ }
+ 
+ static bool mask_bbox(const Mask& mask, CropRegion* region) {
+@@ -546,8 +618,33 @@ static sd_image_t resize_crop_mask(const Mask& source, const CropRegion& crop, i
+ }
+ 
+ static sd_image_t copy_as_rgb(const sd_image_t& source) {
+-    CropRegion full{0, 0, static_cast<int>(source.width), static_cast<int>(source.height)};
+-    return resize_crop_image(source, full, source.width, source.height);
++    if (source.data == nullptr || source.width == 0 || source.height == 0 || source.channel == 0) {
++        return {0, 0, 0, nullptr};
++    }
++    const uint64_t pixel_count = static_cast<uint64_t>(source.width) * source.height;
++    if (pixel_count > std::numeric_limits<size_t>::max() / 3 ||
++        pixel_count > std::numeric_limits<size_t>::max() / source.channel) {
++        return {0, 0, 0, nullptr};
++    }
++    const size_t rgb_bytes = static_cast<size_t>(pixel_count) * 3;
++    auto* output_data = static_cast<uint8_t*>(malloc(rgb_bytes));
++    if (output_data == nullptr) {
++        return {0, 0, 0, nullptr};
++    }
++    if (source.channel == 3) {
++        // Same-size RGB input needs no interpolation.
++        std::memcpy(output_data, source.data, rgb_bytes);
++    } else {
++        const size_t channels = source.channel;
++        for (size_t i = 0; i < static_cast<size_t>(pixel_count); ++i) {
++            const uint8_t* src = source.data + i * channels;
++            for (size_t c = 0; c < 3; ++c) {
++                const size_t source_channel = channels == 1 ? 0 : std::min(c, channels - 1);
++                output_data[i * 3 + c] = src[source_channel];
++            }
++        }
++    }
++    return {source.width, source.height, 3, output_data};
+ }
+ 
+ static void composite_crop(sd_image_t* destination,
+@@ -713,18 +810,27 @@ bool ADetailerGGML::load_from_file(const std::string& detector_path) {
+ 
+ std::vector<ADetailerDetection> ADetailerGGML::predict(sd_image_t image,
+                                                        const ADetailerParams& params) {
+-    LetterboxInput input  = make_letterbox_input(image, params.input_size);
+-    int64_t start         = ggml_time_ms();
++    const auto preprocess_start = std::chrono::steady_clock::now();
++    LetterboxInput input = make_letterbox_input(image, params.input_size);
++    const double preprocess_seconds = elapsed_seconds(preprocess_start);
++
++    const auto inference_start = std::chrono::steady_clock::now();
+     sd::Tensor<float> raw = detector->compute(n_threads, input.tensor);
+     detector->runner_end();
++    const double inference_seconds = elapsed_seconds(inference_start);
+     if (raw.empty()) {
+         LOG_ERROR("YOLOv8 detector inference failed");
+         return {};
+     }
++
++    const auto decode_start = std::chrono::steady_clock::now();
+     auto detections = decode_detections(raw, detector->config, input, image, params);
+-    LOG_INFO("ADetailer detected %zu object(s), taking %.2fs",
+-             detections.size(),
+-             (ggml_time_ms() - start) / 1000.f);
++    const double decode_seconds = elapsed_seconds(decode_start);
++    LOG_INFO("ADetailer timing: preprocess=%.2fs inference=%.2fs decode_nms=%.2fs total=%.2fs input=%ux%u detector_size=%d detections=%zu",
++             preprocess_seconds, inference_seconds, decode_seconds,
++             preprocess_seconds + inference_seconds + decode_seconds,
++             static_cast<unsigned int>(image.width), static_cast<unsigned int>(image.height),
++             params.input_size, detections.size());
+     for (size_t i = 0; i < detections.size(); ++i) {
+         const auto& detection = detections[i];
+         std::string object    = "class_" + std::to_string(detection.class_id);
+@@ -871,14 +977,16 @@ adetailer_ctx_t* new_adetailer_ctx(const char* detector_path,
+     if (detector_path == nullptr || detector_path[0] == '\0') {
+         return nullptr;
+     }
+-    auto* context = static_cast<adetailer_ctx_t*>(calloc(1, sizeof(adetailer_ctx_t)));
++    auto* context = new (std::nothrow) adetailer_ctx_t();
+     if (context == nullptr) {
+         return nullptr;
+     }
+-    context->detailer = new ADetailerGGML(n_threads, SAFE_STR(backend), SAFE_STR(params_backend));
+-    if (context->detailer == nullptr || !context->detailer->load_from_file(detector_path)) {
+-        delete context->detailer;
+-        free(context);
++    context->detector_path = detector_path;
++    context->n_threads = n_threads > 0 ? n_threads : 1;
++    context->backend_spec = SAFE_STR(backend);
++    context->params_backend_spec = SAFE_STR(params_backend);
++    if (!context->ensure_loaded()) {
++        delete context;
+         return nullptr;
+     }
+     return context;
+@@ -888,9 +996,8 @@ void free_adetailer_ctx(adetailer_ctx_t* context) {
+     if (context == nullptr) {
+         return;
+     }
+-    delete context->detailer;
+-    context->detailer = nullptr;
+-    free(context);
++    context->unload();
++    delete context;
+ }
+ 
+ bool adetail_image(adetailer_ctx_t* context,
+@@ -906,7 +1013,7 @@ bool adetail_image(adetailer_ctx_t* context,
+     if (num_images_out != nullptr) {
+         *num_images_out = 0;
+     }
+-    if (context == nullptr || context->detailer == nullptr || sd_ctx == nullptr || public_params == nullptr ||
++    if (context == nullptr || sd_ctx == nullptr || public_params == nullptr ||
+         inpaint_params == nullptr || input_image.data == nullptr) {
+         return false;
+     }
+@@ -916,17 +1023,60 @@ bool adetail_image(adetailer_ctx_t* context,
+         return false;
+     }
+ 
++    const auto total_start = std::chrono::steady_clock::now();
++    const auto detector_load_start = std::chrono::steady_clock::now();
++    if (!context->ensure_loaded()) {
++        LOG_ERROR("failed to load ADetailer detector '%s'", context->detector_path.c_str());
++        return false;
++    }
++    LOG_INFO("ADetailer timing: detector_load_or_reload=%.2fs", elapsed_seconds(detector_load_start));
++
++    const auto detect_start = std::chrono::steady_clock::now();
+     auto detections = context->detailer->predict(input_image, params);
++    LOG_INFO("ADetailer timing: detector_stage=%.2fs", elapsed_seconds(detect_start));
++
++    const auto unload_start = std::chrono::steady_clock::now();
++    // Detection tensors and masks are all CPU-side values by this point. Destroy the
++    // detector/model manager before crop inpainting so its parameter buffers do not
++    // compete with the diffusion model's denoising and VAE decode peak.
++    context->unload();
++    LOG_INFO("ADetailer timing: detector_unload=%.2fs", elapsed_seconds(unload_start));
++
++    const auto mask_start = std::chrono::steady_clock::now();
+     filter_and_sort_detections(&detections, input_image.width, input_image.height, params);
+-    auto masks = make_masks(detections, input_image.width, input_image.height, params);
++    // Non-merged masks are produced and consumed one at a time. Only merged mode
++    // retains a full-frame mask, and its helper now merges incrementally.
++    std::vector<Mask> merged_masks;
++    if (params.merge_masks) {
++        merged_masks = make_masks(detections, input_image.width, input_image.height, params);
++    }
++    LOG_INFO("ADetailer timing: detection_filter_and_merge_masks=%.2fs detections=%zu merged=%d",
++             elapsed_seconds(mask_start), detections.size(), params.merge_masks ? 1 : 0);
+ 
++    const auto rgb_copy_start = std::chrono::steady_clock::now();
+     sd_image_t current = copy_as_rgb(input_image);
++    LOG_INFO("ADetailer timing: original_rgb_copy=%.2fs", elapsed_seconds(rgb_copy_start));
+     if (current.data == nullptr) {
+         return false;
+     }
+ 
+     int applied = 0;
+-    for (size_t i = 0; i < masks.size(); ++i) {
++    const size_t mask_count = params.merge_masks ? merged_masks.size() : detections.size();
++    size_t mask_index = 0;
++    for (size_t detection_index = 0; detection_index < mask_count; ++detection_index) {
++        const auto crop_prep_start = std::chrono::steady_clock::now();
++        Mask mask = params.merge_masks
++            ? std::move(merged_masks[detection_index])
++            : make_mask_for_detection(detections[detection_index], input_image.width, input_image.height, params);
++        if (!params.merge_masks) {
++            const bool nonempty = std::any_of(mask.data.begin(), mask.data.end(),
++                                              [](uint8_t value) { return value != 0; });
++            if (!nonempty) continue;
++            if (params.invert_mask) {
++                for (uint8_t& value : mask.data) value = 255 - value;
++            }
++        }
++        const size_t i = mask_index++;
+         std::string prompt          = resolve_prompt(params.prompt, inpaint_params->prompt, static_cast<int>(i));
+         std::string negative_prompt = resolve_prompt(params.negative_prompt,
+                                                      inpaint_params->negative_prompt,
+@@ -936,7 +1086,7 @@ bool adetail_image(adetailer_ctx_t* context,
+         }
+ 
+         CropRegion crop;
+-        if (!mask_bbox(masks[i], &crop)) {
++        if (!mask_bbox(mask, &crop)) {
+             continue;
+         }
+         crop                   = expand_crop(crop,
+@@ -946,13 +1096,16 @@ bool adetail_image(adetailer_ctx_t* context,
+                                              params.inpaint_width,
+                                              params.inpaint_height);
+         sd_image_t local_image = resize_crop_image(current, crop, params.inpaint_width, params.inpaint_height);
+-        sd_image_t local_mask  = resize_crop_mask(masks[i], crop, params.inpaint_width, params.inpaint_height);
++        sd_image_t local_mask  = resize_crop_mask(mask, crop, params.inpaint_width, params.inpaint_height);
+         if (local_image.data == nullptr || local_mask.data == nullptr) {
+             free(local_image.data);
+             free(local_mask.data);
+             free(current.data);
+             return false;
+         }
++        LOG_INFO("ADetailer timing: crop_prep[%zu]=%.2fs bbox=[%d,%d,%d,%d] crop=%dx%d",
++                 i, elapsed_seconds(crop_prep_start), crop.x1, crop.y1, crop.x2, crop.y2,
++                 params.inpaint_width, params.inpaint_height);
+ 
+         sd_img_gen_params_t generation = *inpaint_params;
+         generation.prompt              = prompt.c_str();
+@@ -987,7 +1140,10 @@ bool adetail_image(adetailer_ctx_t* context,
+ 
+         sd_image_t* generated = nullptr;
+         int generated_count   = 0;
++        const auto inpaint_start = std::chrono::steady_clock::now();
+         bool success          = generate_image(sd_ctx, &generation, &generated, &generated_count);
++        LOG_INFO("ADetailer timing: crop_inpaint[%zu]=%.2fs success=%d", i,
++                 elapsed_seconds(inpaint_start), success ? 1 : 0);
+         free(local_image.data);
+         free(local_mask.data);
+         if (!success || generated_count <= 0 || generated == nullptr || generated[0].data == nullptr) {
+@@ -996,8 +1152,11 @@ bool adetail_image(adetailer_ctx_t* context,
+             return false;
+         }
+ 
+-        Mask feather = gaussian_blur_mask(masks[i], params.mask_blur);
++        const auto composite_start = std::chrono::steady_clock::now();
++        Mask feather = gaussian_blur_mask(mask, params.mask_blur);
+         composite_crop(&current, generated[0], feather, crop);
++        LOG_INFO("ADetailer timing: feather_and_composite[%zu]=%.2fs", i,
++                 elapsed_seconds(composite_start));
+         free_sd_images(generated, generated_count);
+         ++applied;
+     }
+@@ -1016,6 +1175,6 @@ bool adetail_image(adetailer_ctx_t* context,
+     if (num_images_out != nullptr) {
+         *num_images_out = 1;
+     }
+-    LOG_INFO("ADetailer applied %d mask(s)", applied);
++    LOG_INFO("ADetailer applied %d mask(s); total=%.2fs", applied, elapsed_seconds(total_start));
+     return true;
+ }
+
+--- a/app/src/main/cpp/sd/src/model_io/torch_legacy_io.cpp
++++ b/app/src/main/cpp/sd/src/model_io/torch_legacy_io.cpp
+@@ -40,6 +40,9 @@
+ //      - PyTorch writes storages after the pickles, ordered by storage key
+ //      - each storage has an 8-byte legacy storage header followed by raw bytes
+ static constexpr size_t LEGACY_STORAGE_HEADER_SIZE = 8;
++// Legacy checkpoint parsing needs only the pickle metadata prefix, not the raw tensor payload.
++// Keep non-ZIP checkpoints from being copied wholesale into RAM on Android.
++static constexpr size_t LEGACY_PICKLE_METADATA_WINDOW = 64u * 1024u * 1024u;
+ 
+ static void set_error(std::string* error, const std::string& message) {
+     if (error != nullptr) {
+@@ -105,19 +108,33 @@ bool read_torch_legacy_file(const std::string& file_path,
+     }
+ 
+     file.seekg(0, file.end);
+-    size_t file_size = (size_t)file.tellg();
++    const std::streamoff file_end = file.tellg();
++    if (file_end < 0) {
++        set_error(error, "failed to determine file size for '" + file_path + "'");
++        return false;
++    }
++    const size_t file_size = static_cast<size_t>(file_end);
+     file.seekg(0, file.beg);
+     if (file_size == 0) {
+         set_error(error, "empty file '" + file_path + "'");
+         return false;
+     }
+ 
+-    std::vector<uint8_t> buffer(file_size);
+-    file.read((char*)buffer.data(), file_size);
+-    if (!file) {
+-        set_error(error, "failed to read '" + file_path + "'");
++    // The pickle and storage-key metadata precede the tensor payload. Reading the full
++    // multi-GB legacy checkpoint here duplicates the entire model in process memory and can
++    // trigger Android's low-memory killer. Parse a bounded prefix; tensor bytes are read later
++    // from the original file by ModelLoader.
++    const size_t metadata_size = std::min(file_size, LEGACY_PICKLE_METADATA_WINDOW);
++    std::vector<uint8_t> buffer(metadata_size);
++    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
++    if (file.gcount() != static_cast<std::streamsize>(buffer.size())) {
++        set_error(error, "failed to read checkpoint metadata from '" + file_path + "'");
+         return false;
+     }
++    if (metadata_size < file_size) {
++        LOG_INFO("legacy PyTorch checkpoint metadata scan limited to %zu MiB (file size %zu MiB)",
++                 metadata_size / (1024u * 1024u), file_size / (1024u * 1024u));
++    }
+ 
+     auto finalize_tensor_offsets = [&](size_t storage_data_offset,
+                                        const std::unordered_map<std::string, uint64_t>& legacy_storage_map) -> bool {
+
+--- a/app/src/main/cpp/sd/src/name_conversion.cpp
++++ b/app/src/main/cpp/sd/src/name_conversion.cpp
+@@ -864,6 +864,40 @@ std::string convert_diffusers_controlnet_to_original_sdxl(std::string name) {
+     return name;
+ }
+ 
++// Convert Diffusers ControlNet weights for SD1.x / SD2.x to the LDM layout.
++std::string convert_diffusers_controlnet_to_original_sd1(std::string name) {
++    name = convert_diffusers_unet_to_original_sd1(std::move(name));
++
++    static const std::vector<std::pair<std::string, std::string>> prefix_map = {
++        {"controlnet_cond_embedding.conv_in.", "input_hint_block.0."},
++        {"controlnet_cond_embedding.blocks.0.", "input_hint_block.2."},
++        {"controlnet_cond_embedding.blocks.1.", "input_hint_block.4."},
++        {"controlnet_cond_embedding.blocks.2.", "input_hint_block.6."},
++        {"controlnet_cond_embedding.blocks.3.", "input_hint_block.8."},
++        {"controlnet_cond_embedding.blocks.4.", "input_hint_block.10."},
++        {"controlnet_cond_embedding.blocks.5.", "input_hint_block.12."},
++        {"controlnet_cond_embedding.conv_out.", "input_hint_block.14."},
++        {"controlnet_mid_block.", "middle_block_out.0."},
++    };
++    for (const auto& p : prefix_map) {
++        if (starts_with(name, p.first)) {
++            return p.second + name.substr(p.first.size());
++        }
++    }
++
++    static const std::string controlnet_down_prefix = "controlnet_down_blocks.";
++    if (starts_with(name, controlnet_down_prefix)) {
++        const size_t rest_start = controlnet_down_prefix.size();
++        const size_t dot = name.find('.', rest_start);
++        if (dot != std::string::npos) {
++            const std::string idx = name.substr(rest_start, dot - rest_start);
++            return "zero_convs." + idx + ".0" + name.substr(dot);
++        }
++    }
++
++    return name;
++}
++
+ static bool is_diffusers_controlnet_name(const std::string& name) {
+     static const std::vector<std::string> heads = {
+         "controlnet_cond_embedding.",
+@@ -1566,8 +1600,12 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
+                 name = name.substr(pos + 1);
+             }
+         }
+-        if (sd_version_is_sdxl(version) && is_diffusers_controlnet_name(name)) {
+-            name = convert_diffusers_controlnet_to_original_sdxl(name);
++        if (is_diffusers_controlnet_name(name)) {
++            if (sd_version_is_sdxl(version)) {
++                name = convert_diffusers_controlnet_to_original_sdxl(name);
++            } else if (sd_version_is_sd1(version) || sd_version_is_sd2(version)) {
++                name = convert_diffusers_controlnet_to_original_sd1(name);
++            }
+         }
+     }
+ 
+
+--- a/app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp
++++ b/app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp
+@@ -778,10 +778,22 @@ bool StableDiffusionGGML::init_model_loader(ModelLoader& model_loader, ModelConf
+     if (strlen(SAFE_STR(sd_ctx_params->taesd_path)) > 0) {
+         LOG_INFO("loading tae from '%s'", sd_ctx_params->taesd_path);
+         if (!model_loader.init_from_file(sd_ctx_params->taesd_path, "tae.")) {
+-            LOG_WARN("loading tae from '%s' failed", sd_ctx_params->taesd_path);
+-        } else {
+-            use_tae = true;
++            LOG_ERROR("loading TAESD weights from '%s' failed", sd_ctx_params->taesd_path);
++            return false;
++        }
++        bool has_tae_decoder_weights = false;
++        for (const auto& entry : model_loader.get_tensor_storage_map()) {
++            if (entry.first.rfind("tae.decoder.layers.", 0) == 0) {
++                has_tae_decoder_weights = true;
++                break;
++            }
++        }
++        if (!has_tae_decoder_weights) {
++            LOG_ERROR("TAESD file '%s' has no compatible tae.decoder.layers tensors; use sd.cpp-compatible Diffusers TAESD weights (ComfyUI taesd_decoder.pth is not directly compatible)",
++                      sd_ctx_params->taesd_path);
++            return false;
+         }
++        use_tae = true;
+     }
+ 
+     if (strlen(SAFE_STR(sd_ctx_params->embeddings_connectors_path)) > 0) {
+
+--- a/app/src/main/cpp/sd/src/pipeline/model_builders.cpp
++++ b/app/src/main/cpp/sd/src/pipeline/model_builders.cpp
+@@ -420,10 +420,24 @@ namespace sd::model_builders {
+                                                               weight_manager);
+ 
+             } else {
++                // Text-to-image only needs a decoder. Full Diffusers TAESD weights include an
++                // encoder too, but decoder-only exports should work without fabricating encoder
++                // tensors that are not present in the selected file.
++                bool has_encoder_weights = false;
++                for (const auto& entry : tensor_storage_map) {
++                    if (entry.first.rfind("tae.encoder.layers.", 0) == 0) {
++                        has_encoder_weights = true;
++                        break;
++                    }
++                }
++                const bool decoder_only = decode_only || !has_encoder_weights;
++                if (!decode_only && !has_encoder_weights) {
++                    LOG_INFO("TAESD encoder tensors not present; using decoder-only TAE");
++                }
+                 auto model = std::make_shared<TinyImageAutoEncoder>(ctx.backends.runtime_backend(SDBackendModule::VAE),
+                                                                     tensor_storage_map,
+                                                                     "decoder.layers",
+-                                                                    decode_only,
++                                                                    decoder_only,
+                                                                     version,
+                                                                     weight_manager);
+                 return model;
+@@ -530,6 +544,8 @@ namespace sd::model_builders {
+             if (result.preview) {
+                 result.preview->set_conv2d_direct_enabled(true);
+             }
++        } else {
++            LOG_INFO("Using standard VAE convolution path (direct Conv2D disabled)");
+         }
+         runners = std::move(result);
+         return true;
+
+--- a/app/src/main/cpp/sd/src/pipeline/request.cpp
++++ b/app/src/main/cpp/sd/src/pipeline/request.cpp
+@@ -32,6 +32,7 @@ namespace sd::pipeline {
+         "DPM++ (2M) SDE",
+         "DPM++ (2M) SDE BT",
+         "LMS",
++        "DPM++ SDE",
+     };
+ 
+     static_assert(SAMPLE_METHOD_COUNT == sizeof(sampling_methods_str) / sizeof(sampling_methods_str[0]),
+@@ -110,16 +111,18 @@ namespace sd::pipeline {
+             }
+             switch (sample_method) {
+                 case DDIM_TRAILING_SAMPLE_METHOD:
+-                case TCD_SAMPLE_METHOD:
+                 case RES_MULTISTEP_SAMPLE_METHOD:
+                 case RES_2S_SAMPLE_METHOD:
+                     return 0.0f;
++                case TCD_SAMPLE_METHOD:
++                    return 0.3f;
+                 case EULER_A_SAMPLE_METHOD:
+                 case DPMPP2S_A_SAMPLE_METHOD:
+                 case ER_SDE_SAMPLE_METHOD:
+                 case EULER_A_CFG_PP_SAMPLE_METHOD:
+                 case DPMPP2M_SDE_SAMPLE_METHOD:
+                 case DPMPP2M_SDE_BT_SAMPLE_METHOD:
++                case DPMPP_SDE_SAMPLE_METHOD:
+                     return 1.0f;
+                 default:;
+             }
+@@ -365,6 +368,11 @@ namespace sd::pipeline {
+     void SamplePlan::resolve(StableDiffusionGGML* sd,
+                              const GenerationRequest* request,
+                              const sd_sample_params_t* sample_params) {
++        if (sample_params->scheduler == TCD_SCHEDULER) {
++            // Diffusers treats TCD as one scheduler object; sd.cpp separates its
++            // timestep schedule from the TCD update equation, so couple them here.
++            sample_method = TCD_SAMPLE_METHOD;
++        }
+         sample_method = resolve_sample_method(sd, sample_method);
+ 
+         total_steps = sample_steps + std::max(0, high_noise_sample_steps);
+
+--- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
++++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
+@@ -284,6 +284,35 @@ struct LCMScheduler : SigmaScheduler {
+     }
+ };
+ 
++/*
++ * TCDScheduler timestep selection following Diffusers' TCDScheduler default
++ * original_inference_steps=50. The TCD update equation is implemented by sample_tcd().
++ * For a 1000-step SD/SDXL training timeline, the origin schedule is 999,979,...,19;
++ * inference selects floor(i * 50 / N) from that reversed 50-point schedule.
++ */
++struct TCDScheduler : SigmaScheduler {
++    std::vector<float> get_sigmas(uint32_t n,
++                                  float /*sigma_min*/,
++                                  float /*sigma_max*/,
++                                  t_to_sigma_t t_to_sigma) override {
++        std::vector<float> result;
++        if (n == 0) return result;
++
++        constexpr int original_steps = 50;
++        const int stride = TIMESTEPS / original_steps;
++        result.reserve(static_cast<size_t>(n) + 1);
++        for (uint32_t i = 0; i < n; ++i) {
++            const uint64_t index = (static_cast<uint64_t>(i) * original_steps) / n;
++            const int timestep = std::clamp(
++                (original_steps - static_cast<int>(index)) * stride - 1,
++                0, TIMESTEPS - 1);
++            result.push_back(t_to_sigma(static_cast<float>(timestep)));
++        }
++        result.push_back(0.0f);
++        return result;
++    }
++};
++
+ struct KarrasScheduler : SigmaScheduler {
+     std::vector<float> get_sigmas(uint32_t n, float sigma_min, float sigma_max, t_to_sigma_t t_to_sigma) override {
+         // These *COULD* be function arguments here,
+@@ -1107,6 +1136,10 @@ struct Denoiser {
+                 LOG_INFO("get_sigmas with LCM scheduler");
+                 scheduler = std::make_shared<LCMScheduler>();
+                 break;
++            case TCD_SCHEDULER:
++                LOG_INFO("get_sigmas with TCD scheduler");
++                scheduler = std::make_shared<TCDScheduler>();
++                break;
+             case LTX2_SCHEDULER:
+                 LOG_INFO("get_sigmas with LTX2 scheduler");
+                 scheduler = std::make_shared<LTX2Scheduler>(image_seq_len, extra_sample_args);
+@@ -2034,6 +2067,107 @@ class BrownianTreeNoiseSampler {
+     std::map<double, sd::Tensor<float>> cache_;
+ };
+ 
++// DPM-Solver++ SDE, stochastic second-order solver.
++// Reference: k-diffusion sample_dpmpp_sde; Lu et al., DPM-Solver++.
++// Brownian increments run in t = -log(sigma) space, matching the solver time.
++static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
++                                         sd::Tensor<float> x,
++                                         const std::vector<float>& sigmas,
++                                         std::shared_ptr<RNG> rng,
++                                         float eta) {
++    const int steps = static_cast<int>(sigmas.size()) - 1;
++    if (steps <= 0) {
++        return x;
++    }
++
++    double sigma_max = 0.0;
++    double sigma_min = std::numeric_limits<double>::infinity();
++    for (float sigma : sigmas) {
++        if (sigma > 0.0f) {
++            sigma_max = std::max(sigma_max, static_cast<double>(sigma));
++            sigma_min = std::min(sigma_min, static_cast<double>(sigma));
++        }
++    }
++    if (!(sigma_max > 0.0) || !std::isfinite(sigma_min)) {
++        LOG_ERROR("DPM++ SDE received an invalid sigma schedule");
++        return {};
++    }
++
++    uint64_t tree_seed = 0;
++    {
++        const auto draw = rng->randn(2);
++        if (draw.size() >= 2) {
++            std::memcpy(&tree_seed, draw.data(), sizeof(tree_seed));
++        } else {
++            tree_seed = 0xD1B54A32D192ED03ULL;
++        }
++    }
++
++    // Match k-diffusion's DPM++ SDE: Brownian increments are requested in
++    // sigma coordinates, even though the deterministic solver uses t=-log(sigma).
++    BrownianTreeNoiseSampler noise_sampler(x, sigma_min, sigma_max, tree_seed);
++
++    constexpr float r = 0.5f;
++    constexpr float s_noise = 1.0f;
++    const float fac = 1.0f / (2.0f * r);
++
++    for (int i = 0; i < steps; ++i) {
++        auto denoised_opt = model(x, sigmas[i], i + 1);
++        if (denoised_opt.pred.empty()) {
++            return {};
++        }
++        sd::Tensor<float> denoised = std::move(denoised_opt.pred);
++
++        if (sigmas[i + 1] == 0.0f) {
++            // Final denoising step has no stochastic term.
++            x = std::move(denoised);
++            continue;
++        }
++
++        const float sigma = sigmas[i];
++        const float sigma_next = sigmas[i + 1];
++        const float t = -std::log(sigma);
++        const float t_next = -std::log(sigma_next);
++        const float h = t_next - t;
++        const float s = t + h * r;
++        const float sigma_s = std::exp(-s);
++
++        // Intermediate stochastic step.
++        const auto [sigma_down_s, sigma_up_s] = get_ancestral_step(sigma, sigma_s, eta);
++        if (!(sigma_down_s > 0.0f)) {
++            LOG_ERROR("DPM++ SDE got a non-positive intermediate sigma");
++            return {};
++        }
++        const float t_s = -std::log(sigma_down_s);
++        sd::Tensor<float> x_2 = (sigma_down_s / sigma) * x
++                                - std::expm1(t - t_s) * denoised;
++        if (eta > 0.0f && sigma_up_s > 0.0f) {
++            x_2 += noise_sampler(sigma, sigma_s) * (s_noise * sigma_up_s);
++        }
++
++        auto denoised_2_opt = model(x_2, sigma_s, i + 1);
++        if (denoised_2_opt.pred.empty()) {
++            return {};
++        }
++        sd::Tensor<float> denoised_2 = std::move(denoised_2_opt.pred);
++
++        // Corrector step to the next sigma.
++        const auto [sigma_down_next, sigma_up_next] = get_ancestral_step(sigma, sigma_next, eta);
++        if (!(sigma_down_next > 0.0f)) {
++            LOG_ERROR("DPM++ SDE got a non-positive target sigma before the terminal step");
++            return {};
++        }
++        const float t_next_down = -std::log(sigma_down_next);
++        sd::Tensor<float> denoised_d = (1.0f - fac) * denoised + fac * denoised_2;
++        x = (sigma_down_next / sigma) * x
++            - std::expm1(t - t_next_down) * denoised_d;
++        if (eta > 0.0f && sigma_up_next > 0.0f) {
++            x += noise_sampler(sigma, sigma_next) * (s_noise * sigma_up_next);
++        }
++    }
++    return x;
++}
++
+ // DPM-Solver++(2M) SDE, midpoint variant, with step-count-stable Brownian-tree
+ // noise. Same trajectory shape at any step count for a given seed. Aliased in
+ // k-diffusion / ComfyUI as sample_dpmpp_2m_sde_gpu.
+@@ -2882,6 +3016,8 @@ static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
+             return sample_res_2s(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
+         case ER_SDE_SAMPLE_METHOD:
+             return sample_er_sde(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
++        case DPMPP_SDE_SAMPLE_METHOD:
++            return sample_dpmpp_sde(model, std::move(x), sigmas, rng, eta);
+         case DPMPP2M_SDE_SAMPLE_METHOD:
+             return sample_dpmpp_2m_sde(model, std::move(x), sigmas, rng, eta);
+         case DPMPP2M_SDE_BT_SAMPLE_METHOD:
+
+--- a/app/src/main/cpp/sd/src/stable-diffusion.cpp
++++ b/app/src/main/cpp/sd/src/stable-diffusion.cpp
+@@ -86,6 +86,7 @@ const char* sample_method_to_str[] = {
+     "dpm++2m_sde",
+     "dpm++2m_sde_bt",
+     "lms",
++    "dpm++sde",
+ };
+ 
+ static_assert(SAMPLE_METHOD_COUNT == sizeof(sample_method_to_str) / sizeof(sample_method_to_str[0]),
+@@ -124,6 +125,7 @@ const char* scheduler_to_str[] = {
+     "flux2",
+     "flux",
+     "beta",
++    "tcd",
+ };
+ 
+ static_assert(SCHEDULER_COUNT == sizeof(scheduler_to_str) / sizeof(scheduler_to_str[0]),
+@@ -373,6 +375,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
+              "auto_fit: %s\n"
+              "flash_attn: %s\n"
+              "diffusion_flash_attn: %s\n"
++             "vae_conv_direct: %s\n"
+              "vae_format: %s\n",
+              SAFE_STR(sd_ctx_params->model_path),
+              SAFE_STR(sd_ctx_params->clip_l_path),
+@@ -408,6 +411,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
+              BOOL_STR(sd_ctx_params->auto_fit),
+              BOOL_STR(sd_ctx_params->flash_attn),
+              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
++             BOOL_STR(sd_ctx_params->vae_conv_direct),
+              sd_vae_format_name(sd_ctx_params->vae_format));
+ 
+     return buf;

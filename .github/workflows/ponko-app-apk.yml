@@ -45,8 +45,14 @@ jobs:
       PONKO_EXYNOS_2400E_CPU_PROFILE: ON
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
-      - name: Check out source
+      - name: Check out source and stable-diffusion.cpp submodule
         uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Initialize the pinned GGML dependency
+        shell: bash
+        run: git -C app/src/main/cpp/sd submodule update --init --depth 1 ggml
 
       - name: Set up Java 21
         uses: actions/setup-java@v4

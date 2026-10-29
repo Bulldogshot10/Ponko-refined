@@ -1,0 +1,3 @@
+[submodule "app/src/main/cpp/sd"]
+	path = app/src/main/cpp/sd
+	url = https://github.com/leejet/stable-diffusion.cpp.git
