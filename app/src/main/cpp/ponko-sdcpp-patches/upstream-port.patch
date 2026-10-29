@@ -2642,7 +2642,7 @@
 +#ifdef PONKO_ENABLE_RUST_CPU_KERNELS
 +#include "ponko_cpu_kernels.h"
 +#endif
-@@ -1409,4 +1413,61 @@
+@@ -1409,4 +1413,62 @@
      const struct ggml_tensor * src0 = dst->src[0];
      const struct ggml_tensor * src1 = dst->src[1];
 +
