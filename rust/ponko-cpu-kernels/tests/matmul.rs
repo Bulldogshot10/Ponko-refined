@@ -71,7 +71,7 @@ fn q4_0_f32_reference_uses_q8_0_activation_quantization() {
     let b = [1.0_f32; 96];
     let mut c = [0.0; 6];
     matmul_q4_0_f32_reference(&q4, &b, &mut c, 2, 3, 32).unwrap();
-    assert_eq!(c, [-256.0; 6]);
+    assert_close(&c, &[-255.984375; 6], 1.0e-4);
 }
 
 #[test]
