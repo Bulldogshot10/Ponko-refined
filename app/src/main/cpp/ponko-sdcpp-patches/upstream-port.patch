@@ -2694,7 +2694,7 @@
 +        const uint64_t pair_count = (n + 1) / 2;
 +        const uint64_t pair_start = pair_count * (uint64_t)params->ith / (uint64_t)params->nth;
 +        const uint64_t pair_end = pair_count * (uint64_t)(params->ith + 1) / (uint64_t)params->nth;
-+        const uint64_t row_start = pair_start * 2;
++        const uint64_t row_start = pair_start * 2 < n ? pair_start * 2 : n;
 +        const uint64_t row_end = pair_end * 2 < n ? pair_end * 2 : n;
 +        if (!ponko_cpu_matmul_q4_0_f32(
 +                src0->data, (const float *)src1->data, (float *)dst->data,
