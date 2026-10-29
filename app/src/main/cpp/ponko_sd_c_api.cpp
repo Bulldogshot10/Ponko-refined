@@ -695,7 +695,7 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     } else {
         if (g_last_error.empty()) setError("stable-diffusion.cpp generation failed");
     }
-    if (images != nullptr) release_images();
+    release_images();
     sd_set_progress_callback(nullptr, nullptr);
     sd_set_preview_callback(nullptr, PREVIEW_NONE, 1, true, false, nullptr);
     return success;
