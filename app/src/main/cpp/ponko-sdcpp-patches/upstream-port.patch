@@ -713,8 +713,12 @@
 
 --- a/app/src/main/cpp/sd/src/core/backend_fit.cpp
 +++ b/app/src/main/cpp/sd/src/core/backend_fit.cpp
-@@ -492,28 +492,21 @@
-         if (prefer_temporal_tiling && !tiling_params.temporal_tiling) {
+@@ -492,28 +492,24 @@
+-        if (prefer_temporal_tiling && !tiling_params.temporal_tiling) {
++        if (prefer_temporal_tiling) {
++            if (tiling_params.temporal_tiling) {
++                return false;
++            }
              tiling_params.temporal_tiling = true;
              retry_mode                    = tiling_params.enabled ? "spatial+temporal" : "temporal";
 -        } else {
