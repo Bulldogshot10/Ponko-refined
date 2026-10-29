@@ -639,7 +639,7 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
             int detailed_count = static_cast<int>(detailed_storage.size());
             if (!detail_ok || detailed_count <= 0 || detailed_images == nullptr ||
                 detailed_images[0].data == nullptr) {
-                if (detailed_images != nullptr) free_sd_image_generation_result(detailed_result);
+                if (detailed_result != nullptr) free_sd_image_generation_result(detailed_result);
                 release_images();
                 images = nullptr;
                 image_count = 0;
