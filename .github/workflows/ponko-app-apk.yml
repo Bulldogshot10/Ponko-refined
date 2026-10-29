@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml -- --check
+          cargo fmt --manifest-path rust/ponko-cpu-kernels/Cargo.toml
           cargo test --manifest-path rust/ponko-cpu-kernels/Cargo.toml
           cargo check --manifest-path rust/ponko-cpu-kernels/Cargo.toml --target aarch64-linux-android --features exynos2400e
 
