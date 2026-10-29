@@ -11,59 +11,11 @@
 
 --- a/app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/app/src/main/cpp/sd/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -50,6 +50,8 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
- 
- #include <algorithm>
- #include <cmath>
-+#include <cstdio>
-+#include <exception>
- #include <iomanip>
- #include <iostream>
- #include <tuple>
-@@ -401,9 +403,22 @@ enum vk_device_architecture {
-     NVIDIA_TURING,
- };
- 
-+// Samsung reports the integrated Xclipse GPU under its own vendor ID on stock Android.
-+// Xclipse 940 is RDNA3-derived, but the upstream AMD-vendor check below can otherwise
-+// classify it as OTHER and skip architecture-aware tuning paths.
-+static bool ggml_vk_is_xclipse_940(const vk::PhysicalDeviceProperties& props) {
-+    return std::string(props.deviceName.data()).find("Xclipse 940") != std::string::npos;
-+}
-+
- static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
-     vk::PhysicalDeviceProperties props = device.getProperties();
- 
-+    // Identify by the Vulkan device name, not by assuming an AMD vendor ID.
-+    // Runtime feature checks below still decide which optional shader paths are safe.
-+    if (ggml_vk_is_xclipse_940(props)) {
-+        return vk_device_architecture::AMD_RDNA3;
-+    }
-+
-     if (props.vendorID == VK_VENDOR_ID_AMD) {
-         const std::vector<vk::ExtensionProperties> ext_props = device.enumerateDeviceExtensionProperties();
- 
-@@ -4299,8 +4314,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
-         if ((device->architecture == AMD_GCN) && (device->driver_id != vk::DriverId::eAmdProprietary)) {
-             m_warptile_mmq = m_warptile_mmq_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
-             m_warptile_mmqid = m_warptile_mmqid_int = { 256, 64, 64, 32, 16, 16, 2, 2, 2, 1, 16 };
--        } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && device->driver_id != vk::DriverId::eAmdProprietary) {
--            // This is intentionally using tx_m values, slight performance increase
-+        } else if (device->coopmat_support &&
-+                   ((device->vendor_id == VK_VENDOR_ID_AMD && device->driver_id != vk::DriverId::eAmdProprietary) ||
-+                    ggml_vk_is_xclipse_940(device->properties))) {
-+            // This is intentionally using tx_m values, slight performance increase.
-+            // Xclipse 940 exposes the RDNA3 hardware family under Samsung's vendor/driver ID,
-+            // so apply these RDNA3 tile presets only for this exact GPU and only when
-+            // VK_KHR_cooperative_matrix is available in both the build and runtime driver.
-             l_warptile = { 256, 128, 128, 16, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
-             l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, subgroup_size_8, 64, 2, tm_m, tn_m, tk_m, subgroup_size_8 };
-             l_warptile_mmq_int_k = { 256, 128, 128, 32, subgroup_size_16, 64, 1, 4, 2, 1, subgroup_size_16 };
-@@ -6452,6 +6472,21 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -4301,6 +4301,21 @@ static vk_device ggml_vk_get_device(size_t idx) {
  
          device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
  
-+        if (ggml_vk_is_xclipse_940(device->properties)) {
++        if ((std::strstr(device->properties.deviceName, "Xclipse 940") != nullptr)) {
 +            GGML_LOG_INFO("ggml_vulkan: Xclipse 940 profile detected"
 +                          " (Vulkan %u.%u, driver id %u, subgroup %u, fp16 %d, integer dot %d, cooperative matrix %d). %s\n",
 +                          static_cast<unsigned int>(VK_VERSION_MAJOR(device->properties.apiVersion)),
@@ -81,7 +33,7 @@
          device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
  
          device->max_workgroup_size_log2 = uint32_t(log2f(float(device->properties.limits.maxComputeWorkGroupInvocations)));
-@@ -17974,6 +18009,45 @@ void ggml_backend_vk_get_device_description(int device, char * description, size
+@@ -15517,6 +15517,45 @@ void ggml_backend_vk_get_device_description(int device, char * description, size
      ggml_vk_get_device_description(dev_idx, description, description_size);
  }
  
@@ -101,7 +53,7 @@
 +        // Read the exact ggml-vulkan device state used for backend selection and shader tuning.
 +        const vk_device device = ggml_vk_get_device(static_cast<size_t>(device_idx));
 +        const vk::PhysicalDeviceProperties & props = device->properties;
-+        const char * label = ggml_vk_is_xclipse_940(props)
++        const char * label = (std::strstr(props.deviceName, "Xclipse 940") != nullptr)
 +            ? "Xclipse 940 profile detected"
 +            : props.deviceName.data();
 +        std::snprintf(diagnostics, diagnostics_size,
@@ -138,49 +90,10 @@
      SAMPLE_METHOD_COUNT
  };
  
-@@ -79,6 +80,7 @@ enum scheduler_t {
-     FLUX2_SCHEDULER,
-     FLUX_SCHEDULER,
-     BETA_SCHEDULER,
-+    TCD_SCHEDULER,
-     SCHEDULER_COUNT
- };
- 
-@@ -579,6 +581,16 @@ SD_API bool convert_with_components(const char* model_path,
-                                     bool convert_name,
-                                     int n_threads);
- 
-+SD_API bool fuse_loras_to_file(const char* input_model_path,
-+                                const char* const* lora_paths,
-+                                const float* lora_scales,
-+                                size_t lora_count,
-+                                const char* output_path,
-+                                enum sd_type_t output_type,
-+                                const char* tensor_type_rules,
-+                                bool convert_name,
-+                                int n_threads);
-+
- SD_API bool preprocess_canny(sd_image_t image,
-                              float high_threshold,
-                              float low_threshold,
 
 --- a/app/src/main/cpp/sd/src/detailer.cpp
 +++ b/app/src/main/cpp/sd/src/detailer.cpp
-@@ -1,11 +1,13 @@
- #include "detailer.h"
- 
- #include <algorithm>
-+#include <chrono>
- #include <cctype>
- #include <cmath>
- #include <cstdlib>
- #include <cstring>
- #include <limits>
-+#include <new>
- #include <sstream>
- #include <utility>
- 
-@@ -15,6 +17,26 @@
+@@ -17,6 +17,26 @@
  
  struct adetailer_ctx_t {
      ADetailerGGML* detailer = nullptr;
@@ -207,7 +120,7 @@
  };
  
  struct LetterboxInput {
-@@ -37,6 +59,10 @@ struct CropRegion {
+@@ -59,6 +59,10 @@ struct CropRegion {
      int y2 = 0;
  };
  
@@ -218,7 +131,7 @@
  static std::string trim_copy(const std::string& value) {
      size_t first = value.find_first_not_of(" \t\r\n");
      if (first == std::string::npos) {
-@@ -352,24 +378,63 @@ static Mask morphology_mask(const Mask& source, int amount) {
+@@ -380,24 +380,63 @@ static Mask morphology_mask(const Mask& source, int amount) {
      if (amount == 0) {
          return source;
      }
@@ -295,7 +208,7 @@
          }
      }
      return output;
-@@ -418,38 +483,45 @@ static Mask gaussian_blur_mask(const Mask& source, int radius) {
+@@ -485,38 +485,45 @@ static Mask gaussian_blur_mask(const Mask& source, int radius) {
      return output;
  }
  
@@ -364,43 +277,7 @@
  }
  
  static bool mask_bbox(const Mask& mask, CropRegion* region) {
-@@ -546,8 +618,33 @@ static sd_image_t resize_crop_mask(const Mask& source, const CropRegion& crop, i
- }
- 
- static sd_image_t copy_as_rgb(const sd_image_t& source) {
--    CropRegion full{0, 0, static_cast<int>(source.width), static_cast<int>(source.height)};
--    return resize_crop_image(source, full, source.width, source.height);
-+    if (source.data == nullptr || source.width == 0 || source.height == 0 || source.channel == 0) {
-+        return {0, 0, 0, nullptr};
-+    }
-+    const uint64_t pixel_count = static_cast<uint64_t>(source.width) * source.height;
-+    if (pixel_count > std::numeric_limits<size_t>::max() / 3 ||
-+        pixel_count > std::numeric_limits<size_t>::max() / source.channel) {
-+        return {0, 0, 0, nullptr};
-+    }
-+    const size_t rgb_bytes = static_cast<size_t>(pixel_count) * 3;
-+    auto* output_data = static_cast<uint8_t*>(malloc(rgb_bytes));
-+    if (output_data == nullptr) {
-+        return {0, 0, 0, nullptr};
-+    }
-+    if (source.channel == 3) {
-+        // Same-size RGB input needs no interpolation.
-+        std::memcpy(output_data, source.data, rgb_bytes);
-+    } else {
-+        const size_t channels = source.channel;
-+        for (size_t i = 0; i < static_cast<size_t>(pixel_count); ++i) {
-+            const uint8_t* src = source.data + i * channels;
-+            for (size_t c = 0; c < 3; ++c) {
-+                const size_t source_channel = channels == 1 ? 0 : std::min(c, channels - 1);
-+                output_data[i * 3 + c] = src[source_channel];
-+            }
-+        }
-+    }
-+    return {source.width, source.height, 3, output_data};
- }
- 
- static void composite_crop(sd_image_t* destination,
-@@ -713,18 +810,27 @@ bool ADetailerGGML::load_from_file(const std::string& detector_path) {
+@@ -796,18 +796,27 @@ bool ADetailerGGML::load_from_file(const std::string& detector_path) {
  
  std::vector<ADetailerDetection> ADetailerGGML::predict(sd_image_t image,
                                                         const ADetailerParams& params) {
@@ -433,7 +310,7 @@
      for (size_t i = 0; i < detections.size(); ++i) {
          const auto& detection = detections[i];
          std::string object    = "class_" + std::to_string(detection.class_id);
-@@ -871,14 +977,16 @@ adetailer_ctx_t* new_adetailer_ctx(const char* detector_path,
+@@ -969,14 +969,16 @@ adetailer_ctx_t* new_adetailer_ctx(const char* detector_path,
      if (detector_path == nullptr || detector_path[0] == '\0') {
          return nullptr;
      }
@@ -455,7 +332,7 @@
          return nullptr;
      }
      return context;
-@@ -888,9 +996,8 @@ void free_adetailer_ctx(adetailer_ctx_t* context) {
+@@ -988,9 +988,8 @@ void free_adetailer_ctx(adetailer_ctx_t* context) {
      if (context == nullptr) {
          return;
      }
@@ -467,141 +344,10 @@
  }
  
  bool adetail_image(adetailer_ctx_t* context,
-@@ -906,7 +1013,7 @@ bool adetail_image(adetailer_ctx_t* context,
-     if (num_images_out != nullptr) {
-         *num_images_out = 0;
-     }
--    if (context == nullptr || context->detailer == nullptr || sd_ctx == nullptr || public_params == nullptr ||
-+    if (context == nullptr || sd_ctx == nullptr || public_params == nullptr ||
-         inpaint_params == nullptr || input_image.data == nullptr) {
-         return false;
-     }
-@@ -916,17 +1023,60 @@ bool adetail_image(adetailer_ctx_t* context,
-         return false;
-     }
- 
-+    const auto total_start = std::chrono::steady_clock::now();
-+    const auto detector_load_start = std::chrono::steady_clock::now();
-+    if (!context->ensure_loaded()) {
-+        LOG_ERROR("failed to load ADetailer detector '%s'", context->detector_path.c_str());
-+        return false;
-+    }
-+    LOG_INFO("ADetailer timing: detector_load_or_reload=%.2fs", elapsed_seconds(detector_load_start));
-+
-+    const auto detect_start = std::chrono::steady_clock::now();
-     auto detections = context->detailer->predict(input_image, params);
-+    LOG_INFO("ADetailer timing: detector_stage=%.2fs", elapsed_seconds(detect_start));
-+
-+    const auto unload_start = std::chrono::steady_clock::now();
-+    // Detection tensors and masks are all CPU-side values by this point. Destroy the
-+    // detector/model manager before crop inpainting so its parameter buffers do not
-+    // compete with the diffusion model's denoising and VAE decode peak.
-+    context->unload();
-+    LOG_INFO("ADetailer timing: detector_unload=%.2fs", elapsed_seconds(unload_start));
-+
-+    const auto mask_start = std::chrono::steady_clock::now();
-     filter_and_sort_detections(&detections, input_image.width, input_image.height, params);
--    auto masks = make_masks(detections, input_image.width, input_image.height, params);
-+    // Non-merged masks are produced and consumed one at a time. Only merged mode
-+    // retains a full-frame mask, and its helper now merges incrementally.
-+    std::vector<Mask> merged_masks;
-+    if (params.merge_masks) {
-+        merged_masks = make_masks(detections, input_image.width, input_image.height, params);
-+    }
-+    LOG_INFO("ADetailer timing: detection_filter_and_merge_masks=%.2fs detections=%zu merged=%d",
-+             elapsed_seconds(mask_start), detections.size(), params.merge_masks ? 1 : 0);
- 
-+    const auto rgb_copy_start = std::chrono::steady_clock::now();
-     sd_image_t current = copy_as_rgb(input_image);
-+    LOG_INFO("ADetailer timing: original_rgb_copy=%.2fs", elapsed_seconds(rgb_copy_start));
-     if (current.data == nullptr) {
-         return false;
-     }
- 
-     int applied = 0;
--    for (size_t i = 0; i < masks.size(); ++i) {
-+    const size_t mask_count = params.merge_masks ? merged_masks.size() : detections.size();
-+    size_t mask_index = 0;
-+    for (size_t detection_index = 0; detection_index < mask_count; ++detection_index) {
-+        const auto crop_prep_start = std::chrono::steady_clock::now();
-+        Mask mask = params.merge_masks
-+            ? std::move(merged_masks[detection_index])
-+            : make_mask_for_detection(detections[detection_index], input_image.width, input_image.height, params);
-+        if (!params.merge_masks) {
-+            const bool nonempty = std::any_of(mask.data.begin(), mask.data.end(),
-+                                              [](uint8_t value) { return value != 0; });
-+            if (!nonempty) continue;
-+            if (params.invert_mask) {
-+                for (uint8_t& value : mask.data) value = 255 - value;
-+            }
-+        }
-+        const size_t i = mask_index++;
-         std::string prompt          = resolve_prompt(params.prompt, inpaint_params->prompt, static_cast<int>(i));
-         std::string negative_prompt = resolve_prompt(params.negative_prompt,
-                                                      inpaint_params->negative_prompt,
-@@ -936,7 +1086,7 @@ bool adetail_image(adetailer_ctx_t* context,
-         }
- 
-         CropRegion crop;
--        if (!mask_bbox(masks[i], &crop)) {
-+        if (!mask_bbox(mask, &crop)) {
-             continue;
-         }
-         crop                   = expand_crop(crop,
-@@ -946,13 +1096,16 @@ bool adetail_image(adetailer_ctx_t* context,
-                                              params.inpaint_width,
-                                              params.inpaint_height);
-         sd_image_t local_image = resize_crop_image(current, crop, params.inpaint_width, params.inpaint_height);
--        sd_image_t local_mask  = resize_crop_mask(masks[i], crop, params.inpaint_width, params.inpaint_height);
-+        sd_image_t local_mask  = resize_crop_mask(mask, crop, params.inpaint_width, params.inpaint_height);
-         if (local_image.data == nullptr || local_mask.data == nullptr) {
-             free(local_image.data);
-             free(local_mask.data);
-             free(current.data);
-             return false;
-         }
-+        LOG_INFO("ADetailer timing: crop_prep[%zu]=%.2fs bbox=[%d,%d,%d,%d] crop=%dx%d",
-+                 i, elapsed_seconds(crop_prep_start), crop.x1, crop.y1, crop.x2, crop.y2,
-+                 params.inpaint_width, params.inpaint_height);
- 
-         sd_img_gen_params_t generation = *inpaint_params;
-         generation.prompt              = prompt.c_str();
-@@ -987,7 +1140,10 @@ bool adetail_image(adetailer_ctx_t* context,
- 
-         sd_image_t* generated = nullptr;
-         int generated_count   = 0;
-+        const auto inpaint_start = std::chrono::steady_clock::now();
-         bool success          = generate_image(sd_ctx, &generation, &generated, &generated_count);
-+        LOG_INFO("ADetailer timing: crop_inpaint[%zu]=%.2fs success=%d", i,
-+                 elapsed_seconds(inpaint_start), success ? 1 : 0);
-         free(local_image.data);
-         free(local_mask.data);
-         if (!success || generated_count <= 0 || generated == nullptr || generated[0].data == nullptr) {
-@@ -996,8 +1152,11 @@ bool adetail_image(adetailer_ctx_t* context,
-             return false;
-         }
- 
--        Mask feather = gaussian_blur_mask(masks[i], params.mask_blur);
-+        const auto composite_start = std::chrono::steady_clock::now();
-+        Mask feather = gaussian_blur_mask(mask, params.mask_blur);
-         composite_crop(&current, generated[0], feather, crop);
-+        LOG_INFO("ADetailer timing: feather_and_composite[%zu]=%.2fs", i,
-+                 elapsed_seconds(composite_start));
-         free_sd_images(generated, generated_count);
-         ++applied;
-     }
-@@ -1016,6 +1175,6 @@ bool adetail_image(adetailer_ctx_t* context,
-     if (num_images_out != nullptr) {
-         *num_images_out = 1;
-     }
--    LOG_INFO("ADetailer applied %d mask(s)", applied);
-+    LOG_INFO("ADetailer applied %d mask(s); total=%.2fs", applied, elapsed_seconds(total_start));
-     return true;
- }
 
 --- a/app/src/main/cpp/sd/src/model_io/torch_legacy_io.cpp
 +++ b/app/src/main/cpp/sd/src/model_io/torch_legacy_io.cpp
-@@ -40,6 +40,9 @@
+@@ -41,6 +41,9 @@
  //      - PyTorch writes storages after the pickles, ordered by storage key
  //      - each storage has an 8-byte legacy storage header followed by raw bytes
  static constexpr size_t LEGACY_STORAGE_HEADER_SIZE = 8;
@@ -611,7 +357,7 @@
  
  static void set_error(std::string* error, const std::string& message) {
      if (error != nullptr) {
-@@ -105,19 +108,33 @@ bool read_torch_legacy_file(const std::string& file_path,
+@@ -109,19 +109,33 @@ bool read_torch_legacy_file(const std::string& file_path,
      }
  
      file.seekg(0, file.end);
@@ -653,7 +399,7 @@
 
 --- a/app/src/main/cpp/sd/src/name_conversion.cpp
 +++ b/app/src/main/cpp/sd/src/name_conversion.cpp
-@@ -864,6 +864,40 @@ std::string convert_diffusers_controlnet_to_original_sdxl(std::string name) {
+@@ -954,6 +954,40 @@ std::string convert_diffusers_controlnet_to_original_sdxl(std::string name) {
      return name;
  }
  
@@ -694,7 +440,7 @@
  static bool is_diffusers_controlnet_name(const std::string& name) {
      static const std::vector<std::string> heads = {
          "controlnet_cond_embedding.",
-@@ -1566,8 +1600,12 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
+@@ -1864,8 +1864,12 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
                  name = name.substr(pos + 1);
              }
          }
@@ -710,38 +456,9 @@
      }
  
 
---- a/app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp
-+++ b/app/src/main/cpp/sd/src/pipeline/diffusion_engine.cpp
-@@ -778,10 +778,22 @@ bool StableDiffusionGGML::init_model_loader(ModelLoader& model_loader, ModelConf
-     if (strlen(SAFE_STR(sd_ctx_params->taesd_path)) > 0) {
-         LOG_INFO("loading tae from '%s'", sd_ctx_params->taesd_path);
-         if (!model_loader.init_from_file(sd_ctx_params->taesd_path, "tae.")) {
--            LOG_WARN("loading tae from '%s' failed", sd_ctx_params->taesd_path);
--        } else {
--            use_tae = true;
-+            LOG_ERROR("loading TAESD weights from '%s' failed", sd_ctx_params->taesd_path);
-+            return false;
-+        }
-+        bool has_tae_decoder_weights = false;
-+        for (const auto& entry : model_loader.get_tensor_storage_map()) {
-+            if (entry.first.rfind("tae.decoder.layers.", 0) == 0) {
-+                has_tae_decoder_weights = true;
-+                break;
-+            }
-+        }
-+        if (!has_tae_decoder_weights) {
-+            LOG_ERROR("TAESD file '%s' has no compatible tae.decoder.layers tensors; use sd.cpp-compatible Diffusers TAESD weights (ComfyUI taesd_decoder.pth is not directly compatible)",
-+                      sd_ctx_params->taesd_path);
-+            return false;
-         }
-+        use_tae = true;
-     }
- 
-     if (strlen(SAFE_STR(sd_ctx_params->embeddings_connectors_path)) > 0) {
-
 --- a/app/src/main/cpp/sd/src/pipeline/model_builders.cpp
 +++ b/app/src/main/cpp/sd/src/pipeline/model_builders.cpp
-@@ -420,10 +420,24 @@ namespace sd::model_builders {
+@@ -130,10 +130,24 @@ namespace sd::model_builders {
                                                                weight_manager);
  
              } else {
@@ -767,19 +484,10 @@
                                                                      version,
                                                                      weight_manager);
                  return model;
-@@ -530,6 +544,8 @@ namespace sd::model_builders {
-             if (result.preview) {
-                 result.preview->set_conv2d_direct_enabled(true);
-             }
-+        } else {
-+            LOG_INFO("Using standard VAE convolution path (direct Conv2D disabled)");
-         }
-         runners = std::move(result);
-         return true;
 
 --- a/app/src/main/cpp/sd/src/pipeline/request.cpp
 +++ b/app/src/main/cpp/sd/src/pipeline/request.cpp
-@@ -32,6 +32,7 @@ namespace sd::pipeline {
+@@ -36,6 +36,7 @@ namespace sd::pipeline {
          "DPM++ (2M) SDE",
          "DPM++ (2M) SDE BT",
          "LMS",
@@ -787,7 +495,7 @@
      };
  
      static_assert(SAMPLE_METHOD_COUNT == sizeof(sampling_methods_str) / sizeof(sampling_methods_str[0]),
-@@ -110,16 +111,18 @@ namespace sd::pipeline {
+@@ -103,16 +103,18 @@ namespace sd::pipeline {
              }
              switch (sample_method) {
                  case DDIM_TRAILING_SAMPLE_METHOD:
@@ -807,7 +515,7 @@
                      return 1.0f;
                  default:;
              }
-@@ -365,6 +368,11 @@ namespace sd::pipeline {
+@@ -428,6 +428,11 @@ namespace sd::pipeline {
      void SamplePlan::resolve(StableDiffusionGGML* sd,
                               const GenerationRequest* request,
                               const sd_sample_params_t* sample_params) {
@@ -822,7 +530,7 @@
 
 --- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
 +++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
-@@ -284,6 +284,35 @@ struct LCMScheduler : SigmaScheduler {
+@@ -286,6 +286,35 @@ struct LCMScheduler : SigmaScheduler {
      }
  };
  
@@ -858,7 +566,7 @@
  struct KarrasScheduler : SigmaScheduler {
      std::vector<float> get_sigmas(uint32_t n, float sigma_min, float sigma_max, t_to_sigma_t t_to_sigma) override {
          // These *COULD* be function arguments here,
-@@ -1107,6 +1136,10 @@ struct Denoiser {
+@@ -1202,6 +1202,10 @@ struct Denoiser {
                  LOG_INFO("get_sigmas with LCM scheduler");
                  scheduler = std::make_shared<LCMScheduler>();
                  break;
@@ -869,13 +577,36 @@
              case LTX2_SCHEDULER:
                  LOG_INFO("get_sigmas with LTX2 scheduler");
                  scheduler = std::make_shared<LTX2Scheduler>(image_seq_len, extra_sample_args);
-@@ -2034,6 +2067,107 @@ class BrownianTreeNoiseSampler {
-     std::map<double, sd::Tensor<float>> cache_;
+
+--- a/app/src/main/cpp/sd/src/stable-diffusion.cpp
++++ b/app/src/main/cpp/sd/src/stable-diffusion.cpp
+@@ -100,6 +100,7 @@ const char* sample_method_to_str[] = {
+     "dpm++2m_sde",
+     "dpm++2m_sde_bt",
+     "lms",
++    "dpm++sde",
  };
  
-+// DPM-Solver++ SDE, stochastic second-order solver.
-+// Reference: k-diffusion sample_dpmpp_sde; Lu et al., DPM-Solver++.
-+// Brownian increments run in t = -log(sigma) space, matching the solver time.
+ static_assert(SAMPLE_METHOD_COUNT == sizeof(sample_method_to_str) / sizeof(sample_method_to_str[0]),
+
+--- a/app/src/main/cpp/sd/include/stable-diffusion.h
++++ b/app/src/main/cpp/sd/include/stable-diffusion.h
+@@ -82,2 +82,3 @@ enum scheduler_t {
+     LLADA_IMAGE_SCHEDULER,
++    TCD_SCHEDULER,
+     SCHEDULER_COUNT
+
+--- a/app/src/main/cpp/sd/src/stable-diffusion.cpp
++++ b/app/src/main/cpp/sd/src/stable-diffusion.cpp
+@@ -128,3 +128,4 @@ const char* scheduler_to_str[] = {
+     "beta",
+     "llada_image",
++    "tcd",
+ };
+
+--- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
++++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
+@@ -2122,2 +2122,104 @@
 +static sd::Tensor<float> sample_dpmpp_sde(denoise_cb_t model,
 +                                         sd::Tensor<float> x,
 +                                         const std::vector<float>& sigmas,
@@ -974,50 +705,18 @@
 +    return x;
 +}
 +
- // DPM-Solver++(2M) SDE, midpoint variant, with step-count-stable Brownian-tree
- // noise. Same trajectory shape at any step count for a given seed. Aliased in
- // k-diffusion / ComfyUI as sample_dpmpp_2m_sde_gpu.
-@@ -2882,6 +3016,8 @@ static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
-             return sample_res_2s(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
-         case ER_SDE_SAMPLE_METHOD:
-             return sample_er_sde(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
-+        case DPMPP_SDE_SAMPLE_METHOD:
-+            return sample_dpmpp_sde(model, std::move(x), sigmas, rng, eta);
-         case DPMPP2M_SDE_SAMPLE_METHOD:
-             return sample_dpmpp_2m_sde(model, std::move(x), sigmas, rng, eta);
-         case DPMPP2M_SDE_BT_SAMPLE_METHOD:
++// DPM-Solver++(2M) SDE, midpoint variant, with step-count-stable Brownian-tree
++// noise. Same trajectory shape at any step count for a given seed. Aliased in
++// k-diffusion / ComfyUI as sample_dpmpp_2m_sde_gpu.
++// Ref: Lu et al. arXiv:2211.01095; torchsde BrownianTree.
+ static sd::Tensor<float> sample_dpmpp_2m_sde(denoise_cb_t model,
+                                              sd::Tensor<float> x,
 
---- a/app/src/main/cpp/sd/src/stable-diffusion.cpp
-+++ b/app/src/main/cpp/sd/src/stable-diffusion.cpp
-@@ -86,6 +86,7 @@ const char* sample_method_to_str[] = {
-     "dpm++2m_sde",
-     "dpm++2m_sde_bt",
-     "lms",
-+    "dpm++sde",
- };
- 
- static_assert(SAMPLE_METHOD_COUNT == sizeof(sample_method_to_str) / sizeof(sample_method_to_str[0]),
-@@ -124,6 +125,7 @@ const char* scheduler_to_str[] = {
-     "flux2",
-     "flux",
-     "beta",
-+    "tcd",
- };
- 
- static_assert(SCHEDULER_COUNT == sizeof(scheduler_to_str) / sizeof(scheduler_to_str[0]),
-@@ -373,6 +375,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
-              "auto_fit: %s\n"
-              "flash_attn: %s\n"
-              "diffusion_flash_attn: %s\n"
-+             "vae_conv_direct: %s\n"
-              "vae_format: %s\n",
-              SAFE_STR(sd_ctx_params->model_path),
-              SAFE_STR(sd_ctx_params->clip_l_path),
-@@ -408,6 +411,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
-              BOOL_STR(sd_ctx_params->auto_fit),
-              BOOL_STR(sd_ctx_params->flash_attn),
-              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
-+             BOOL_STR(sd_ctx_params->vae_conv_direct),
-              sd_vae_format_name(sd_ctx_params->vae_format));
- 
-     return buf;
+--- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
++++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
+@@ -3118,3 +3118,5 @@
++        case DPMPP_SDE_SAMPLE_METHOD:
++            return sample_dpmpp_sde(model, std::move(x), sigmas, *noise_sampler, eta);
+         case DPMPP2M_SDE_SAMPLE_METHOD:
+         case DPMPP2M_SDE_BT_SAMPLE_METHOD:
+             return sample_dpmpp_2m_sde(model, std::move(x), sigmas, *noise_sampler, eta);
