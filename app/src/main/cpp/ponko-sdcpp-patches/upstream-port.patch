@@ -721,21 +721,6 @@
          case DPMPP2M_SDE_BT_SAMPLE_METHOD:
              return sample_dpmpp_2m_sde(model, std::move(x), sigmas, *noise_sampler, eta);
 
---- a/app/src/main/cpp/sd/include/stable-diffusion.h
-+++ b/app/src/main/cpp/sd/include/stable-diffusion.h
-@@ -82,2 +82,3 @@ enum scheduler_t {
-     LLADA_IMAGE_SCHEDULER,
-+    TCD_SCHEDULER,
-     SCHEDULER_COUNT
-
---- a/app/src/main/cpp/sd/src/stable-diffusion.cpp
-+++ b/app/src/main/cpp/sd/src/stable-diffusion.cpp
-@@ -128,3 +128,4 @@ const char* scheduler_to_str[] = {
-     "beta",
-     "llada_image",
-+    "tcd",
- };
-
 --- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
 +++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
 @@ -2122,2 +2122,90 @@
