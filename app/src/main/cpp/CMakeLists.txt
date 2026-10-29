@@ -152,6 +152,30 @@ if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
     if(NOT PONKO_SDCpp_PATCH_RESULT EQUAL 0)
         message(FATAL_ERROR "Failed to apply the Ponko feature patch.\n${PONKO_SDCpp_PATCH_STDOUT}\n${PONKO_SDCpp_PATCH_STDERR}")
     endif()
+    # The upstream API has no TCD scheduler enum. Keep Ponko's distinct scheduler selectable
+    # and append it instead of renumbering upstream scheduler values.
+    set(PONKO_SD_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/sd/include/stable-diffusion.h")
+    file(READ "${PONKO_SD_HEADER}" PONKO_SD_HEADER_TEXT)
+    string(FIND "${PONKO_SD_HEADER_TEXT}" "    LLADA_IMAGE_SCHEDULER,\n    SCHEDULER_COUNT" PONKO_TCD_ENUM_ANCHOR)
+    if(PONKO_TCD_ENUM_ANCHOR EQUAL -1)
+        message(FATAL_ERROR "Could not locate the stable-diffusion.cpp scheduler enum for TCD compatibility.")
+    endif()
+    string(REPLACE "    LLADA_IMAGE_SCHEDULER,\n    SCHEDULER_COUNT"
+                   "    LLADA_IMAGE_SCHEDULER,\n    TCD_SCHEDULER,\n    SCHEDULER_COUNT"
+                   PONKO_SD_HEADER_TEXT "${PONKO_SD_HEADER_TEXT}")
+    file(WRITE "${PONKO_SD_HEADER}" "${PONKO_SD_HEADER_TEXT}")
+
+    set(PONKO_SD_VERSION_CPP "${CMAKE_CURRENT_SOURCE_DIR}/sd/src/stable-diffusion.cpp")
+    file(READ "${PONKO_SD_VERSION_CPP}" PONKO_SD_VERSION_TEXT)
+    string(FIND "${PONKO_SD_VERSION_TEXT}" "    \"llada_image\",\n};" PONKO_TCD_NAME_ANCHOR)
+    if(PONKO_TCD_NAME_ANCHOR EQUAL -1)
+        message(FATAL_ERROR "Could not locate stable-diffusion.cpp scheduler names for TCD compatibility.")
+    endif()
+    string(REPLACE "    \"llada_image\",\n};"
+                   "    \"llada_image\",\n    \"tcd\",\n};"
+                   PONKO_SD_VERSION_TEXT "${PONKO_SD_VERSION_TEXT}")
+    file(WRITE "${PONKO_SD_VERSION_CPP}" "${PONKO_SD_VERSION_TEXT}")
+
     file(WRITE "${PONKO_SDCpp_PATCH_MARKER}" "upstream=77b72a2efed78f55de26892c7e909cee001e8b83\n")
     message(STATUS "Ponko native feature patches applied to upstream source")
 endif()
