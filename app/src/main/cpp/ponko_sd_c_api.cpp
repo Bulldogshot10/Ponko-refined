@@ -491,7 +491,12 @@ extern "C" int32_t ponko_sd_generate(void* opaque_handle, const ponko_generation
     generation.sample_params.eta = params->eta < 0.0f ? std::numeric_limits<float>::infinity() : params->eta;
     generation.sample_params.guidance.txt_cfg = params->cfg;
     generation.sample_params.sample_method = static_cast<enum sample_method_t>(params->sample_method);
-    generation.sample_params.scheduler = static_cast<enum scheduler_t>(params->scheduler);
+    // The Kotlin API persists TCD as scheduler code 16. Upstream added LLADA_IMAGE at
+    // that numeric slot and moved the custom TCD enum to the end, so translate the legacy
+    // app code explicitly instead of accidentally dispatching LLADA_IMAGE.
+    const int32_t scheduler_code = params->scheduler;
+    generation.sample_params.scheduler = static_cast<enum scheduler_t>(
+        scheduler_code == 16 ? TCD_SCHEDULER : scheduler_code);
     generation.hires.enabled = params->hires_enabled != 0;
     generation.hires.upscaler = static_cast<enum sd_hires_upscaler_t>(params->hires_upscaler);
     generation.hires.model_path = stringIsNonempty(params->hires_model_path) ? params->hires_model_path : nullptr;
