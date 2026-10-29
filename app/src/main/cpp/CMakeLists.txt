@@ -134,17 +134,45 @@ set(GGML_CCACHE         ${PONKO_ENABLE_COMPILER_CACHE} CACHE BOOL "" FORCE)  # U
 
 # ---------------------------------------------------------------------------
 # Apply the pinned upstream source plus Ponko's feature overlay before configuration.
-# A clean checkout starts without the marker; the build workspace is patched only once.
-set(PONKO_SDCpp_PATCH_MARKER "${CMAKE_CURRENT_SOURCE_DIR}/sd/.ponko-patches-applied")
-if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
+# The submodule commit itself is pinned by the repository gitlink; this marker is keyed to
+# the exact overlay content so a changed patch is reapplied from a clean upstream worktree.
+set(PONKO_SDCpp_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sd")
+set(PONKO_SDCpp_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/ponko-sdcpp-patches/upstream-port.patch")
+set(PONKO_SDCpp_PATCH_MARKER "${PONKO_SDCpp_DIR}/.ponko-patches-applied")
+file(SHA256 "${PONKO_SDCpp_PATCH}" PONKO_SDCpp_PATCH_SHA)
+set(PONKO_SDCpp_EXPECTED_MARKER "upstream=77b72a2efed78f55de26892c7e909cee001e8b83;patch=${PONKO_SDCpp_PATCH_SHA}\n")
+set(PONKO_SDCpp_PATCH_NEEDED ON)
+if(EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
+    file(READ "${PONKO_SDCpp_PATCH_MARKER}" PONKO_SDCpp_APPLIED_MARKER)
+    if(PONKO_SDCpp_APPLIED_MARKER STREQUAL PONKO_SDCpp_EXPECTED_MARKER)
+        set(PONKO_SDCpp_PATCH_NEEDED OFF)
+    else()
+        # CMake may be reconfigured in the same checkout after the overlay changes.
+        # Reset only the pinned submodule worktree, not any tracked Ponko app sources.
+        find_program(PONKO_GIT_EXECUTABLE NAMES git)
+        if(NOT PONKO_GIT_EXECUTABLE)
+            message(FATAL_ERROR "Git is required to refresh the stable-diffusion.cpp feature overlay.")
+        endif()
+        execute_process(
+            COMMAND "${PONKO_GIT_EXECUTABLE}" checkout -- .
+            WORKING_DIRECTORY "${PONKO_SDCpp_DIR}"
+            RESULT_VARIABLE PONKO_SDCpp_RESET_RESULT
+        )
+        if(NOT PONKO_SDCpp_RESET_RESULT EQUAL 0)
+            message(FATAL_ERROR "Could not reset the pinned stable-diffusion.cpp worktree before reapplying the feature overlay.")
+        endif()
+    endif()
+endif()
+
+if(PONKO_SDCpp_PATCH_NEEDED)
     find_program(PONKO_PATCH_EXECUTABLE NAMES patch)
     if(NOT PONKO_PATCH_EXECUTABLE)
         message(FATAL_ERROR "Ponko requires the patch utility to port native feature changes.")
     endif()
     execute_process(
         COMMAND "${PONKO_PATCH_EXECUTABLE}" --batch --forward -p6 -F3
-                -i "${CMAKE_CURRENT_SOURCE_DIR}/ponko-sdcpp-patches/upstream-port.patch"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/sd"
+                -i "${PONKO_SDCpp_PATCH}"
+        WORKING_DIRECTORY "${PONKO_SDCpp_DIR}"
         RESULT_VARIABLE PONKO_SDCpp_PATCH_RESULT
         OUTPUT_VARIABLE PONKO_SDCpp_PATCH_STDOUT
         ERROR_VARIABLE PONKO_SDCpp_PATCH_STDERR
@@ -154,7 +182,7 @@ if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
     endif()
     # The upstream API has no TCD scheduler enum. Keep Ponko's distinct scheduler selectable
     # and append it instead of renumbering upstream scheduler values.
-    set(PONKO_SD_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/sd/include/stable-diffusion.h")
+    set(PONKO_SD_HEADER "${PONKO_SDCpp_DIR}/include/stable-diffusion.h")
     file(READ "${PONKO_SD_HEADER}" PONKO_SD_HEADER_TEXT)
     string(FIND "${PONKO_SD_HEADER_TEXT}" "    LLADA_IMAGE_SCHEDULER,\n    SCHEDULER_COUNT" PONKO_TCD_ENUM_ANCHOR)
     if(PONKO_TCD_ENUM_ANCHOR EQUAL -1)
@@ -165,7 +193,7 @@ if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
                    PONKO_SD_HEADER_TEXT "${PONKO_SD_HEADER_TEXT}")
     file(WRITE "${PONKO_SD_HEADER}" "${PONKO_SD_HEADER_TEXT}")
 
-    set(PONKO_SD_VERSION_CPP "${CMAKE_CURRENT_SOURCE_DIR}/sd/src/stable-diffusion.cpp")
+    set(PONKO_SD_VERSION_CPP "${PONKO_SDCpp_DIR}/src/stable-diffusion.cpp")
     file(READ "${PONKO_SD_VERSION_CPP}" PONKO_SD_VERSION_TEXT)
     string(FIND "${PONKO_SD_VERSION_TEXT}" "    \"llada_image\",\n};" PONKO_TCD_NAME_ANCHOR)
     if(PONKO_TCD_NAME_ANCHOR EQUAL -1)
@@ -176,8 +204,10 @@ if(NOT EXISTS "${PONKO_SDCpp_PATCH_MARKER}")
                    PONKO_SD_VERSION_TEXT "${PONKO_SD_VERSION_TEXT}")
     file(WRITE "${PONKO_SD_VERSION_CPP}" "${PONKO_SD_VERSION_TEXT}")
 
-    file(WRITE "${PONKO_SDCpp_PATCH_MARKER}" "upstream=77b72a2efed78f55de26892c7e909cee001e8b83\n")
+    file(WRITE "${PONKO_SDCpp_PATCH_MARKER}" "${PONKO_SDCpp_EXPECTED_MARKER}")
     message(STATUS "Ponko native feature patches applied to upstream source")
+else()
+    message(STATUS "Ponko native feature patches already applied for this patch revision")
 endif()
 
 # 引入 sd.cpp
