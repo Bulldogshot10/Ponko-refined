@@ -2514,3 +2514,24 @@
 +};
 +
 +#endif  // __SD_TOKENIZERS_GPT_OSS_TOKENIZER_H__
+
+--- a/app/src/main/cpp/sd/src/tokenizers/vocab/vocab.h
++++ b/app/src/main/cpp/sd/src/tokenizers/vocab/vocab.h
+@@ -11,5 +11,7 @@
+ std::string load_umt5_tokenizer_json();
+ std::string load_gemma_merges();
+ std::string load_gemma_vocab_json();
++std::string load_gpt_oss_merges();
++std::string load_gpt_oss_vocab_json();
+ 
+ #endif  // __SD_TOKENIZERS_VOCAB_VOCAB_H__
+--- a/app/src/main/cpp/sd/src/tokenizers/vocab/vocab.cpp
++++ b/app/src/main/cpp/sd/src/tokenizers/vocab/vocab.cpp
+@@ -46,4 +46,7 @@
+ std::string load_gemma_vocab_json() {
+     std::string json_str(reinterpret_cast<const char*>(gemma_vocab_json_utf8_c_str), sizeof(gemma_vocab_json_utf8_c_str));
+     return json_str;
+ }
++std::string load_gpt_oss_merges() { return {}; }
++
++std::string load_gpt_oss_vocab_json() { return {}; }
