@@ -713,14 +713,14 @@
 
 --- a/app/src/main/cpp/sd/src/core/backend_fit.cpp
 +++ b/app/src/main/cpp/sd/src/core/backend_fit.cpp
-@@ -492,28 +492,24 @@
+@@ -488,33 +488,29 @@
+         if (status != GGML_STATUS_ALLOC_FAILED) {
+             return false;
+         }
+-        const char* retry_mode = nullptr;
 -        if (prefer_temporal_tiling && !tiling_params.temporal_tiling) {
-+        if (prefer_temporal_tiling) {
-+            if (tiling_params.temporal_tiling) {
-+                return false;
-+            }
-             tiling_params.temporal_tiling = true;
-             retry_mode                    = tiling_params.enabled ? "spatial+temporal" : "temporal";
+-            tiling_params.temporal_tiling = true;
+-            retry_mode                    = tiling_params.enabled ? "spatial+temporal" : "temporal";
 -        } else {
 -            if (latent_tile_size_w <= 0 || latent_tile_size_h <= 0 || scale_factor <= 0) {
 -                return false;
@@ -743,24 +743,33 @@
 -                     latent_tile_size_w * scale_factor, latent_tile_size_h * scale_factor,
 -                     tiling_params.tile_size_w, tiling_params.tile_size_h);
 -        }
-+        } else {
+-
++        const char* retry_mode = nullptr;
++        if (prefer_temporal_tiling && !tiling_params.temporal_tiling) {
++            tiling_params.temporal_tiling = true;
++            retry_mode                    = tiling_params.enabled ? "spatial+temporal" : "temporal";
++        } else if (!tiling_params.enabled) {
 +            if (latent_tile_size_w <= 0 || latent_tile_size_h <= 0 || scale_factor <= 0) {
 +                return false;
 +            }
-+            // This is a single fallback. Do not keep shrinking the tile if the retry fails.
-+            if (tiling_params.enabled) {
-+                return false;
-+            }
++            // Match Ponko's original bounded fallback: one temporal retry when preferred,
++            // then one spatial retry if needed. Never progressively shrink tiles on later failures.
 +            tiling_params.enabled     = true;
-+            tiling_params.rel_size_w  = 0.0f;
-+            tiling_params.rel_size_h  = 0.0f;
-+            if (tiling_params.tile_size_w <= 0) tiling_params.tile_size_w = 256;
-+            if (tiling_params.tile_size_h <= 0) tiling_params.tile_size_h = 256;
-+            retry_mode                = tiling_params.temporal_tiling ? "spatial+temporal" : "spatial";
++            tiling_params.rel_size_w  = 0.5f;
++            tiling_params.rel_size_h  = 0.5f;
++            if (tiling_params.tile_size_w <= 0) {
++                tiling_params.tile_size_w = 256;
++            }
++            if (tiling_params.tile_size_h <= 0) {
++                tiling_params.tile_size_h = 256;
++            }
++            retry_mode = tiling_params.temporal_tiling ? "spatial+temporal" : "spatial";
++        } else {
++            return false;
 +        }
- 
          LOG_WARN("VAE decode ran out of memory; retrying with %s tiling",
                   retry_mode);
+         return true;
 --- a/app/src/main/cpp/sd/src/convert.cpp
 +++ b/app/src/main/cpp/sd/src/convert.cpp
 @@ -1,639 +1,929 @@
