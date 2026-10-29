@@ -179,6 +179,14 @@ if(PONKO_SDCpp_PATCH_NEEDED)
     if(NOT PONKO_PATCH_EXECUTABLE)
         message(FATAL_ERROR "Ponko requires the patch utility to port native feature changes.")
     endif()
+    # Git may check out upstream files with CRLF, while this overlay is LF.
+    # Normalize the two whole-file replacement targets before invoking GNU patch.
+    foreach(_ponko_patch_target
+            "${PONKO_SDCpp_DIR}/src/convert.cpp")
+        file(READ "${_ponko_patch_target}" _ponko_patch_source)
+        string(REPLACE "\r\n" "\n" _ponko_patch_source "${_ponko_patch_source}")
+        file(WRITE "${_ponko_patch_target}" "${_ponko_patch_source}")
+    endforeach()
     execute_process(
         COMMAND "${PONKO_PATCH_EXECUTABLE}" --batch --forward -p6 -F3
                 -i "${PONKO_SDCpp_PATCH}"
