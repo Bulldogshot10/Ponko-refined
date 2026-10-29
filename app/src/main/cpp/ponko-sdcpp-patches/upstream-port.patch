@@ -832,13 +832,13 @@
 
 --- a/app/src/main/cpp/sd/src/runtime/denoiser.hpp
 +++ b/app/src/main/cpp/sd/src/runtime/denoiser.hpp
+@@ -3013,1 +3013,1 @@
+-    bool brownian_tree            = (method == DPMPP2M_SDE_BT_SAMPLE_METHOD);
++    bool brownian_tree            = (method == DPMPP2M_SDE_BT_SAMPLE_METHOD || method == DPMPP_SDE_SAMPLE_METHOD);
+
 @@ -3118,3 +3118,5 @@
 +        case DPMPP_SDE_SAMPLE_METHOD:
 +            return sample_dpmpp_sde(model, std::move(x), sigmas, *noise_sampler, eta);
          case DPMPP2M_SDE_SAMPLE_METHOD:
          case DPMPP2M_SDE_BT_SAMPLE_METHOD:
              return sample_dpmpp_2m_sde(model, std::move(x), sigmas, *noise_sampler, eta);
-
-@@ -3013,1 +3013,1 @@
--    bool brownian_tree            = (method == DPMPP2M_SDE_BT_SAMPLE_METHOD);
-+    bool brownian_tree            = (method == DPMPP2M_SDE_BT_SAMPLE_METHOD || method == DPMPP_SDE_SAMPLE_METHOD);
