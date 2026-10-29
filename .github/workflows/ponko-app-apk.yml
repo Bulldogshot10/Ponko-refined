@@ -2,7 +2,7 @@ name: Ponko Android APK (CPU / Exynos 2400E)
 
 on:
   push:
-    branches: [feat/rust-uniffi-native-facade]
+    branches: [feat/rust-uniffi-native-facade, feat/sdcpp-ggml-upstream-port]
     paths:
       - "app/**"
       - "rust/ponko-native/**"
