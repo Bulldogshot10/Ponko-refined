@@ -48,6 +48,11 @@ pub(crate) fn validate_lengths(
     let b_len = k.checked_mul(n).ok_or(KernelError::DimensionOverflow)?;
     let c_len = m.checked_mul(n).ok_or(KernelError::DimensionOverflow)?;
 
+    // An empty output is a valid no-op; none of A or B will be read.
+    if c_len == 0 {
+        return Ok((a_len, b_len, c_len));
+    }
+
     for (name, actual, expected) in [
         ("A", a.len(), a_len),
         ("B", b.len(), b_len),
@@ -93,6 +98,10 @@ pub(crate) fn matmul_f32_reference_validated(
     k: usize,
     c_len: usize,
 ) {
+    if c_len == 0 {
+        return;
+    }
+
     c[..c_len].fill(0.0);
 
     for row in 0..m {

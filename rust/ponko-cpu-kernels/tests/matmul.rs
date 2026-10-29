@@ -53,8 +53,7 @@ fn supports_empty_output_dimensions() {
 fn rejects_short_input_buffers() {
     let mut c = [0.0; 4];
 
-    let err = matmul_f32(&[1.0, 2.0], &[1.0, 2.0, 3.0, 4.0], &mut c, 2, 2, 2)
-        .unwrap_err();
+    let err = matmul_f32(&[1.0, 2.0], &[1.0, 2.0, 3.0, 4.0], &mut c, 2, 2, 2).unwrap_err();
 
     assert_eq!(
         err,

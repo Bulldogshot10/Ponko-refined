@@ -3,28 +3,14 @@ use core::arch::aarch64::{vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32};
 /// AArch64 NEON implementation for contiguous row-major FP32 matrices.
 ///
 /// The caller must validate the dimensions and buffer lengths before calling this function.
-pub(crate) fn matmul_f32_neon(
-    a: &[f32],
-    b: &[f32],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-) {
+pub(crate) fn matmul_f32_neon(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
     // SAFETY: The dispatcher only reaches this function on AArch64/arm64-v8a and validates
     // m*k, k*n, and m*n with checked arithmetic before calling it.
     unsafe { matmul_f32_neon_impl(a, b, c, m, n, k) }
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn matmul_f32_neon_impl(
-    a: &[f32],
-    b: &[f32],
-    c: &mut [f32],
-    m: usize,
-    n: usize,
-    k: usize,
-) {
+unsafe fn matmul_f32_neon_impl(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
     let a_ptr = a.as_ptr();
     let b_ptr = b.as_ptr();
     let c_ptr = c.as_mut_ptr();

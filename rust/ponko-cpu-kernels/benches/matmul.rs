@@ -14,26 +14,12 @@ fn time_case(m: usize, n: usize, k: usize, iterations: usize) {
     let mut c = vec![0.0_f32; m * n];
 
     let reference = time_loop(iterations, || {
-        matmul_f32_reference(
-            black_box(&a),
-            black_box(&b),
-            black_box(&mut c),
-            m,
-            n,
-            k,
-        )
-        .expect("reference kernel");
+        matmul_f32_reference(black_box(&a), black_box(&b), black_box(&mut c), m, n, k)
+            .expect("reference kernel");
     });
     let dispatched = time_loop(iterations, || {
-        matmul_f32(
-            black_box(&a),
-            black_box(&b),
-            black_box(&mut c),
-            m,
-            n,
-            k,
-        )
-        .expect("dispatched kernel");
+        matmul_f32(black_box(&a), black_box(&b), black_box(&mut c), m, n, k)
+            .expect("dispatched kernel");
     });
 
     println!(
