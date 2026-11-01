@@ -199,3 +199,14 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Native/Gradle build reached Kotlin compilation and failed at `MainActivity.kt:2994`: `Unresolved reference 'LayoutParams'` from `ScrollView.LayoutParams` in the Advanced Sampling dialog.
 - Root cause: use the public `ViewGroup.LayoutParams` type for the ScrollView child; patch changes only that constructor reference. The run uploaded diagnostic artifact `ponko-cpu-exynos2400e-debug-apk-41287596420` (no APK was produced).
 - A new push will rerun the full workflow against the correction.
+
+### Corrected CI build (run 41287888297) — SUCCESS
+- Source commit tested: `55366b8f92db733886f3d7f15c7b0835e7c0f278`.
+- Rust CPU-kernel format/tests and AArch64 cross-check passed; Rust facade format/tests passed.
+- Kotlin compilation passed after replacing `ScrollView.LayoutParams` with `ViewGroup.LayoutParams` in the Advanced Sampling dialog.
+- `./gradlew :app:assembleDebug` completed successfully with Vulkan OFF and the Exynos 2400E CPU profile ON.
+- APK verification passed: `libponko_native.so`, `libponko_sd.so`, `libstable-diffusion.so`, and `libomp.so` are present in `lib/arm64-v8a/`.
+- Artifact: [ponko-cpu-exynos2400e-debug-apk-41287888297](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/41287888297/artifacts/13074939939), artifact ID `13074939939`, expires 2026-11-15.
+- Extracted APK: `ponko-cpu-exynos2400e-debug-41287888297.apk`, 53,536,264 bytes.
+- APK SHA-256: `014c853567d06bb303660fb0ec031562fc1032201a2dfeefff897d7f279e8b2a`. Independently recomputed after artifact extraction and matches `apk-sha256.txt`.
+- Build + packaging validation is complete. Physical-device installation and keyboard/system-prompt/sampler runtime behavior still need a smoke test on the Exynos 2400E.
