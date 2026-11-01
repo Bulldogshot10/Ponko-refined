@@ -248,3 +248,11 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Extracted APK: `Ponko-Exynos2400e-debug.apk`, 50,640,128 bytes.
 - APK SHA-256: `0bf824ece7cf5e7ee1365fa321954a581843932411f5587399999b8ea2e2a2e1`. Independently recomputed after artifact extraction; it matches the CI-produced `apk-sha256.txt`.
 - Runtime testing on Galaxy S24 FE remains: confirm system prompt and image chat, verify the two selectors take effect after model reload, compare GGUF decode 2/4/6 and prompt 6/8/10, and measure tokens/s plus sustained thermals. Auto 6/10 is a topology-based initial policy, not a measured optimum.
+
+## GGUF loader diagnostics and atomic import fix (2026-11-01)
+- The user retried model import and GGUF loading still failed with the JNI wrapper error: could not load model from given file path. In java-llama.cpp v5.1.0 this is emitted after server.load_model(params) returns false; it does not identify whether the underlying failure is architecture/metadata, file I/O, or memory.
+- Add the official java-llama.cpp LlamaModel.setLogger(LogFormat.TEXT, callback) hook only around model construction. TEXT mode includes GGML backend logs. Capture is bounded to 128 KiB and stops immediately after LlamaModel(params) returns or throws.
+- Before JNI loading, validate regular file/read access, minimum header length, GGUF magic, and header version 2/3; record file size, quant type, and GgufProbe classification.
+- On failure, persist a diagnostic report under app-private files/diagnostics/last-gguf-load-failure.txt and present a copyable dialog containing device/SoC, RAM snapshot, loaded llama.cpp build identifier, load configuration, exception stack, and captured native loader logs.
+- Change model import to copy to a temporary file, fsync, verify copied size against both the temp file and provider length where available, then replace the prior file via a backup/rename path. This prevents a stale partial destination file from being silently reused on a repeated import.
+- Validation status: source-level patch checks passed. GitHub Actions APK build and a real-device load attempt are still pending.

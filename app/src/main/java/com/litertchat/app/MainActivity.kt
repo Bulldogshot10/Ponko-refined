@@ -4,6 +4,8 @@ package com.litertchat.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -67,6 +69,7 @@ import kotlinx.coroutines.flow.channelFlow
 import net.ladenthin.llama.LlamaIterator
 import net.ladenthin.llama.LlamaModel
 import net.ladenthin.llama.args.MiroStat
+import net.ladenthin.llama.args.LogFormat
 import net.ladenthin.llama.parameters.InferenceParameters
 import net.ladenthin.llama.parameters.ModelParameters
 import net.ladenthin.llama.value.ChatMessage
@@ -88,6 +91,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.math.BigInteger
 
 /**
@@ -183,6 +187,11 @@ class MainActivity : Activity() {
         private const val DEF_CHAT_DRY_BASE = 1.75f
         private const val DEF_CHAT_DRY_ALLOWED = 2
         private const val DEF_CHAT_DRY_LAST_N = 64
+
+        @Volatile private var nativeLoadLogCapture = false
+        private val nativeLoadLogLock = Any()
+        private val nativeLoadLogBuffer = StringBuilder()
+        private const val MAX_NATIVE_LOAD_LOG_CHARS = 128 * 1024
     }
 
     // ---- palette ----
@@ -3716,38 +3725,65 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Models can't be loaded from a content:// URI, so copy them to a real file first. */
+    /** Copy through a temporary file; never reuse a stale or partial import. */
     private fun copyModelToPrivate(uri: Uri) {
         setBusy(true)
         setStatus(getString(R.string.s_130), C_WARN)
         progressBar.visibility = View.VISIBLE
         progressBar.progress = 0
         scope.launch(Dispatchers.IO) {
+            var temp: File? = null
+            var backup: File? = null
             try {
                 val dir = File(filesDir, "models").apply { mkdirs() }
-                val name = queryDisplayName(uri) ?: ("model_${System.currentTimeMillis()}.litertlm")
+                val rawName = queryDisplayName(uri) ?: ("model_" + System.currentTimeMillis() + ".litertlm")
+                val name = rawName.substringAfterLast('/').substringAfterLast('\\')
+                    .replace(Regex("[\\p{Cntrl}]"), "_")
                 val dest = File(dir, name)
-                if (!dest.exists()) {
-                    val input = contentResolver.openInputStream(uri)
-                        ?: throw IllegalStateException(getString(R.string.s_111))
-                    val total = contentResolver.openAssetFileDescriptor(uri, "r")?.length ?: -1L
-                    input.use { ins ->
-                        dest.outputStream().use { outs ->
-                            val buf = ByteArray(1 shl 16)
-                            var copied = 0L
-                            while (true) {
-                                val n = ins.read(buf)
-                                if (n < 0) break
-                                outs.write(buf, 0, n)
-                                copied += n
-                                if (total > 0) {
-                                    val pct = (copied * 100 / total).toInt()
-                                    withContext(Dispatchers.Main) { progressBar.progress = pct }
-                                }
+                temp = File(dir, "." + name + "." + System.currentTimeMillis() + ".part")
+                backup = File(dir, "." + name + ".backup")
+
+                // Recover an interrupted previous replacement before starting another one.
+                if (!dest.exists() && backup.exists()) backup.renameTo(dest)
+                if (backup.exists()) backup.delete()
+                temp.delete()
+
+                val total = contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException(getString(R.string.s_111))
+                var copied = 0L
+                input.use { ins ->
+                    FileOutputStream(temp).use { outs ->
+                        val buf = ByteArray(1 shl 16)
+                        while (true) {
+                            val n = ins.read(buf)
+                            if (n < 0) break
+                            outs.write(buf, 0, n)
+                            copied += n
+                            if (total > 0) {
+                                val pct = (copied * 100 / total).coerceIn(0, 100).toInt()
+                                withContext(Dispatchers.Main) { progressBar.progress = pct }
                             }
                         }
+                        outs.fd.sync()
                     }
                 }
+                if (copied <= 0L || temp.length() != copied) {
+                    throw IllegalStateException("Model import size check failed: copied=" + copied + ", file=" + temp.length())
+                }
+                if (total > 0 && copied != total) {
+                    throw IllegalStateException("Model import was incomplete: expected=" + total + " bytes, copied=" + copied)
+                }
+
+                if (dest.exists() && !dest.renameTo(backup)) {
+                    throw IllegalStateException("Could not stage previous model file for replacement")
+                }
+                if (!temp.renameTo(dest)) {
+                    if (backup.exists()) backup.renameTo(dest)
+                    throw IllegalStateException("Could not finalize imported model file")
+                }
+                backup.delete()
+
                 withContext(Dispatchers.Main) {
                     modelPath = dest.absolutePath
                     modelInfoText.text = getString(R.string.v_002, (dest.name), (fmtSize(dest.length())))
@@ -3757,6 +3793,11 @@ class MainActivity : Activity() {
                     toast(getString(R.string.v_003, (dest.name)))
                 }
             } catch (e: Throwable) {
+                temp?.delete()
+                if (backup?.exists() == true) {
+                    val dest = File(backup.parentFile, backup.name.removePrefix(".").removeSuffix(".backup"))
+                    if (!dest.exists()) backup.renameTo(dest)
+                }
                 withContext(Dispatchers.Main) {
                     setStatus(getString(R.string.s_072), C_ERR)
                     toast(getString(R.string.v_004, (e.message)))
@@ -4211,6 +4252,130 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun beginNativeLoadLogCapture() {
+        synchronized(nativeLoadLogLock) { nativeLoadLogBuffer.setLength(0) }
+        nativeLoadLogCapture = true
+        LlamaModel.setLogger(LogFormat.TEXT) { level, message ->
+            if (nativeLoadLogCapture) {
+                val line = level.toString() + ": " + (message ?: "")
+                synchronized(nativeLoadLogLock) {
+                    if (nativeLoadLogBuffer.length + line.length > MAX_NATIVE_LOAD_LOG_CHARS) {
+                        val remove = (nativeLoadLogBuffer.length + line.length - MAX_NATIVE_LOAD_LOG_CHARS)
+                            .coerceAtMost(nativeLoadLogBuffer.length)
+                        if (remove > 0) nativeLoadLogBuffer.delete(0, remove)
+                    }
+                    nativeLoadLogBuffer.append(line)
+                    if (!line.endsWith("\n")) nativeLoadLogBuffer.append('\n')
+                }
+            }
+        }
+    }
+
+    private fun endNativeLoadLogCapture() {
+        nativeLoadLogCapture = false
+    }
+
+    private fun nativeLoadLogSnapshot(): String =
+        synchronized(nativeLoadLogLock) { nativeLoadLogBuffer.toString() }
+
+    /** Validate the fixed GGUF header before handing the path to JNI. */
+    private fun inspectGgufForLoad(file: File): String {
+        require(file.exists()) { "GGUF file does not exist: " + file.absolutePath }
+        require(file.isFile) { "GGUF path is not a regular file: " + file.absolutePath }
+        require(file.canRead()) { "GGUF file is not readable: " + file.absolutePath }
+        require(file.length() >= 24L) { "GGUF file is too small: " + file.length() + " bytes" }
+        val header = ByteArray(24)
+        file.inputStream().use { input ->
+            var offset = 0
+            while (offset < header.size) {
+                val count = input.read(header, offset, header.size - offset)
+                if (count < 0) break
+                offset += count
+            }
+            require(offset == header.size) { "Could not read the complete GGUF header" }
+        }
+        val magic = String(header, 0, 4, Charsets.US_ASCII)
+        require(magic == "GGUF") { "Invalid GGUF magic: '" + magic + "' (expected GGUF)" }
+        val version = (header[4].toLong() and 0xff) or
+            ((header[5].toLong() and 0xff) shl 8) or
+            ((header[6].toLong() and 0xff) shl 16) or
+            ((header[7].toLong() and 0xff) shl 24)
+        require(version in 2L..3L) { "Unsupported GGUF header version: " + version }
+        return buildString {
+            appendLine("file=" + file.name)
+            appendLine("path=" + file.absolutePath)
+            appendLine("size_bytes=" + file.length())
+            appendLine("gguf_version=" + version)
+            appendLine("probe=" + GgufProbe.probe(file))
+            appendLine("quant=" + (GgufProbe.quantType(file) ?: "unknown"))
+        }
+    }
+
+    private fun buildGgufLoadFailureReport(
+        file: File?,
+        loadContext: String,
+        error: Throwable,
+    ): File {
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        (getSystemService(ACTIVITY_SERVICE) as? android.app.ActivityManager)?.getMemoryInfo(memoryInfo)
+        val soc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL
+        } else "not exposed by this Android API"
+        val report = buildString {
+            appendLine("Ponko GGUF load diagnostics")
+            appendLine("timestamp=" + java.time.Instant.now())
+            appendLine("app_version=" + packageManager.getPackageInfo(packageName, 0).versionName)
+            appendLine("android_sdk=" + Build.VERSION.SDK_INT)
+            appendLine("device=" + Build.MANUFACTURER + " " + Build.MODEL)
+            appendLine("soc=" + soc)
+            appendLine("llama_cpp=" + runCatching { LlamaModel.getLlamaCppBuildInfo() }.getOrElse { "unavailable: " + it.message })
+            appendLine("available_processors=" + Runtime.getRuntime().availableProcessors())
+            appendLine("available_memory_bytes=" + memoryInfo.availMem)
+            appendLine("low_memory=" + memoryInfo.lowMemory)
+            appendLine("model_exists=" + file?.exists())
+            appendLine("model_readable=" + file?.canRead())
+            appendLine("model_size_bytes=" + file?.length())
+            appendLine()
+            appendLine("Load configuration:")
+            appendLine(loadContext)
+            appendLine()
+            appendLine("Exception:")
+            appendLine(error.stackTraceToString())
+            appendLine()
+            appendLine("Native llama.cpp / GGML log:")
+            appendLine(nativeLoadLogSnapshot().ifBlank { "<native logger returned no messages>" })
+        }
+        val directory = File(filesDir, "diagnostics").apply { mkdirs() }
+        return File(directory, "last-gguf-load-failure.txt").apply { writeText(report) }
+    }
+
+    private fun showGgufLoadFailureReport(reportFile: File) {
+        val report = runCatching { reportFile.readText() }
+            .getOrElse { "Could not read diagnostic report: " + it.message }
+        val body = TextView(this).apply {
+            text = report.takeLast(24_000)
+            textSize = 11f
+            setTextColor(C_TEXT)
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(body, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("GGUF load diagnostics")
+            .setView(scroll)
+            .setPositiveButton("Copy full report") { _, _ ->
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Ponko GGUF diagnostics", report))
+                toast("Diagnostics copied")
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun toggleLoad() {
         if (engine != null || llamaModel != null) {
             unloadModel()
@@ -4225,8 +4390,12 @@ class MainActivity : Activity() {
         progressBar.visibility = View.VISIBLE
         progressBar.isIndeterminate = true
         scope.launch(Dispatchers.IO) {
+            var ggufFileForDiagnostics: File? = null
+            var ggufLoadContext = ""
             try {
                 if (isGguf) {
+                    ggufFileForDiagnostics = File(path)
+                    val fileCheck = inspectGgufForLoad(ggufFileForDiagnostics)
                     // Separate decode and prompt-evaluation pools. Exynos 2400e Auto uses
                     // its six X4/A720 cores for decode and all ten cores for prompt batches.
                     val cpuProfile = detectChatCpuProfile()
@@ -4248,10 +4417,24 @@ class MainActivity : Activity() {
                     // stays off so Android cpusets can still constrain the process normally.
                     cpuThreads.generationMask?.let { params.setCpuMask(it) }
                     cpuThreads.batchMask?.let { params.setCpuMaskBatch(it) }
+                    ggufLoadContext = buildString {
+                        appendLine(fileCheck)
+                        appendLine("soc=" + cpuProfile.socLabel)
+                        appendLine("online_cpu_ids=" + cpuProfile.onlineCpuIds)
+                        appendLine("frequency_ordered_cpu_ids=" + cpuProfile.frequencyOrderedCpuIds)
+                        appendLine("generation_threads=" + cpuThreads.generationThreads)
+                        appendLine("batch_threads=" + cpuThreads.batchThreads)
+                        appendLine("generation_mask=" + cpuThreads.generationMask)
+                        appendLine("batch_mask=" + cpuThreads.batchMask)
+                        appendLine("context_tokens=" + chatCtx())
+                        appendLine("batch_size=512")
+                        appendLine("mmproj=" + (mmprojPath ?: "none"))
+                    }
                     // 多模态 gguf：挂上 mmproj（视觉投影）后模型才有图像输入能力
                     val mp = mmprojPath?.let { File(it) }?.takeIf { it.isFile }
                     if (mp != null) params.setMmproj(mp.absolutePath)
-                    val m = LlamaModel(params)
+                    beginNativeLoadLogCapture()
+                    val m = try { LlamaModel(params) } finally { endNativeLoadLogCapture() }
                     val vok = try { m.supportsVision() } catch (_: Throwable) { false }
                     withContext(Dispatchers.Main) {
                         llamaModel = m
@@ -4322,9 +4505,16 @@ class MainActivity : Activity() {
                     addSystemHint(getString(R.string.s_077))
                 }
             } catch (e: Throwable) {
+                endNativeLoadLogCapture()
                 withContext(Dispatchers.Main) {
                     setStatus(getString(R.string.s_058), C_ERR)
-                    toast(getString(R.string.v_016, (e.message)))
+                    if (isGguf && ggufFileForDiagnostics != null) {
+                        val report = buildGgufLoadFailureReport(ggufFileForDiagnostics, ggufLoadContext, e)
+                        toast("GGUF load failed. Native diagnostics saved.")
+                        showGgufLoadFailureReport(report)
+                    } else {
+                        toast(getString(R.string.v_016, (e.message)))
+                    }
                 }
             } finally {
                 withContext(Dispatchers.Main) {
