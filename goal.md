@@ -234,3 +234,17 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 ### Validation
 - Run the Exynos AAR build step before `:app:assembleDebug`, then verify the packaged `libjllama.so` and existing drawing native libraries.
 - Required next device smoke tests: install on Galaxy S24 FE; run one Q4_0 and one K-quant GGUF; compare decode 2/4/6 and prompt 6/8/10; verify manual masks, reload behavior, sustained temperature, and system-prompt/image chat behavior.
+
+### Exynos chat optimization CI validation (run 41289657311) — SUCCESS
+- Tested source commit: `6e34fcdbd744eef7394d87d655008522d24e02ed`.
+- Standalone Rust CPU-kernel formatting/tests and ARM64 cross-check: PASS.
+- Rust facade formatting/tests: PASS.
+- Exynos-targeted `libjllama.so` build: PASS using `GGML_CPU_ARM_ARCH=armv8.6-a+dotprod+i8mm+fp16`, `GGML_NATIVE=OFF`, Android OpenMP disabled.
+- Native opcode guard: PASS; generated JNI library disassembly contained DOTPROD `sdot` and I8MM `smmla`.
+- Android `:app:assembleDebug`: PASS with the Exynos-targeted local AAR.
+- APK native library verification: PASS; package contains `libjllama.so`, `libponko_native.so`, `libponko_sd.so`, `libstable-diffusion.so`, and `libomp.so` under `lib/arm64-v8a/`.
+- GitHub Actions run: https://github.com/Bulldogshot10/Ponko-refined/actions/runs/41289657311
+- Artifact: `ponko-cpu-exynos2400e-debug-apk-41289657311`, ID `13076599018`, expires 2026-11-15.
+- Extracted APK: `Ponko-Exynos2400e-debug.apk`, 50,640,128 bytes.
+- APK SHA-256: `0bf824ece7cf5e7ee1365fa321954a581843932411f5587399999b8ea2e2a2e1`. Independently recomputed after artifact extraction; it matches the CI-produced `apk-sha256.txt`.
+- Runtime testing on Galaxy S24 FE remains: confirm system prompt and image chat, verify the two selectors take effect after model reload, compare GGUF decode 2/4/6 and prompt 6/8/10, and measure tokens/s plus sustained thermals. Auto 6/10 is a topology-based initial policy, not a measured optimum.
