@@ -174,7 +174,7 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 
 - Follow-up review: the custom system prompt is also included in LiteRT pre-send context estimation, so overflow checks account for the same prompt already charged by `configFor()`.
 - Adds an Advanced sampling dialog for GGUF / llama.cpp with Min-P, Typical-P, TFS-Z, Top-N-Sigma, Min-Keep, Repeat-Last-N, frequency/presence penalties, dynamic temperature range/exponent, Mirostat mode/tau/eta, DRY multiplier/base/allowed-length/penalty window, Ignore EOS, and Penalize Newline. Values persist per model and are passed to both text and multimodal GGUF inference requests. The existing LiteRT sampler controls remain temperature, top-K, top-P, seed, and thinking configuration; GGUF-only sampler controls are labelled accordingly.
-- `buildUi()` now applies Android 11+ system-bar and IME insets to the root layout. The content area resizes above the keyboard, the bottom navigation is hidden while the IME is visible, and auto-follow scrolls to the latest message on keyboard open. The manifest's existing `adjustResize` remains the fallback for API 28–29.
+- `buildUi()` now applies system-bar and IME insets to the root layout on Android 15+ (target SDK 35+ edge-to-edge). The content area resizes above the keyboard, the bottom navigation is hidden while the IME is visible, and auto-follow scrolls to the latest message on keyboard open. The manifest's existing `adjustResize` remains in use on Android 14 and below, avoiding double application of IME insets.
 - Resetting chat parameters also resets the system prompt and advanced sampling values for the selected model.
 
 ### Validation

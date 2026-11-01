@@ -880,7 +880,7 @@ class MainActivity : Activity() {
         applySystemBarColors()
         // Android 15+ forces edge-to-edge for targetSdk 35+. Resize the actual content
         // above the IME instead of letting the keyboard cover the input row and nav.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             var imeWasVisible = false
             rootFrame.setOnApplyWindowInsetsListener { view, insets ->
                 val bars = insets.getInsets(WindowInsets.Type.systemBars())
