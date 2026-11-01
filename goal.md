@@ -187,3 +187,9 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 2. Test system prompt persistence after app restart and after switching between two models; verify both text and image chats receive it.
 3. Verify each advanced sampler setting on a GGUF model, and confirm LiteRT ignores GGUF-only controls while retaining its supported sampler settings.
 4. Test keyboard open/close in portrait and landscape on Android 15/16, including multiline input, attachment preview, theme switch, and bottom-nav restoration.
+
+## Chat UI CI build request (2026-11-01)
+
+- Requested validation for the AI chat system-prompt, advanced generation settings, and Android IME layout changes.
+- Trigger the `Ponko Android APK (CPU / Exynos 2400E)` push workflow on this branch. It runs Rust CPU-kernel formatting/tests and ARM64 cross-check, Rust facade formatting/tests, Android debug APK assembly, required native-library verification, and uploads the APK plus build diagnostics.
+- The feature commits intentionally skipped automatic CI; this documentation-only commit is the explicit push trigger. Record the run ID, source SHA, job result, artifact ID, and APK SHA-256 here after completion.
