@@ -193,3 +193,9 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Requested validation for the AI chat system-prompt, advanced generation settings, and Android IME layout changes.
 - Trigger the `Ponko Android APK (CPU / Exynos 2400E)` push workflow on this branch. It runs Rust CPU-kernel formatting/tests and ARM64 cross-check, Rust facade formatting/tests, Android debug APK assembly, required native-library verification, and uploads the APK plus build diagnostics.
 - The feature commits intentionally skipped automatic CI; this documentation-only commit is the explicit push trigger. Record the run ID, source SHA, job result, artifact ID, and APK SHA-256 here after completion.
+
+### First CI attempt (run 41287596420)
+- Rust CPU-kernel formatting/tests and Rust facade formatting/tests passed.
+- Native/Gradle build reached Kotlin compilation and failed at `MainActivity.kt:2994`: `Unresolved reference 'LayoutParams'` from `ScrollView.LayoutParams` in the Advanced Sampling dialog.
+- Root cause: use the public `ViewGroup.LayoutParams` type for the ScrollView child; patch changes only that constructor reference. The run uploaded diagnostic artifact `ponko-cpu-exynos2400e-debug-apk-41287596420` (no APK was produced).
+- A new push will rerun the full workflow against the correction.

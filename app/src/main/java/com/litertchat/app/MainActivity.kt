@@ -2991,7 +2991,7 @@ class MainActivity : Activity() {
         }
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(body, ScrollView.LayoutParams(
+            addView(body, ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         val fields = linkedMapOf<String, EditText>()
