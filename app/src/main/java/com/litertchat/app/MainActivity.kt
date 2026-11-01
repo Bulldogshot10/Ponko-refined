@@ -3740,20 +3740,22 @@ class MainActivity : Activity() {
                 val name = rawName.substringAfterLast('/').substringAfterLast('\\')
                     .replace(Regex("[\\p{Cntrl}]"), "_")
                 val dest = File(dir, name)
-                temp = File(dir, "." + name + "." + System.currentTimeMillis() + ".part")
-                backup = File(dir, "." + name + ".backup")
+                val tempFile = File(dir, "." + name + "." + System.currentTimeMillis() + ".part")
+                val backupFile = File(dir, "." + name + ".backup")
+                temp = tempFile
+                backup = backupFile
 
                 // Recover an interrupted previous replacement before starting another one.
-                if (!dest.exists() && backup.exists()) backup.renameTo(dest)
-                if (backup.exists()) backup.delete()
-                temp.delete()
+                if (!dest.exists() && backupFile.exists()) backupFile.renameTo(dest)
+                if (backupFile.exists()) backupFile.delete()
+                tempFile.delete()
 
                 val total = contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException(getString(R.string.s_111))
                 var copied = 0L
                 input.use { ins ->
-                    FileOutputStream(temp).use { outs ->
+                    FileOutputStream(tempFile).use { outs ->
                         val buf = ByteArray(1 shl 16)
                         while (true) {
                             val n = ins.read(buf)
@@ -3768,21 +3770,21 @@ class MainActivity : Activity() {
                         outs.fd.sync()
                     }
                 }
-                if (copied <= 0L || temp.length() != copied) {
-                    throw IllegalStateException("Model import size check failed: copied=" + copied + ", file=" + temp.length())
+                if (copied <= 0L || tempFile.length() != copied) {
+                    throw IllegalStateException("Model import size check failed: copied=" + copied + ", file=" + tempFile.length())
                 }
                 if (total > 0 && copied != total) {
                     throw IllegalStateException("Model import was incomplete: expected=" + total + " bytes, copied=" + copied)
                 }
 
-                if (dest.exists() && !dest.renameTo(backup)) {
+                if (dest.exists() && !dest.renameTo(backupFile)) {
                     throw IllegalStateException("Could not stage previous model file for replacement")
                 }
-                if (!temp.renameTo(dest)) {
-                    if (backup.exists()) backup.renameTo(dest)
+                if (!tempFile.renameTo(dest)) {
+                    if (backupFile.exists()) backupFile.renameTo(dest)
                     throw IllegalStateException("Could not finalize imported model file")
                 }
-                backup.delete()
+                backupFile.delete()
 
                 withContext(Dispatchers.Main) {
                     modelPath = dest.absolutePath
