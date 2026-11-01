@@ -164,3 +164,24 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - CI validation for the foundation passed in run [40852911419](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/40852911419), including rustfmt, host tests, Android ARM64 cargo check, Rust facade tests, APK build, and native-library checks.
 - This follow-up builds libponko_cpu_kernels.a with the exynos2400e Cargo feature and links it into the GGML CPU backend. Gradle property ponkoRustCpuKernels=OFF preserves the original GGML baseline for A/B comparison; ON enables the Exynos-specific integrated path.
 - The next CI run validates SMMLA assembly, the C ABI link, patched GGML compilation, and APK packaging together. Device correctness and performance still need a run on the Exynos 2400E; the patched GGML source logs once when either Rust path is actually reached.
+
+
+## AI chat prompt, generation controls, and IME layout follow-up (2026-11-01)
+
+### Implemented in source; build/runtime verification pending
+- `app/src/main/java/com/litertchat/app/MainActivity.kt` adds a persistent multiline system-prompt editor in the chat model settings. The prompt is stored per selected model, injected as a LiteRT system message, and supplied through llama.cpp's dedicated system-message field for text chats. The multimodal GGUF path prepends a `system` ChatMessage, preserving image parts on the user turn.
+- LiteRT context budgeting now accounts for the configured system prompt before selecting history turns.
+- Adds an Advanced sampling dialog for GGUF / llama.cpp with Min-P, Typical-P, TFS-Z, Top-N-Sigma, Min-Keep, Repeat-Last-N, frequency/presence penalties, dynamic temperature range/exponent, Mirostat mode/tau/eta, DRY multiplier/base/allowed-length/penalty window, Ignore EOS, and Penalize Newline. Values persist per model and are passed to both text and multimodal GGUF inference requests. The existing LiteRT sampler controls remain temperature, top-K, top-P, seed, and thinking configuration; GGUF-only sampler controls are labelled accordingly.
+- `buildUi()` now applies Android 11+ system-bar and IME insets to the root layout. The content area resizes above the keyboard, the bottom navigation is hidden while the IME is visible, and auto-follow scrolls to the latest message on keyboard open. The manifest's existing `adjustResize` remains the fallback for API 28–29.
+- Resetting chat parameters also resets the system prompt and advanced sampling values for the selected model.
+
+### Validation
+- Source-level patch checks passed for system prompt persistence/injection across LiteRT, GGUF text, and GGUF multimodal paths; advanced sampler wiring in both GGUF request builders; and IME inset handling.
+- No Gradle build, Rust test, CI run, emulator test, or physical-device test has been run for this follow-up. Treat compile status and runtime behavior as **Needs verification** until checked locally/on the target phone.
+- GitHub Actions was intentionally not invoked for this change.
+
+### Next steps
+1. Run `./gradlew :app:assembleDebug` and fix any Kotlin/API compatibility errors.
+2. Test system prompt persistence after app restart and after switching between two models; verify both text and image chats receive it.
+3. Verify each advanced sampler setting on a GGUF model, and confirm LiteRT ignores GGUF-only controls while retaining its supported sampler settings.
+4. Test keyboard open/close in portrait and landscape on Android 15/16, including multiline input, attachment preview, theme switch, and bottom-nav restoration.

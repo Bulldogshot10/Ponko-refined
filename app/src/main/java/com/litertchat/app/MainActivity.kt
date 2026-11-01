@@ -19,6 +19,7 @@ import android.text.InputType
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.WindowInsets
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.animation.Animator
@@ -65,6 +66,7 @@ import com.google.ai.edge.litertlm.ThinkingConfig
 import kotlinx.coroutines.flow.channelFlow
 import net.ladenthin.llama.LlamaIterator
 import net.ladenthin.llama.LlamaModel
+import net.ladenthin.llama.args.MiroStat
 import net.ladenthin.llama.parameters.InferenceParameters
 import net.ladenthin.llama.parameters.ModelParameters
 import net.ladenthin.llama.value.ChatMessage
@@ -128,6 +130,26 @@ class MainActivity : Activity() {
         private const val KEY_CHAT_REP = "chatRep"
         private const val KEY_CHAT_BUDGET = "chatBudget"
         private const val KEY_CHAT_SEED = "chatSeed"
+        private const val KEY_CHAT_SYSTEM_PROMPT = "chatSystemPrompt"
+        private const val KEY_CHAT_MIN_P = "chatMinP"
+        private const val KEY_CHAT_TYPICAL_P = "chatTypicalP"
+        private const val KEY_CHAT_TFS_Z = "chatTfsZ"
+        private const val KEY_CHAT_TOP_N_SIGMA = "chatTopNSigma"
+        private const val KEY_CHAT_MIN_KEEP = "chatMinKeep"
+        private const val KEY_CHAT_REPEAT_LAST_N = "chatRepeatLastN"
+        private const val KEY_CHAT_FREQUENCY_PENALTY = "chatFrequencyPenalty"
+        private const val KEY_CHAT_PRESENCE_PENALTY = "chatPresencePenalty"
+        private const val KEY_CHAT_DYNATEMP_RANGE = "chatDynatempRange"
+        private const val KEY_CHAT_DYNATEMP_EXPONENT = "chatDynatempExponent"
+        private const val KEY_CHAT_MIROSTAT = "chatMirostat"
+        private const val KEY_CHAT_MIROSTAT_TAU = "chatMirostatTau"
+        private const val KEY_CHAT_MIROSTAT_ETA = "chatMirostatEta"
+        private const val KEY_CHAT_DRY_MULTIPLIER = "chatDryMultiplier"
+        private const val KEY_CHAT_DRY_BASE = "chatDryBase"
+        private const val KEY_CHAT_DRY_ALLOWED = "chatDryAllowedLength"
+        private const val KEY_CHAT_DRY_LAST_N = "chatDryPenaltyLastN"
+        private const val KEY_CHAT_IGNORE_EOS = "chatIgnoreEos"
+        private const val KEY_CHAT_PENALIZE_NL = "chatPenalizeNl"
         /** 思考模式开关（全局偏好，与模型无关） */
         private const val KEY_CHAT_THINK = "chatThink"
         private const val DEF_CHAT_CTX = 4096
@@ -138,6 +160,23 @@ class MainActivity : Activity() {
         private const val DEF_CHAT_REP = 1.1f
         private const val DEF_CHAT_BUDGET = 2048
         private const val DEF_CHAT_SEED = -1
+        private const val DEF_CHAT_MIN_P = 0f
+        private const val DEF_CHAT_TYPICAL_P = 1f
+        private const val DEF_CHAT_TFS_Z = 1f
+        private const val DEF_CHAT_TOP_N_SIGMA = -1f
+        private const val DEF_CHAT_MIN_KEEP = 0
+        private const val DEF_CHAT_REPEAT_LAST_N = 64
+        private const val DEF_CHAT_FREQUENCY_PENALTY = 0f
+        private const val DEF_CHAT_PRESENCE_PENALTY = 0f
+        private const val DEF_CHAT_DYNATEMP_RANGE = 0f
+        private const val DEF_CHAT_DYNATEMP_EXPONENT = 1f
+        private const val DEF_CHAT_MIROSTAT = 0
+        private const val DEF_CHAT_MIROSTAT_TAU = 5f
+        private const val DEF_CHAT_MIROSTAT_ETA = 0.1f
+        private const val DEF_CHAT_DRY_MULTIPLIER = 0f
+        private const val DEF_CHAT_DRY_BASE = 1.75f
+        private const val DEF_CHAT_DRY_ALLOWED = 2
+        private const val DEF_CHAT_DRY_LAST_N = 64
     }
 
     // ---- palette ----
@@ -199,6 +238,7 @@ class MainActivity : Activity() {
     private var chatRepEdit: EditText? = null
     private var chatBudgetEdit: EditText? = null
     private var chatSeedEdit: EditText? = null
+    private var chatSystemPromptEdit: EditText? = null
     private var busy = false
 
     /** 当前加载的 .litertlm 模型是否支持图像输入（读模型自带 Capabilities，失败按不支持处理）。 */
@@ -570,6 +610,7 @@ class MainActivity : Activity() {
 
     private lateinit var tabDraw: View
     private lateinit var inputBar: View
+    private lateinit var bottomNavView: View
 
     /** 绘图页（文生图/图生图），懒加载 */
     private var drawPage: DrawPage? = null
@@ -829,13 +870,32 @@ class MainActivity : Activity() {
 
         inputBar = buildInputBar()
         main.addView(inputBar, matchWrap())
-        main.addView(buildBottomNav(), matchWrap())
+        bottomNavView = buildBottomNav()
+        main.addView(bottomNavView, matchWrap())
 
         rootFrame.addView(main, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         buildDrawer(rootFrame)
         setContentView(rootFrame)
         applySystemBarColors()
+        // Android 15+ forces edge-to-edge for targetSdk 35+. Resize the actual content
+        // above the IME instead of letting the keyboard cover the input row and nav.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            var imeWasVisible = false
+            rootFrame.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                val imeVisible = insets.isVisible(WindowInsets.Type.ime()) || ime.bottom > 0
+                view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+                bottomNavView.visibility = if (imeVisible) View.GONE else View.VISIBLE
+                if (imeVisible && !imeWasVisible && this::scrollView.isInitialized && autoFollow) {
+                    scrollView.post { scrollToBottom() }
+                }
+                imeWasVisible = imeVisible
+                insets
+            }
+            rootFrame.requestApplyInsets()
+        }
 
         refreshSavedModels()
         restoreSession()
@@ -1078,6 +1138,34 @@ class MainActivity : Activity() {
             matchWrap().apply { topMargin = dp(8) })
         chatCard.addView(smallButton(getString(R.string.s_249)) { resetChatParams() },
             matchWrap().apply { topMargin = dp(8) })
+        chatCard.addView(divider(), matchWrap().apply { topMargin = dp(12) })
+        chatCard.addView(subTitle("System prompt"), matchWrap().apply { topMargin = dp(10) })
+        chatCard.addView(hintText("Persistent instruction sent before chat history. Stored separately for each model."),
+            matchWrap().apply { topMargin = dp(4) })
+        chatSystemPromptEdit = EditText(this).apply {
+            setText(chatSystemPrompt())
+            textSize = 13f
+            setTextColor(C_TEXT)
+            setHintTextColor(C_HINT)
+            hint = "Describe the assistant's role, behavior, style, constraints..."
+            background = rounded(C_FIELD_BG, 10)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 3
+            maxLines = 8
+            gravity = Gravity.TOP or Gravity.START
+        }
+        chatSystemPromptEdit?.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) = saveChatParams()
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
+        chatCard.addView(chatSystemPromptEdit, matchWrap().apply { topMargin = dp(6) })
+        chatCard.addView(smallButton("Advanced sampling…") { showAdvancedSamplingDialog() },
+            matchWrap().apply { topMargin = dp(10) })
+        chatCard.addView(hintText("Extended sampler controls apply to GGUF / llama.cpp models."),
+            matchWrap().apply { topMargin = dp(4) })
         // ================= 对话 API（把自己的模型开放出去） =================
         // 独立成「API」子页；控件由 buildApiBlock 统一生成，与绘图那套一模一样
         chatApiModelTv = TextView(this).apply {
@@ -2781,6 +2869,31 @@ class MainActivity : Activity() {
     private fun chatBudget(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_BUDGET), DEF_CHAT_BUDGET).coerceIn(0, 65536)
     /** 随机种子，-1 = 每次都换 */
     private fun chatSeed(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_SEED), DEF_CHAT_SEED)
+    private fun chatSystemPrompt(): String = chatPrefs().getString(chatKey(KEY_CHAT_SYSTEM_PROMPT), "") ?: ""
+
+    private fun advancedFloat(key: String, default: Float, min: Float, max: Float): Float =
+        (chatPrefs().getString(chatKey(key), null)?.toFloatOrNull() ?: default).coerceIn(min, max)
+    private fun advancedInt(key: String, default: Int, min: Int, max: Int): Int =
+        (chatPrefs().getString(chatKey(key), null)?.toIntOrNull() ?: default).coerceIn(min, max)
+    private fun chatMinP() = advancedFloat(KEY_CHAT_MIN_P, DEF_CHAT_MIN_P, 0f, 1f)
+    private fun chatTypicalP() = advancedFloat(KEY_CHAT_TYPICAL_P, DEF_CHAT_TYPICAL_P, 0f, 1f)
+    private fun chatTfsZ() = advancedFloat(KEY_CHAT_TFS_Z, DEF_CHAT_TFS_Z, 0f, 1f)
+    private fun chatTopNSigma() = advancedFloat(KEY_CHAT_TOP_N_SIGMA, DEF_CHAT_TOP_N_SIGMA, -1f, 10f)
+    private fun chatMinKeep() = advancedInt(KEY_CHAT_MIN_KEEP, DEF_CHAT_MIN_KEEP, 0, 4096)
+    private fun chatRepeatLastN() = advancedInt(KEY_CHAT_REPEAT_LAST_N, DEF_CHAT_REPEAT_LAST_N, 0, 32768)
+    private fun chatFrequencyPenalty() = advancedFloat(KEY_CHAT_FREQUENCY_PENALTY, DEF_CHAT_FREQUENCY_PENALTY, -2f, 2f)
+    private fun chatPresencePenalty() = advancedFloat(KEY_CHAT_PRESENCE_PENALTY, DEF_CHAT_PRESENCE_PENALTY, -2f, 2f)
+    private fun chatDynatempRange() = advancedFloat(KEY_CHAT_DYNATEMP_RANGE, DEF_CHAT_DYNATEMP_RANGE, 0f, 2f)
+    private fun chatDynatempExponent() = advancedFloat(KEY_CHAT_DYNATEMP_EXPONENT, DEF_CHAT_DYNATEMP_EXPONENT, 0.1f, 10f)
+    private fun chatMirostat() = advancedInt(KEY_CHAT_MIROSTAT, DEF_CHAT_MIROSTAT, 0, 2)
+    private fun chatMirostatTau() = advancedFloat(KEY_CHAT_MIROSTAT_TAU, DEF_CHAT_MIROSTAT_TAU, 0f, 10f)
+    private fun chatMirostatEta() = advancedFloat(KEY_CHAT_MIROSTAT_ETA, DEF_CHAT_MIROSTAT_ETA, 0f, 2f)
+    private fun chatDryMultiplier() = advancedFloat(KEY_CHAT_DRY_MULTIPLIER, DEF_CHAT_DRY_MULTIPLIER, 0f, 10f)
+    private fun chatDryBase() = advancedFloat(KEY_CHAT_DRY_BASE, DEF_CHAT_DRY_BASE, 0.1f, 10f)
+    private fun chatDryAllowed() = advancedInt(KEY_CHAT_DRY_ALLOWED, DEF_CHAT_DRY_ALLOWED, 1, 16)
+    private fun chatDryLastN() = advancedInt(KEY_CHAT_DRY_LAST_N, DEF_CHAT_DRY_LAST_N, 0, 32768)
+    private fun chatIgnoreEos() = chatPrefs().getBoolean(chatKey(KEY_CHAT_IGNORE_EOS), false)
+    private fun chatPenalizeNl() = chatPrefs().getBoolean(chatKey(KEY_CHAT_PENALIZE_NL), true)
 
     /** 输入侧 token 预算：上下文留 1/4 给输出 */
     private fun inputTokenBudget(): Int = chatCtx() - chatCtx() / 4
@@ -2805,6 +2918,7 @@ class MainActivity : Activity() {
             .putFloat(chatKey(KEY_CHAT_REP), f(chatRepEdit, DEF_CHAT_REP))
             .putInt(chatKey(KEY_CHAT_BUDGET), i(chatBudgetEdit, DEF_CHAT_BUDGET))
             .putInt(chatKey(KEY_CHAT_SEED), i(chatSeedEdit, DEF_CHAT_SEED))
+            .putString(chatKey(KEY_CHAT_SYSTEM_PROMPT), chatSystemPromptEdit?.text?.toString() ?: chatSystemPrompt())
             .apply()
         // 采样参数要在下次发送前重建会话才生效；只有改的正是「已加载的那个模型」时才需要
         chatParamsDirty = modelPath != null && modelPath == loadedModelPath
@@ -2821,6 +2935,7 @@ class MainActivity : Activity() {
         chatRepEdit?.setText(chatRep().toString())
         chatBudgetEdit?.setText(chatBudget().toString())
         chatSeedEdit?.setText(chatSeed().toString())
+        chatSystemPromptEdit?.setText(chatSystemPrompt())
         chatUiLoading = false
         val n = chatModelName()
         chatParamsOwnerTv?.text =
@@ -2839,11 +2954,176 @@ class MainActivity : Activity() {
             .putFloat(chatKey(KEY_CHAT_REP), DEF_CHAT_REP)
             .putInt(chatKey(KEY_CHAT_BUDGET), DEF_CHAT_BUDGET)
             .putInt(chatKey(KEY_CHAT_SEED), DEF_CHAT_SEED)
+            .putString(chatKey(KEY_CHAT_SYSTEM_PROMPT), "")
+            .putString(chatKey(KEY_CHAT_MIN_P), DEF_CHAT_MIN_P.toString())
+            .putString(chatKey(KEY_CHAT_TYPICAL_P), DEF_CHAT_TYPICAL_P.toString())
+            .putString(chatKey(KEY_CHAT_TFS_Z), DEF_CHAT_TFS_Z.toString())
+            .putString(chatKey(KEY_CHAT_TOP_N_SIGMA), DEF_CHAT_TOP_N_SIGMA.toString())
+            .putString(chatKey(KEY_CHAT_MIN_KEEP), DEF_CHAT_MIN_KEEP.toString())
+            .putString(chatKey(KEY_CHAT_REPEAT_LAST_N), DEF_CHAT_REPEAT_LAST_N.toString())
+            .putString(chatKey(KEY_CHAT_FREQUENCY_PENALTY), DEF_CHAT_FREQUENCY_PENALTY.toString())
+            .putString(chatKey(KEY_CHAT_PRESENCE_PENALTY), DEF_CHAT_PRESENCE_PENALTY.toString())
+            .putString(chatKey(KEY_CHAT_DYNATEMP_RANGE), DEF_CHAT_DYNATEMP_RANGE.toString())
+            .putString(chatKey(KEY_CHAT_DYNATEMP_EXPONENT), DEF_CHAT_DYNATEMP_EXPONENT.toString())
+            .putInt(chatKey(KEY_CHAT_MIROSTAT), DEF_CHAT_MIROSTAT)
+            .putString(chatKey(KEY_CHAT_MIROSTAT_TAU), DEF_CHAT_MIROSTAT_TAU.toString())
+            .putString(chatKey(KEY_CHAT_MIROSTAT_ETA), DEF_CHAT_MIROSTAT_ETA.toString())
+            .putString(chatKey(KEY_CHAT_DRY_MULTIPLIER), DEF_CHAT_DRY_MULTIPLIER.toString())
+            .putString(chatKey(KEY_CHAT_DRY_BASE), DEF_CHAT_DRY_BASE.toString())
+            .putString(chatKey(KEY_CHAT_DRY_ALLOWED), DEF_CHAT_DRY_ALLOWED.toString())
+            .putString(chatKey(KEY_CHAT_DRY_LAST_N), DEF_CHAT_DRY_LAST_N.toString())
+            .putBoolean(chatKey(KEY_CHAT_IGNORE_EOS), false)
+            .putBoolean(chatKey(KEY_CHAT_PENALIZE_NL), true)
             .apply()
         chatUiLoading = false
         loadChatParamsIntoUi()
         chatParamsDirty = modelPath != null && modelPath == loadedModelPath
         toast(getString(R.string.s_317))
+    }
+
+    /** Advanced GGUF sampling controls, persisted per model. */
+    private fun showAdvancedSamplingDialog() {
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(body, ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val fields = linkedMapOf<String, EditText>()
+        fun field(label: String, key: String, default: String): View {
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            box.addView(TextView(this).apply {
+                text = label
+                textSize = 11.5f
+                setTextColor(C_SUBTEXT)
+            }, matchWrap())
+            val ed = EditText(this).apply {
+                textSize = 13f
+                setTextColor(C_TEXT)
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                    InputType.TYPE_NUMBER_FLAG_SIGNED
+                setBackgroundColor(C_FIELD_BG)
+                setPadding(dp(9), dp(7), dp(9), dp(7))
+                setText(chatPrefs().getString(chatKey(key), default) ?: default)
+                isSingleLine = true
+            }
+            fields[key] = ed
+            box.addView(ed, matchWrap().apply { topMargin = dp(3) })
+            return box
+        }
+        fun addRow(a: View, b: View) {
+            body.addView(twoCols(a, b), matchWrap().apply { topMargin = dp(8) })
+        }
+        addRow(field("Min-P", KEY_CHAT_MIN_P, DEF_CHAT_MIN_P.toString()),
+            field("Typical-P", KEY_CHAT_TYPICAL_P, DEF_CHAT_TYPICAL_P.toString()))
+        addRow(field("TFS-Z", KEY_CHAT_TFS_Z, DEF_CHAT_TFS_Z.toString()),
+            field("Top-N-Sigma", KEY_CHAT_TOP_N_SIGMA, DEF_CHAT_TOP_N_SIGMA.toString()))
+        addRow(field("Repeat last N", KEY_CHAT_REPEAT_LAST_N, DEF_CHAT_REPEAT_LAST_N.toString()),
+            field("Min keep", KEY_CHAT_MIN_KEEP, DEF_CHAT_MIN_KEEP.toString()))
+        addRow(field("Frequency penalty", KEY_CHAT_FREQUENCY_PENALTY, DEF_CHAT_FREQUENCY_PENALTY.toString()),
+            field("Presence penalty", KEY_CHAT_PRESENCE_PENALTY, DEF_CHAT_PRESENCE_PENALTY.toString()))
+        addRow(field("Dynamic temperature range", KEY_CHAT_DYNATEMP_RANGE, DEF_CHAT_DYNATEMP_RANGE.toString()),
+            field("Dynamic temperature exponent", KEY_CHAT_DYNATEMP_EXPONENT, DEF_CHAT_DYNATEMP_EXPONENT.toString()))
+        addRow(field("DRY multiplier", KEY_CHAT_DRY_MULTIPLIER, DEF_CHAT_DRY_MULTIPLIER.toString()),
+            field("DRY base", KEY_CHAT_DRY_BASE, DEF_CHAT_DRY_BASE.toString()))
+        addRow(field("DRY allowed length", KEY_CHAT_DRY_ALLOWED, DEF_CHAT_DRY_ALLOWED.toString()),
+            field("DRY penalty last N", KEY_CHAT_DRY_LAST_N, DEF_CHAT_DRY_LAST_N.toString()))
+
+        val mirostatRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = "Mirostat"
+                textSize = 11.5f
+                setTextColor(C_SUBTEXT)
+            }, matchWrap())
+        }
+        val mirostatSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Off", "Mirostat 1", "Mirostat 2"))
+            setSelection(chatMirostat())
+        }
+        mirostatRow.addView(mirostatSpinner, matchWrap())
+        addRow(mirostatRow, field("Mirostat tau", KEY_CHAT_MIROSTAT_TAU, DEF_CHAT_MIROSTAT_TAU.toString()))
+        addRow(field("Mirostat eta", KEY_CHAT_MIROSTAT_ETA, DEF_CHAT_MIROSTAT_ETA.toString()),
+            TextView(this).apply { text = "" })
+
+        val ignoreEos = CheckBox(this).apply {
+            text = "Ignore EOS token"
+            textSize = 12.5f
+            setTextColor(C_TEXT)
+            isChecked = chatIgnoreEos()
+            buttonTintList = ColorStateList.valueOf(C_PRIMARY)
+        }
+        val penalizeNl = CheckBox(this).apply {
+            text = "Penalize newline tokens"
+            textSize = 12.5f
+            setTextColor(C_TEXT)
+            isChecked = chatPenalizeNl()
+            buttonTintList = ColorStateList.valueOf(C_PRIMARY)
+        }
+        body.addView(ignoreEos, matchWrap().apply { topMargin = dp(10) })
+        body.addView(penalizeNl, matchWrap())
+
+        AlertDialog.Builder(this)
+            .setTitle("Advanced generation settings")
+            .setView(scroll)
+            .setNegativeButton(getString(R.string.s_066), null)
+            .setNeutralButton("Reset", null)
+            .setPositiveButton(getString(R.string.s_071), null)
+            .create().also { dialog ->
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        val edit = chatPrefs().edit()
+                        fields.forEach { (key, value) ->
+                            edit.putString(chatKey(key), value.text.toString().trim())
+                        }
+                        edit.putInt(chatKey(KEY_CHAT_MIROSTAT), mirostatSpinner.selectedItemPosition)
+                        edit.putBoolean(chatKey(KEY_CHAT_IGNORE_EOS), ignoreEos.isChecked)
+                        edit.putBoolean(chatKey(KEY_CHAT_PENALIZE_NL), penalizeNl.isChecked)
+                        edit.apply()
+                        chatParamsDirty = modelPath != null && modelPath == loadedModelPath
+                        dialog.dismiss()
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                        val edit = chatPrefs().edit()
+                        fields.forEach { (key, value) ->
+                            val default = when (key) {
+                                KEY_CHAT_MIN_P -> DEF_CHAT_MIN_P.toString()
+                                KEY_CHAT_TYPICAL_P -> DEF_CHAT_TYPICAL_P.toString()
+                                KEY_CHAT_TFS_Z -> DEF_CHAT_TFS_Z.toString()
+                                KEY_CHAT_TOP_N_SIGMA -> DEF_CHAT_TOP_N_SIGMA.toString()
+                                KEY_CHAT_REPEAT_LAST_N -> DEF_CHAT_REPEAT_LAST_N.toString()
+                                KEY_CHAT_MIN_KEEP -> DEF_CHAT_MIN_KEEP.toString()
+                                KEY_CHAT_FREQUENCY_PENALTY -> DEF_CHAT_FREQUENCY_PENALTY.toString()
+                                KEY_CHAT_PRESENCE_PENALTY -> DEF_CHAT_PRESENCE_PENALTY.toString()
+                                KEY_CHAT_DYNATEMP_RANGE -> DEF_CHAT_DYNATEMP_RANGE.toString()
+                                KEY_CHAT_DYNATEMP_EXPONENT -> DEF_CHAT_DYNATEMP_EXPONENT.toString()
+                                KEY_CHAT_DRY_MULTIPLIER -> DEF_CHAT_DRY_MULTIPLIER.toString()
+                                KEY_CHAT_DRY_BASE -> DEF_CHAT_DRY_BASE.toString()
+                                KEY_CHAT_DRY_ALLOWED -> DEF_CHAT_DRY_ALLOWED.toString()
+                                KEY_CHAT_DRY_LAST_N -> DEF_CHAT_DRY_LAST_N.toString()
+                                KEY_CHAT_MIROSTAT_TAU -> DEF_CHAT_MIROSTAT_TAU.toString()
+                                KEY_CHAT_MIROSTAT_ETA -> DEF_CHAT_MIROSTAT_ETA.toString()
+                                else -> ""
+                            }
+                            value.setText(default)
+                            edit.putString(chatKey(key), default)
+                        }
+                        edit.putInt(chatKey(KEY_CHAT_MIROSTAT), DEF_CHAT_MIROSTAT)
+                        edit.putBoolean(chatKey(KEY_CHAT_IGNORE_EOS), false)
+                        edit.putBoolean(chatKey(KEY_CHAT_PENALIZE_NL), true)
+                        edit.apply()
+                        mirostatSpinner.setSelection(DEF_CHAT_MIROSTAT)
+                        ignoreEos.isChecked = false
+                        penalizeNl.isChecked = true
+                        chatParamsDirty = modelPath != null && modelPath == loadedModelPath
+                    }
+                }
+                dialog.show()
+            }
     }
 
     /** 参数格：小标题 + 数字输入 + 说明；keep 用来把输入框存进字段 */
@@ -4001,7 +4281,7 @@ class MainActivity : Activity() {
         extraMsgs.forEach { msgs += Pair(it.first, it.second) }
         if (canDrawFromChat && msgs.isEmpty()) msgs += Pair("user", drawToolPrompt)
         var p = InferenceParameters.empty()
-            .withMessages(null, msgs)
+            .withMessages(chatSystemPrompt().trim().ifEmpty { null }, msgs)
             .withCachePrompt(true)
             .withSlotId(0)
             .withNPredict(chatMaxOut())
@@ -4009,6 +4289,25 @@ class MainActivity : Activity() {
             .withTopK(chatTopK())
             .withTopP(chatTopP())
             .withRepeatPenalty(chatRep())
+            .withRepeatLastN(chatRepeatLastN())
+            .withMinP(chatMinP())
+            .withTypicalP(chatTypicalP())
+            .withTfsZ(chatTfsZ())
+            .withMinKeep(chatMinKeep())
+            .withTopNSigma(chatTopNSigma())
+            .withFrequencyPenalty(chatFrequencyPenalty())
+            .withPresencePenalty(chatPresencePenalty())
+            .withDynamicTemperatureRange(chatDynatempRange())
+            .withDynamicTemperatureExponent(chatDynatempExponent())
+            .withMiroStat(MiroStat.values()[chatMirostat()])
+            .withMiroStatTau(chatMirostatTau())
+            .withMiroStatEta(chatMirostatEta())
+            .withDryMultiplier(chatDryMultiplier())
+            .withDryBase(chatDryBase())
+            .withDryAllowedLength(chatDryAllowed())
+            .withDryPenaltyLastN(chatDryLastN())
+            .withIgnoreEos(chatIgnoreEos())
+            .withPenalizeNl(chatPenalizeNl())
             // 种子 -1 = 每次换随机，否则「重新生成」会得到一模一样的回答
             .withSeed(if (chatSeed() < 0) (System.nanoTime() and 0x7FFFFFFF).toInt() else chatSeed())
         // 思考开关：开 = 用模型页的思考预算（0=不限）；关 = 压到 0，并给模板传 enable_thinking=false
@@ -4033,6 +4332,9 @@ class MainActivity : Activity() {
     ): InferenceParameters {
         val turns = s.turns.takeLast(maxTurns)
         val msgs = mutableListOf<ChatMessage>()
+        chatSystemPrompt().trim().takeIf { it.isNotEmpty() }?.let {
+            msgs += ChatMessage("system", it)
+        }
         for ((ti, t) in turns.withIndex()) {
             if (ti == turns.size - 1) {
                 val parts = ArrayList<ContentPart>()
@@ -4060,6 +4362,25 @@ class MainActivity : Activity() {
             .withTopK(chatTopK())
             .withTopP(chatTopP())
             .withRepeatPenalty(chatRep())
+            .withRepeatLastN(chatRepeatLastN())
+            .withMinP(chatMinP())
+            .withTypicalP(chatTypicalP())
+            .withTfsZ(chatTfsZ())
+            .withMinKeep(chatMinKeep())
+            .withTopNSigma(chatTopNSigma())
+            .withFrequencyPenalty(chatFrequencyPenalty())
+            .withPresencePenalty(chatPresencePenalty())
+            .withDynamicTemperatureRange(chatDynatempRange())
+            .withDynamicTemperatureExponent(chatDynatempExponent())
+            .withMiroStat(MiroStat.values()[chatMirostat()])
+            .withMiroStatTau(chatMirostatTau())
+            .withMiroStatEta(chatMirostatEta())
+            .withDryMultiplier(chatDryMultiplier())
+            .withDryBase(chatDryBase())
+            .withDryAllowedLength(chatDryAllowed())
+            .withDryPenaltyLastN(chatDryLastN())
+            .withIgnoreEos(chatIgnoreEos())
+            .withPenalizeNl(chatPenalizeNl())
             .withSeed(if (chatSeed() < 0) (System.nanoTime() and 0x7FFFFFFF).toInt() else chatSeed())
         p = if (thinkCheck.isChecked) {
             p.withReasoningBudgetTokens(thinkBudgetOrUnlimited())
@@ -4079,10 +4400,13 @@ class MainActivity : Activity() {
     ): ConversationConfig {
         val msgs = mutableListOf<Message>()
         // 两种模型都就绪时，告知语言模型它可以用 <draw> 命令调绘图模型
+        val systemPrompt = chatSystemPrompt().trim()
+        if (systemPrompt.isNotEmpty()) msgs += Message.system(systemPrompt)
         if (canDrawFromChat) msgs += Message.system(drawToolPrompt)
         // 历史按预算裁剪：LiteRT 上下文只有 4096，全塞进去 native 会直接报输入过长。
         // 从最新一轮往前装，装不下的老对话丢掉（界面上还在，只是不再喂给模型）。
         var budget = inputTokenBudget() -
+            (if (systemPrompt.isNotEmpty()) estTokens(systemPrompt).toInt() else 0) -
             (if (canDrawFromChat) estTokens(drawToolPrompt).toInt() else 0) - reserveTokens
         val upto = if (dropLast) s.turns.size - 1 else s.turns.size
         val keep = ArrayList<QaTurn>()
