@@ -210,3 +210,27 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Extracted APK: `ponko-cpu-exynos2400e-debug-41287888297.apk`, 53,536,264 bytes.
 - APK SHA-256: `014c853567d06bb303660fb0ec031562fc1032201a2dfeefff897d7f279e8b2a`. Independently recomputed after artifact extraction and matches `apk-sha256.txt`.
 - Build + packaging validation is complete. Physical-device installation and keyboard/system-prompt/sampler runtime behavior still need a smoke test on the Exynos 2400E.
+## Exynos 2400e AI chat backend and thread controls (2026-11-01)
+
+### SoC research
+- Exynos 2400e (Galaxy S24 FE / S5E9945): 10-core heterogeneous CPU, 1x Cortex-X4 up to ~3.11 GHz, 2x Cortex-A720 up to ~2.90 GHz, 3x Cortex-A720 up to ~2.60 GHz, and 4x Cortex-A520 up to ~1.95 GHz. The X4 + five A720 cores form the six-core high-performance group; A520 is the efficiency cluster.
+- Public device CPU feature reporting includes NEON, FP16, DOTPROD, and I8MM. The build target is ARMv8.6-A + DOTPROD + I8MM + FP16, matching the SoC's CPU ISA. SVE is intentionally not enabled.
+- Android API 31+ exposes `Build.SOC_MODEL` / `Build.SOC_MANUFACTURER`; `/sys/devices/system/cpu/online` and cpufreq policy files are read where accessible to detect online CPU IDs and rank CPU max frequencies. No root is required.
+- The public Samsung Exynos AI LiteCore backend documentation currently lists newer Exynos targets, not Exynos 2400e. Chat optimization therefore targets CPU inference. Xclipse 940 GPU/NPU offload is not claimed or silently enabled.
+
+### Chat backend change
+- The previous `net.ladenthin:llama-android:5.1.0` dependency ships a generic prebuilt CPU AAR. Exynos flags in Ponko's root app CMake configure only the separate stable-diffusion.cpp drawing stack; they did not change the prebuilt llama.cpp chat JNI library.
+- CI now builds java-llama.cpp v5.1.0's Android arm64 JNI library with the Android NDK and `GGML_CPU_ARM_ARCH=armv8.6-a+dotprod+i8mm+fp16`, `GGML_NATIVE=OFF`, and OpenMP disabled for Android. The resulting `libjllama.so` replaces only the arm64 JNI entry in the matching upstream AAR; Java classes, manifest, ProGuard rules, and x86_64 native payload remain from the upstream AAR.
+- The build script disassembles `libjllama.so` and requires both DOTPROD `sdot` and I8MM `smmla` instructions before packaging, preventing a silently generic chat backend.
+- Non-CI local builds fall back to the Maven Central generic AAR unless the generated `app/libs/llama-android-exynos.aar` exists. This generated file is gitignored.
+
+### Thread selectors
+- Chat model settings expose separate **Generation / decode** and **Prompt / batch** selectors (Auto or 1–10 threads), persisted per GGUF model.
+- Exynos 2400e Auto policy: 6 generation threads, pinned to the six highest-frequency X4/A720 CPUs when sysfs topology is readable; 10 prompt/batch threads, pinned across the ten online CPUs. Manual selection recalculates masks from the same frequency-sorted topology. If cpufreq topology is hidden, masks are omitted and Android's scheduler places workers; the thread counts still apply.
+- `setCpuStrict(0)` / `setCpuStrictBatch(0)` leave Android cpuset constraints in control. Changing thread counts while GGUF is loaded shows a reload hint because llama.cpp's CPU pools are configured when `LlamaModel` is created.
+- Generic Android devices use Auto = available processors clamped to 2–8, with no Exynos-specific affinity.
+- These Auto counts are topology-aware starting settings, not a measured throughput optimum. A device-side A/B benchmark is still needed to establish the best decode/prompt pair under thermal and memory pressure.
+
+### Validation
+- Run the Exynos AAR build step before `:app:assembleDebug`, then verify the packaged `libjllama.so` and existing drawing native libraries.
+- Required next device smoke tests: install on Galaxy S24 FE; run one Q4_0 and one K-quant GGUF; compare decode 2/4/6 and prompt 6/8/10; verify manual masks, reload behavior, sustained temperature, and system-prompt/image chat behavior.

@@ -88,6 +88,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.math.BigInteger
 
 /**
  * On-device chat app that loads a Google LiteRT-LM (.litertlm) model from local
@@ -130,6 +131,8 @@ class MainActivity : Activity() {
         private const val KEY_CHAT_REP = "chatRep"
         private const val KEY_CHAT_BUDGET = "chatBudget"
         private const val KEY_CHAT_SEED = "chatSeed"
+        private const val KEY_CHAT_THREADS = "chatThreads"
+        private const val KEY_CHAT_THREADS_BATCH = "chatThreadsBatch"
         private const val KEY_CHAT_SYSTEM_PROMPT = "chatSystemPrompt"
         private const val KEY_CHAT_MIN_P = "chatMinP"
         private const val KEY_CHAT_TYPICAL_P = "chatTypicalP"
@@ -160,6 +163,9 @@ class MainActivity : Activity() {
         private const val DEF_CHAT_REP = 1.1f
         private const val DEF_CHAT_BUDGET = 2048
         private const val DEF_CHAT_SEED = -1
+        /** 0 = topology-aware auto; 1..10 = explicit GGUF worker count. */
+        private const val DEF_CHAT_THREADS = 0
+        private const val DEF_CHAT_THREADS_BATCH = 0
         private const val DEF_CHAT_MIN_P = 0f
         private const val DEF_CHAT_TYPICAL_P = 1f
         private const val DEF_CHAT_TFS_Z = 1f
@@ -239,6 +245,11 @@ class MainActivity : Activity() {
     private var chatBudgetEdit: EditText? = null
     private var chatSeedEdit: EditText? = null
     private var chatSystemPromptEdit: EditText? = null
+    private var chatThreadsSpinner: Spinner? = null
+    private var chatThreadsBatchSpinner: Spinner? = null
+    private var chatCpuInfoTv: TextView? = null
+    private var chatThreadsReloadTv: TextView? = null
+    private var chatThreadSettingsDirty = false
     private var busy = false
 
     /** 当前加载的 .litertlm 模型是否支持图像输入（读模型自带 Capabilities，失败按不支持处理）。 */
@@ -1136,6 +1147,31 @@ class MainActivity : Activity() {
                 numField(getString(R.string.s_312), chatSeed().toString(), getString(R.string.s_314)) { chatSeedEdit = it },
             ),
             matchWrap().apply { topMargin = dp(8) })
+        val cpuProfile = detectChatCpuProfile()
+        chatCard.addView(subTitle("CPU thread tuning (GGUF)"), matchWrap().apply { topMargin = dp(12) })
+        chatCard.addView(hintText("Generation and prompt evaluation use separate llama.cpp thread pools. Auto detects the Exynos CPU clusters; manual values are saved per model."),
+            matchWrap().apply { topMargin = dp(4) })
+        chatCpuInfoTv = TextView(this).apply {
+            text = cpuProfile.description()
+            textSize = 11.5f
+            setTextColor(C_SUBTEXT)
+            setPadding(0, dp(4), 0, 0)
+        }
+        chatCard.addView(chatCpuInfoTv, matchWrap())
+        chatCard.addView(
+            twoCols(
+                threadSelector("Generation / decode", cpuProfile.generationDefault) { chatThreadsSpinner = it },
+                threadSelector("Prompt / batch", cpuProfile.batchDefault) { chatThreadsBatchSpinner = it },
+            ),
+            matchWrap().apply { topMargin = dp(8) })
+        chatThreadsReloadTv = TextView(this).apply {
+            text = "Thread changes apply after unloading and reloading the GGUF model."
+            textSize = 11.5f
+            setTextColor(C_WARN)
+            visibility = View.GONE
+            setPadding(0, dp(4), 0, 0)
+        }
+        chatCard.addView(chatThreadsReloadTv, matchWrap())
         chatCard.addView(smallButton(getString(R.string.s_249)) { resetChatParams() },
             matchWrap().apply { topMargin = dp(8) })
         chatCard.addView(divider(), matchWrap().apply { topMargin = dp(12) })
@@ -2871,6 +2907,9 @@ class MainActivity : Activity() {
     private fun chatBudget(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_BUDGET), DEF_CHAT_BUDGET).coerceIn(0, 65536)
     /** 随机种子，-1 = 每次都换 */
     private fun chatSeed(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_SEED), DEF_CHAT_SEED)
+    /** Selector position: 0 = SoC-aware auto, 1..10 = explicit thread count. */
+    private fun chatThreads(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_THREADS), DEF_CHAT_THREADS).coerceIn(0, 10)
+    private fun chatThreadsBatch(): Int = chatPrefs().getInt(chatKey(KEY_CHAT_THREADS_BATCH), DEF_CHAT_THREADS_BATCH).coerceIn(0, 10)
     private fun chatSystemPrompt(): String = chatPrefs().getString(chatKey(KEY_CHAT_SYSTEM_PROMPT), "") ?: ""
 
     private fun advancedFloat(key: String, default: Float, min: Float, max: Float): Float =
@@ -2897,6 +2936,151 @@ class MainActivity : Activity() {
     private fun chatIgnoreEos() = chatPrefs().getBoolean(chatKey(KEY_CHAT_IGNORE_EOS), false)
     private fun chatPenalizeNl() = chatPrefs().getBoolean(chatKey(KEY_CHAT_PENALIZE_NL), true)
 
+    private data class ChatCpuProfile(
+        val socLabel: String,
+        val isExynos2400e: Boolean,
+        val onlineCpuIds: List<Int>,
+        /** Sorted fastest first; empty when sysfs does not expose reliable per-core frequencies. */
+        val frequencyOrderedCpuIds: List<Int>,
+    ) {
+        val performanceCpuIds: List<Int> get() = if (isExynos2400e) frequencyOrderedCpuIds.take(6) else emptyList()
+        val generationDefault: Int get() = if (isExynos2400e) 6.coerceAtMost(onlineCpuIds.size.coerceAtLeast(1)) else onlineCpuIds.size.coerceIn(2, 8)
+        val batchDefault: Int get() = if (isExynos2400e) 10.coerceAtMost(onlineCpuIds.size.coerceAtLeast(1)) else onlineCpuIds.size.coerceIn(2, 8)
+
+        fun description(): String {
+            val count = onlineCpuIds.size.coerceAtLeast(1)
+            val topology = when {
+                !isExynos2400e -> "$count online CPUs detected"
+                performanceCpuIds.size == 6 -> "6 high-performance cores + ${count - 6} efficiency cores; frequency-aware affinity available"
+                else -> "$count online CPUs; frequency topology hidden, Android scheduler will place workers"
+            }
+            return "$socLabel · $topology · Auto: $generationDefault decode / $batchDefault prompt threads"
+        }
+    }
+
+    private data class ChatThreadConfig(
+        val generationThreads: Int,
+        val batchThreads: Int,
+        val generationMask: String?,
+        val batchMask: String?,
+    )
+
+    /** Parse Linux CPU lists such as `0-5,8-9`; an empty result means unavailable. */
+    private fun readCpuIdList(path: String): List<Int> {
+        val raw = runCatching { File(path).readText().trim() }.getOrNull().orEmpty()
+        if (raw.isEmpty()) return emptyList()
+        val result = ArrayList<Int>()
+        for (part in raw.split(',')) {
+            val bounds = part.trim().split('-')
+            val first = bounds.firstOrNull()?.toIntOrNull() ?: continue
+            val last = bounds.getOrNull(1)?.toIntOrNull() ?: first
+            if (last < first || last - first > 255) continue
+            result.addAll(first..last)
+        }
+        return result.distinct().sorted()
+    }
+
+    private fun readPositiveLong(path: String): Long? =
+        runCatching { File(path).readText().trim().toLongOrNull()?.takeIf { it > 0L } }.getOrNull()
+
+    /**
+     * Detect the Exynos 2400e (S5E9945) without root. Android exposes the SoC identity
+     * from API 31; sysfs supplies the online CPU set and cpufreq policy frequencies when
+     * the vendor kernel permits reads. No affinity mask is guessed when that data is absent.
+     */
+    private fun detectChatCpuProfile(): ChatCpuProfile {
+        val socFields = ArrayList<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            socFields += Build.SOC_MANUFACTURER.orEmpty()
+            socFields += Build.SOC_MODEL.orEmpty()
+        }
+        socFields += listOf(Build.BOARD, Build.HARDWARE, Build.DEVICE, Build.MODEL, Build.MANUFACTURER)
+        val identity = socFields.joinToString(" ").lowercase()
+        val isExynos2400e = Regex("exynos[\\s_-]*2400e|s5e9945", RegexOption.IGNORE_CASE).containsMatchIn(identity)
+        val online = readCpuIdList("/sys/devices/system/cpu/online").ifEmpty {
+            (0 until Runtime.getRuntime().availableProcessors().coerceIn(1, 10)).toList()
+        }
+        val frequencies = HashMap<Int, Long>()
+        online.forEach { id ->
+            val base = "/sys/devices/system/cpu/cpu$id/cpufreq"
+            (readPositiveLong("$base/cpuinfo_max_freq") ?: readPositiveLong("$base/scaling_max_freq"))?.let {
+                frequencies[id] = it
+            }
+        }
+        // Some Samsung kernels expose one cpufreq policy directory per cluster instead
+        // of a readable cpuN/cpufreq symlink. Expand each policy's related_cpus mapping.
+        val policyRoot = File("/sys/devices/system/cpu/cpufreq")
+        policyRoot.listFiles()?.filter { it.isDirectory && it.name.startsWith("policy") }?.forEach { policy ->
+            val members = readCpuIdList(File(policy, "related_cpus").absolutePath)
+                .ifEmpty { readCpuIdList(File(policy, "affected_cpus").absolutePath) }
+            val frequency = readPositiveLong(File(policy, "cpuinfo_max_freq").absolutePath)
+                ?: readPositiveLong(File(policy, "scaling_max_freq").absolutePath)
+            if (frequency != null) members.filter { it in online }.forEach { frequencies.putIfAbsent(it, frequency) }
+        }
+        val ordered = if (online.isNotEmpty() && online.all { frequencies.containsKey(it) }) {
+            online.sortedByDescending { frequencies[it] ?: 0L }
+        } else emptyList()
+        val socLabel = if (isExynos2400e) "Samsung Exynos 2400e" else {
+            socFields.firstOrNull { it.isNotBlank() } ?: "Android SoC"
+        }
+        return ChatCpuProfile(socLabel, isExynos2400e, online, ordered)
+    }
+
+    private fun cpuAffinityMask(cpuIds: List<Int>): String? {
+        if (cpuIds.isEmpty() || cpuIds.any { it < 0 }) return null
+        val mask = cpuIds.fold(BigInteger.ZERO) { value, id -> value.setBit(id) }
+        return mask.toString(16).takeIf { it != "0" }
+    }
+
+    private fun resolveChatThreadConfig(profile: ChatCpuProfile): ChatThreadConfig {
+        val cpuCount = profile.onlineCpuIds.size.coerceAtLeast(1)
+        val generation = (if (chatThreads() == 0) profile.generationDefault else chatThreads()).coerceIn(1, cpuCount)
+        val batch = (if (chatThreadsBatch() == 0) profile.batchDefault else chatThreadsBatch()).coerceIn(1, cpuCount)
+        val ordered = profile.frequencyOrderedCpuIds
+        val useAffinity = profile.isExynos2400e && ordered.size == profile.onlineCpuIds.size
+        return ChatThreadConfig(
+            generationThreads = generation,
+            batchThreads = batch,
+            // Decode is memory-bound: keep its workers on the fastest six X4/A720 cores
+            // by default, but a manual count can select fewer or more cores.
+            generationMask = if (useAffinity) cpuAffinityMask(ordered.take(generation)) else null,
+            // Prompt evaluation is more compute-parallel; Auto uses all ten cores.
+            batchMask = if (useAffinity) cpuAffinityMask(ordered.take(batch)) else null,
+        )
+    }
+
+    private fun threadSelector(label: String, autoCount: Int, keep: (Spinner) -> Unit): LinearLayout {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(TextView(this).apply {
+            text = label
+            textSize = 11.5f
+            setTextColor(C_SUBTEXT)
+        }, matchWrap())
+        val options = listOf("Auto · $autoCount") + (1..10).map { "$it threads" }
+        val selector = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, options)
+            setSelection(0)
+        }
+        selector.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (!chatUiLoading) {
+                    chatThreadSettingsDirty = llamaModel != null && modelPath == loadedModelPath
+                    saveChatParams()
+                    updateChatThreadReloadHint()
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        keep(selector)
+        box.addView(selector, matchWrap().apply { topMargin = dp(3) })
+        return box
+    }
+
+    private fun updateChatThreadReloadHint() {
+        val pending = chatThreadSettingsDirty && llamaModel != null && modelPath == loadedModelPath
+        chatThreadsReloadTv?.visibility = if (pending) View.VISIBLE else View.GONE
+    }
+
     /** 输入侧 token 预算：上下文留 1/4 给输出 */
     private fun inputTokenBudget(): Int = chatCtx() - chatCtx() / 4
 
@@ -2921,6 +3105,8 @@ class MainActivity : Activity() {
             .putInt(chatKey(KEY_CHAT_BUDGET), i(chatBudgetEdit, DEF_CHAT_BUDGET))
             .putInt(chatKey(KEY_CHAT_SEED), i(chatSeedEdit, DEF_CHAT_SEED))
             .putString(chatKey(KEY_CHAT_SYSTEM_PROMPT), chatSystemPromptEdit?.text?.toString() ?: chatSystemPrompt())
+            .putInt(chatKey(KEY_CHAT_THREADS), chatThreadsSpinner?.selectedItemPosition ?: chatThreads())
+            .putInt(chatKey(KEY_CHAT_THREADS_BATCH), chatThreadsBatchSpinner?.selectedItemPosition ?: chatThreadsBatch())
             .apply()
         // 采样参数要在下次发送前重建会话才生效；只有改的正是「已加载的那个模型」时才需要
         chatParamsDirty = modelPath != null && modelPath == loadedModelPath
@@ -2938,7 +3124,10 @@ class MainActivity : Activity() {
         chatBudgetEdit?.setText(chatBudget().toString())
         chatSeedEdit?.setText(chatSeed().toString())
         chatSystemPromptEdit?.setText(chatSystemPrompt())
+        chatThreadsSpinner?.setSelection(chatThreads())
+        chatThreadsBatchSpinner?.setSelection(chatThreadsBatch())
         chatUiLoading = false
+        updateChatThreadReloadHint()
         val n = chatModelName()
         chatParamsOwnerTv?.text =
             if (n == null) getString(R.string.s_319) else getString(R.string.s_318, n)
@@ -2956,6 +3145,8 @@ class MainActivity : Activity() {
             .putFloat(chatKey(KEY_CHAT_REP), DEF_CHAT_REP)
             .putInt(chatKey(KEY_CHAT_BUDGET), DEF_CHAT_BUDGET)
             .putInt(chatKey(KEY_CHAT_SEED), DEF_CHAT_SEED)
+            .putInt(chatKey(KEY_CHAT_THREADS), DEF_CHAT_THREADS)
+            .putInt(chatKey(KEY_CHAT_THREADS_BATCH), DEF_CHAT_THREADS_BATCH)
             .putString(chatKey(KEY_CHAT_SYSTEM_PROMPT), "")
             .putString(chatKey(KEY_CHAT_MIN_P), DEF_CHAT_MIN_P.toString())
             .putString(chatKey(KEY_CHAT_TYPICAL_P), DEF_CHAT_TYPICAL_P.toString())
@@ -2980,6 +3171,8 @@ class MainActivity : Activity() {
         chatUiLoading = false
         loadChatParamsIntoUi()
         chatParamsDirty = modelPath != null && modelPath == loadedModelPath
+        chatThreadSettingsDirty = llamaModel != null && modelPath == loadedModelPath
+        updateChatThreadReloadHint()
         toast(getString(R.string.s_317))
     }
 
@@ -4034,19 +4227,27 @@ class MainActivity : Activity() {
         scope.launch(Dispatchers.IO) {
             try {
                 if (isGguf) {
-                    // llama.cpp：单 slot + cache_prompt。会话内 KV 前缀会被复用，长对话只需计算新增 token。
-                    val cpus = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+                    // Separate decode and prompt-evaluation pools. Exynos 2400e Auto uses
+                    // its six X4/A720 cores for decode and all ten cores for prompt batches.
+                    val cpuProfile = detectChatCpuProfile()
+                    val cpuThreads = resolveChatThreadConfig(cpuProfile)
                     val params = ModelParameters()
                         .setModel(path)
                         // 上下文长度与最大输出都从模型页读（默认 4096 / 2048）
                         .setCtxSize(chatCtx())
                         .setPredict(chatMaxOut())
-                        .setThreads(cpus)
-                        .setThreadsBatch(cpus)
+                        .setThreads(cpuThreads.generationThreads)
+                        .setThreadsBatch(cpuThreads.batchThreads)
+                        .setCpuStrict(0)
+                        .setCpuStrictBatch(0)
                         .setBatchSize(512)
                         .setParallel(1)
                         .setKeep(64)
                         .setGpuLayers(0)
+                    // Affinity is applied only when Exynos topology was readable; strict placement
+                    // stays off so Android cpusets can still constrain the process normally.
+                    cpuThreads.generationMask?.let { params.setCpuMask(it) }
+                    cpuThreads.batchMask?.let { params.setCpuMaskBatch(it) }
                     // 多模态 gguf：挂上 mmproj（视觉投影）后模型才有图像输入能力
                     val mp = mmprojPath?.let { File(it) }?.takeIf { it.isFile }
                     if (mp != null) params.setMmproj(mp.absolutePath)
@@ -4058,6 +4259,8 @@ class MainActivity : Activity() {
                         // 登记到进程级单例：对话 API 服务要复用同一个模型
                         ChatCore.attachGguf(m, path.substringAfterLast('/'), vok)
                         loadedModelPath = path
+                        chatThreadSettingsDirty = false
+                        updateChatThreadReloadHint()
                         engine = null
                         conversation = null
                         convThinking = null
@@ -4140,6 +4343,8 @@ class MainActivity : Activity() {
         engine = null
         llamaModel = null
         loadedModelPath = null
+        chatThreadSettingsDirty = false
+        updateChatThreadReloadHint()
         conversation = null
         convThinking = null
         visionOk = false

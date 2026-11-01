@@ -126,6 +126,10 @@ jobs:
           cargo fmt --manifest-path rust/ponko-native/Cargo.toml
           cargo test --manifest-path rust/ponko-native/Cargo.toml
 
+      - name: Build Exynos-optimized llama.cpp chat AAR
+        shell: bash
+        run: bash app/scripts/build_exynos_llama_android.sh
+
       - name: Build CPU APK with Vulkan disabled and Exynos profile enabled
         shell: bash
         run: |
@@ -145,7 +149,7 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           unzip -l "$APK" | tee apk-contents.txt
-          for library in libponko_native.so libponko_sd.so libstable-diffusion.so libomp.so; do
+          for library in libponko_native.so libponko_sd.so libstable-diffusion.so libomp.so libjllama.so; do
             if ! grep -q "$library" apk-contents.txt; then
               echo "APK is missing required native library: $library" >&2
               exit 1

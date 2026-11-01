@@ -45,3 +45,5 @@ keystore.properties
 # Python 缓存
 __pycache__/
 *.pyc
+# Generated only by the Exynos-targeted chat AAR CI build; keep native build output out of git.
+/app/libs/llama-android-exynos.aar
