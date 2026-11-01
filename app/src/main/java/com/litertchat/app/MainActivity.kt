@@ -2826,6 +2826,8 @@ class MainActivity : Activity() {
      */
     private fun estimateConversationTokens(s: ChatSession, extra: String, dropLast: Boolean): Float {
         var t = 0f
+        val systemPrompt = chatSystemPrompt().trim()
+        if (systemPrompt.isNotEmpty()) t += estTokens(systemPrompt) + 12f
         if (canDrawFromChat) t += estTokens(drawToolPrompt) + 12f
         val upto = if (dropLast) s.turns.size - 1 else s.turns.size
         for (i in 0 until maxOf(upto, 0)) {
@@ -4261,9 +4263,8 @@ class MainActivity : Activity() {
         maxTurns: Int = 24,
     ): InferenceParameters {
         val msgs = mutableListOf<Pair<String, String>>()
-        // 两种模型都就绪时，把绘图能力说明并进最后一条 user 消息：
-        // llama.cpp 的对话模板只认 user/assistant，新增 system 角色会直接报
-        // 「Invalid role: system」。这份 msgs 只用于本次推理，不落历史。
+        // Keep the drawing-tool hint on the final user turn for compatibility with this chat path.
+        // The custom system prompt is sent through llama.cpp's dedicated systemMessage argument below.
         val turns = s.turns.takeLast(maxTurns)
         for ((ti, t) in turns.withIndex()) {
             var userText = t.user
