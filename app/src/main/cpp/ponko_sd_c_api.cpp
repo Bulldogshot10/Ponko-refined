@@ -822,15 +822,6 @@ extern "C" int32_t ponko_sd_fuse_loras(const char* input_model_path,
         rules = std::string("^model\\.diffusion_model\\..*=") + quant_type;
     }
 
-    char normalization_error[768] = {};
-    if (!sd_validate_resadapter_normalization(
-            input_model_path, normalization_path,
-            normalization_error, sizeof(normalization_error))) {
-        setError(normalization_error[0] != '\0'
-            ? std::string("ResAdapter normalization rejected: ") + normalization_error
-            : "ResAdapter normalization did not match the SDXL base checkpoint");
-        return 0;
-    }
     const std::string temporary = std::string(output_path) + ".partial.gguf";
     std::remove(temporary.c_str());
     const int threads = 1; // Low-RAM device path: serialize fusion tensor workers.
@@ -951,6 +942,16 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
     std::ifstream target(output_path, std::ios::binary);
     if (!source.good() || !normalization.good()) {
         setError("ResAdapter base model or normalization file does not exist");
+        return 0;
+    }
+
+    char normalization_error[768] = {};
+    if (!sd_validate_resadapter_normalization(
+            input_model_path, normalization_path,
+            normalization_error, sizeof(normalization_error))) {
+        setError(normalization_error[0] != '\0'
+            ? std::string("ResAdapter normalization rejected: ") + normalization_error
+            : "ResAdapter normalization did not match the SDXL base checkpoint");
         return 0;
     }
     if (target.good()) {
