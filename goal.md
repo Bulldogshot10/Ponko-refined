@@ -270,7 +270,7 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 
 ### Validation
 - Source transforms were checked against the current branch HEAD before writing. No local checkout was available, so local cargo/Kotlin/native build commands were not run.
-- GitHub Actions is expected to run from the push-triggered CPU/Exynos workflow after this commit. Record its actual run ID, source SHA, job outcomes and artifact details below after inspecting the run.
+- **GitHub Actions run #92:** [run 42773940565](https://github.com/Bulldogshot10/Ponko-refined/actions/runs/42773940565), testing source commit `d41389904325891678987baac2c70e9376e9ff1c`. The standalone Rust CPU-kernel step **passed**, including formatting, unit tests (including the new FFI overflow test), benchmark compilation via `cargo bench --no-run`, and Android ARM64 `cargo check --features exynos2400e`. The Rust-UniFFI facade format/test step also **passed**. At this checkpoint the Exynos-targeted `llama.cpp` AAR build was still in progress; Android APK assembly and packaging verification had not yet started. No APK artifact was available at this checkpoint.
 - Target-device correctness, kernel selection and performance remain **Needs verification** on the Exynos 2400E.
 
 ### Follow-up
