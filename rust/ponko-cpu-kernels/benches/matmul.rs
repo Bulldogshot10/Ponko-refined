@@ -1,5 +1,5 @@
 use ponko_cpu_kernels::quant::{matmul_q4_0_f32, matmul_q4_0_f32_reference, BlockQ4_0};
-use ponko_cpu_kernels::{matmul_f32, matmul_f32_reference};
+use ponko_cpu_kernels::{matmul_f32_rhs_transposed, matmul_f32_rhs_transposed_reference};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -19,13 +19,13 @@ fn time_case(m: usize, n: usize, k: usize, iterations: usize) {
     let b = inputs(k * n, 41, 0.015625);
     let mut c = vec![0.0_f32; m * n];
     let reference = time_loop(iterations, || {
-        matmul_f32_reference(black_box(&a), black_box(&b), black_box(&mut c), m, n, k).unwrap();
+        matmul_f32_rhs_transposed_reference(black_box(&a), black_box(&b), black_box(&mut c), m, n, k).unwrap();
     });
     let dispatched = time_loop(iterations, || {
-        matmul_f32(black_box(&a), black_box(&b), black_box(&mut c), m, n, k).unwrap();
+        matmul_f32_rhs_transposed(black_box(&a), black_box(&b), black_box(&mut c), m, n, k).unwrap();
     });
     println!(
-        "FP32 M={m} N={n} K={k}: reference={:.3} ms/op, dispatch={:.3} ms/op, speedup={:.2}x",
+        "FP32 GGML-layout M={m} N={n} K={k}: reference={:.3} ms/op, dispatch={:.3} ms/op, speedup={:.2}x",
         reference.as_secs_f64() * 1000.0 / iterations as f64,
         dispatched.as_secs_f64() * 1000.0 / iterations as f64,
         reference.as_secs_f64() / dispatched.as_secs_f64(),

@@ -2642,12 +2642,26 @@
 +#ifdef PONKO_ENABLE_RUST_CPU_KERNELS
 +#include "ponko_cpu_kernels.h"
 +#endif
-@@ -1409,4 +1413,62 @@
+@@ -1409,4 +1413,80 @@
      const struct ggml_tensor * src0 = dst->src[0];
      const struct ggml_tensor * src1 = dst->src[1];
 +
 +#ifdef PONKO_ENABLE_RUST_CPU_KERNELS
-+    if (!params->use_ref &&
++    /*
++     * This opt-in override intentionally takes priority over GGML's generic tiled/repack path
++     * for supported contiguous 2D shapes. Keep packed-I8 and Hadamard-hinted operations on
++     * the upstream dispatcher. Set ponkoRustCpuKernels=OFF to benchmark the native path.
++     */
++    const bool ponko_standard_mul_mat =
++        !params->use_ref &&
++        !ggml_mul_mat_has_packed_i8_input(dst) &&
++        ggml_get_op_params_i32(dst, 1) != GGML_HINT_SRC0_IS_HADAMARD;
++    static bool ponko_rust_f32_path_logged = false;
++    static bool ponko_rust_q4_path_logged = false;
++    static bool ponko_rust_f32_fallback_logged = false;
++    static bool ponko_rust_q4_fallback_logged = false;
++
++    if (ponko_standard_mul_mat &&
 +        src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
 +        src0->ne[0] > 0 && src0->ne[0] == src1->ne[0] &&
 +        src0->ne[1] == dst->ne[0] && src1->ne[1] == dst->ne[1] &&
@@ -2655,25 +2669,27 @@
 +        src1->ne[2] == 1 && src1->ne[3] == 1 &&
 +        dst->ne[2] == 1 && dst->ne[3] == 1 &&
 +        ggml_is_contiguous(src0) && ggml_is_contiguous(src1) && ggml_is_contiguous(dst)) {
-+        static bool ponko_rust_f32_path_logged = false;
-+        if (params->ith == 0 && !ponko_rust_f32_path_logged) {
-+            GGML_LOG_INFO("Ponko CPU kernel active: Exynos NEON F32 MUL_MAT\n");
-+            ponko_rust_f32_path_logged = true;
-+        }
 +        const uint64_t m = (uint64_t)src0->ne[1];
 +        const uint64_t n = (uint64_t)src1->ne[1];
 +        const uint64_t k = (uint64_t)src0->ne[0];
 +        const uint64_t row_start = n * (uint64_t)params->ith / (uint64_t)params->nth;
 +        const uint64_t row_end = n * (uint64_t)(params->ith + 1) / (uint64_t)params->nth;
-+        if (!ponko_cpu_matmul_f32_rhs_transposed(
++        if (ponko_cpu_matmul_f32_rhs_transposed(
 +                (const float *)src0->data, (const float *)src1->data, (float *)dst->data,
 +                m, n, k, row_start, row_end)) {
-+            GGML_ABORT("Ponko NEON F32 kernel rejected a validated MUL_MAT shape");
++            if (params->ith == 0 && !ponko_rust_f32_path_logged) {
++                GGML_LOG_INFO("Ponko CPU kernel active: Exynos NEON F32 MUL_MAT\n");
++                ponko_rust_f32_path_logged = true;
++            }
++            return;
 +        }
-+        return;
++        if (params->ith == 0 && !ponko_rust_f32_fallback_logged) {
++            GGML_LOG_INFO("Ponko F32 kernel declined MUL_MAT; falling back to GGML CPU path\n");
++            ponko_rust_f32_fallback_logged = true;
++        }
 +    }
 +
-+    if (!params->use_ref &&
++    if (ponko_standard_mul_mat &&
 +        src0->type == GGML_TYPE_Q4_0 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
 +        src0->ne[0] > 0 && src0->ne[0] == src1->ne[0] && src0->ne[0] % 32 == 0 &&
 +        src0->ne[1] == dst->ne[0] && src1->ne[1] == dst->ne[1] &&
@@ -2681,11 +2697,6 @@
 +        src1->ne[2] == 1 && src1->ne[3] == 1 &&
 +        dst->ne[2] == 1 && dst->ne[3] == 1 &&
 +        ggml_is_contiguous(src0) && ggml_is_contiguous(src1) && ggml_is_contiguous(dst)) {
-+        static bool ponko_rust_q4_path_logged = false;
-+        if (params->ith == 0 && !ponko_rust_q4_path_logged) {
-+            GGML_LOG_INFO("Ponko CPU kernel active: Exynos Q4_0 x Q8_0 I8MM/DOTPROD MUL_MAT\n");
-+            ponko_rust_q4_path_logged = true;
-+        }
 +        const uint64_t m = (uint64_t)src0->ne[1];
 +        const uint64_t n = (uint64_t)src1->ne[1];
 +        const uint64_t k = (uint64_t)src0->ne[0];
@@ -2694,12 +2705,19 @@
 +        const uint64_t pair_end = pair_count * (uint64_t)(params->ith + 1) / (uint64_t)params->nth;
 +        const uint64_t row_start = pair_start * 2 < n ? pair_start * 2 : n;
 +        const uint64_t row_end = pair_end * 2 < n ? pair_end * 2 : n;
-+        if (!ponko_cpu_matmul_q4_0_f32(
++        if (ponko_cpu_matmul_q4_0_f32(
 +                src0->data, (const float *)src1->data, (float *)dst->data,
 +                m, n, k, row_start, row_end)) {
-+            GGML_ABORT("Ponko Exynos Q4_0 kernel rejected a validated MUL_MAT shape");
++            if (params->ith == 0 && !ponko_rust_q4_path_logged) {
++                GGML_LOG_INFO("Ponko CPU kernel active: Exynos Q4_0 x Q8_0 I8MM/DOTPROD MUL_MAT\n");
++                ponko_rust_q4_path_logged = true;
++            }
++            return;
 +        }
-+        return;
++        if (params->ith == 0 && !ponko_rust_q4_fallback_logged) {
++            GGML_LOG_INFO("Ponko Q4_0 kernel declined MUL_MAT; falling back to GGML CPU path\n");
++            ponko_rust_q4_fallback_logged = true;
++        }
 +    }
 +#endif
 +

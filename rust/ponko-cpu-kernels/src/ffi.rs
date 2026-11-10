@@ -32,7 +32,9 @@ pub unsafe extern "C" fn ponko_cpu_matmul_f32_rhs_transposed(
     let Some(b_len) = n.checked_mul(k) else { return 0; };
     let Some(c_len) = (row_end - row_start).checked_mul(m) else { return 0; };
     let Some(c_offset) = row_start.checked_mul(m) else { return 0; };
-    let Some(_total_c_len) = n.checked_mul(m) else { return 0; };
+    let Some(total_c_len) = n.checked_mul(m) else { return 0; };
+    let Some(c_end) = c_offset.checked_add(c_len) else { return 0; };
+    if c_end > total_c_len { return 0; }
     if c_len == 0 { return 1; }
     if c.is_null() || (a_len != 0 && a.is_null()) || (b_len != 0 && b.is_null()) { return 0; }
 
@@ -76,6 +78,10 @@ pub unsafe extern "C" fn ponko_cpu_matmul_q4_0_f32(
     let Some(a_len) = m.checked_mul(blocks) else { return 0; };
     let Some(b_len) = n.checked_mul(k) else { return 0; };
     let Some(c_len) = (row_end - row_start).checked_mul(m) else { return 0; };
+    let Some(c_offset) = row_start.checked_mul(m) else { return 0; };
+    let Some(total_c_len) = n.checked_mul(m) else { return 0; };
+    let Some(c_end) = c_offset.checked_add(c_len) else { return 0; };
+    if c_end > total_c_len { return 0; }
     if c_len == 0 { return 1; }
     if c.is_null() || (a_len != 0 && a.is_null()) || (b_len != 0 && b.is_null()) { return 0; }
 
@@ -88,9 +94,35 @@ pub unsafe extern "C" fn ponko_cpu_matmul_q4_0_f32(
         unsafe { slice::from_raw_parts(b, b_len) }
     };
     // SAFETY: workers use disjoint output row ranges.
-    let c_slice = unsafe { slice::from_raw_parts_mut(c.add(row_start * m), c_len) };
+    let c_slice = unsafe { slice::from_raw_parts_mut(c.add(c_offset), c_len) };
 
     result_code(matmul_q4_0_f32_range(
         a_blocks, b_slice, c_slice, m, n, k, row_start, row_end, false,
     ))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::ponko_cpu_matmul_q4_0_f32;
+
+    #[test]
+    fn q4_ffi_rejects_output_extent_overflow_before_pointer_use() {
+        let m = usize::MAX / 2 + 1;
+        // K=32 means one Q4_0 block per row. The individual lengths fit usize,
+        // but the declared full output matrix has 2*m elements and must be rejected.
+        let result = unsafe {
+            ponko_cpu_matmul_q4_0_f32(
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                m as u64,
+                2,
+                32,
+                0,
+                1,
+            )
+        };
+        assert_eq!(result, 0);
+    }
 }

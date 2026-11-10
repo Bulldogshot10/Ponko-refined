@@ -256,3 +256,22 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - On failure, persist a diagnostic report under app-private files/diagnostics/last-gguf-load-failure.txt and present a copyable dialog containing device/SoC, RAM snapshot, loaded llama.cpp build identifier, load configuration, exception stack, and captured native loader logs.
 - Change model import to copy to a temporary file, fsync, verify copied size against both the temp file and provider length where available, then replace the prior file via a backup/rename path. This prevents a stale partial destination file from being silently reused on a repeated import.
 - Kotlin importer uses stable non-null local handles for temp/backup files in addition to nullable cleanup references. Source-level patch checks passed. GitHub Actions APK build and a real-device load attempt are still pending.
+
+## Rust CPU-kernel audit patch (2026-11-10)
+
+### Source changes committed; GitHub Actions validation pending
+- GGML's opt-in Rust dispatch now leaves packed-I8 inputs and Hadamard-hinted operations on the upstream special-case handlers. The Rust F32 and Q4_0 paths return only when the Rust call succeeds; a rejected call logs once per path and falls through to GGML instead of aborting the process.
+- The Rust path intentionally remains ahead of GGML's general tiled/repack dispatcher for supported contiguous 2D shapes. This is the opt-in kernel experiment; set \`ponkoRustCpuKernels=OFF\` to benchmark the native GGML/KleidiAI path. The two paths are not claimed to execute together for the same operation.
+- Q4_0 FFI now uses checked output offset, total extent and end arithmetic before pointer offsetting; the F32 path also checks the output end. Added an FFI regression test for Q4 output-extent overflow.
+- Exynos CPU-list parsing accepts comma-separated/range lists and whitespace-separated cpufreq policy lists.
+- The FP32 microbenchmark now uses the same RHS-transposed matrix layout as the production GGML FFI path.
+- Model importer recovery no longer deletes an old backup if restoring it fails.
+- The Android APK workflow now compiles the benchmark target with \`cargo bench --no-run\` in addition to unit tests and Android ARM64 cargo check.
+
+### Validation
+- Source transforms were checked against the current branch HEAD before writing. No local checkout was available, so local cargo/Kotlin/native build commands were not run.
+- GitHub Actions is expected to run from the push-triggered CPU/Exynos workflow after this commit. Record its actual run ID, source SHA, job outcomes and artifact details below after inspecting the run.
+- Target-device correctness, kernel selection and performance remain **Needs verification** on the Exynos 2400E.
+
+### Follow-up
+- Keep LoRA weight normalization in a separate scope; the dedicated backlog slot is created after the CI push. No LoRA normalization implementation is included in this patch.

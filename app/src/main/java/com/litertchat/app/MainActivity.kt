@@ -2974,13 +2974,14 @@ class MainActivity : Activity() {
         val batchMask: String?,
     )
 
-    /** Parse Linux CPU lists such as `0-5,8-9`; an empty result means unavailable. */
+    /** Parse comma- or whitespace-separated Linux CPU lists such as \`0-5,8-9\` or \`0 1 2 3\`. */
     private fun readCpuIdList(path: String): List<Int> {
         val raw = runCatching { File(path).readText().trim() }.getOrNull().orEmpty()
         if (raw.isEmpty()) return emptyList()
         val result = ArrayList<Int>()
-        for (part in raw.split(',')) {
-            val bounds = part.trim().split('-')
+        for (part in raw.split(Regex("[,\\s]+"))) {
+            val bounds = part.split('-')
+            if (bounds.size !in 1..2) continue
             val first = bounds.firstOrNull()?.toIntOrNull() ?: continue
             val last = bounds.getOrNull(1)?.toIntOrNull() ?: first
             if (last < first || last - first > 255) continue
@@ -3746,8 +3747,11 @@ class MainActivity : Activity() {
                 backup = backupFile
 
                 // Recover an interrupted previous replacement before starting another one.
-                if (!dest.exists() && backupFile.exists()) backupFile.renameTo(dest)
-                if (backupFile.exists()) backupFile.delete()
+                // Never delete the backup unless a valid destination is already present.
+                if (!dest.exists() && backupFile.exists() && !backupFile.renameTo(dest)) {
+                    throw IllegalStateException("Could not recover previous model backup")
+                }
+                if (dest.exists() && backupFile.exists()) backupFile.delete()
                 tempFile.delete()
 
                 val total = contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
