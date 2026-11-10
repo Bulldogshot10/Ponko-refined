@@ -951,7 +951,7 @@ extern "C" int32_t ponko_sd_apply_resadapter(const char* input_model_path, const
             normalization_error, sizeof(normalization_error))) {
         setError(normalization_error[0] != '\0'
             ? std::string("ResAdapter normalization rejected: ") + normalization_error
-            : "ResAdapter normalization did not match the SDXL base checkpoint");
+            : "ResAdapter normalization did not match the base checkpoint");
         return 0;
     }
     if (target.good()) {
