@@ -274,4 +274,13 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Target-device correctness, kernel selection and performance remain **Needs verification** on the Exynos 2400E.
 
 ### Follow-up
-- Keep LoRA weight normalization in a separate scope. GitHub Issues are disabled for this repository, so its dedicated planning slot is tracked at `experiments/lora-weight-normalization/PLAN.md`. No LoRA normalization implementation is included in the CPU-kernel patch.
+- SDXL ResAdapter is handled in its paired form: pytorch_lora_weights.safetensors is installed and selected as the LoRA adapter, while diffusion_pytorch_model.safetensors overlays the base UNet normalization parameters before export. The native preflight validates the SDXL family, mapped parameter names, and tensor shapes. This does not apply generic L2/unit-norm normalization to LoRA A/B factors.
+
+
+## SDXL ResAdapter normalization validation (2026-11-10)
+
+- The ResAdapter wizard takes the official pair: pytorch_lora_weights.safetensors and diffusion_pytorch_model.safetensors.
+- Processing order: overlay normalization weights onto the base SDXL UNet checkpoint, export a new model, then install and auto-select the matching LoRA adapter at strength 1.0. The input files are not modified.
+- Native preflight detects the base checkpoint as SDXL, maps Diffusers UNet names through the pinned stable-diffusion.cpp SDXL converter, and requires every .weight/.bias tensor to resolve to an existing base parameter with identical rank and shape before export.
+- This follows the official ResAdapter usage pattern. It does not apply generic L2/unit-norm normalization to LoRA factors.
+- GitHub Actions validation is pending; a real SDXL ResAdapter pair still needs an on-device smoke test.

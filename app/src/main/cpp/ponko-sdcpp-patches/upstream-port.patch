@@ -772,7 +772,7 @@
          return true;
 --- a/app/src/main/cpp/sd/src/convert.cpp
 +++ b/app/src/main/cpp/sd/src/convert.cpp
-@@ -1,639 +1,929 @@
+@@ -1,639 +1,1006 @@
 -#include <algorithm>
 -#include <condition_variable>
 -#include <cstdint>
@@ -1418,6 +1418,7 @@
 +#include <cmath>
 +#include <cstdint>
 +#include <cstdlib>
++#include <cstdio>
 +#include <cstring>
 +#include <exception>
 +#include <fstream>
@@ -1437,7 +1438,9 @@
 +#include "model_io/gguf_io.h"
 +#include "model_io/safetensors_io.h"
 +#include "model_io/streaming_writer.h"
++#include "model.h"
 +#include "model_loader.h"
++#include "name_conversion.h"
 +
 +static std::string fusion_memory_snapshot() {
 +    std::ifstream status("/proc/self/status");
@@ -2261,6 +2264,80 @@
 +    return export_loaded_model(model_loader, output_path, output_type, tensor_type_rules, n_threads);
 +}
 +
++SD_API bool sd_validate_resadapter_normalization(const char* input_model_path,
++                                              const char* normalization_path,
++                                              char* error,
++                                              size_t error_capacity) {
++    auto fail = [&](const std::string& message) {
++        if (error != nullptr && error_capacity > 0) {
++            std::snprintf(error, error_capacity, "%s", message.c_str());
++        }
++        LOG_ERROR("ResAdapter normalization validation failed: %s", message.c_str());
++        return false;
++    };
++    if (error != nullptr && error_capacity > 0) error[0] = '\0';
++    if (input_model_path == nullptr || input_model_path[0] == '\0' ||
++        normalization_path == nullptr || normalization_path[0] == '\0') {
++        return fail("base checkpoint and normalization file are required");
++    }
++
++    ModelLoader base_loader;
++    if (!base_loader.init_from_file(input_model_path)) {
++        return fail("could not read the base checkpoint metadata");
++    }
++    const SDVersion version = base_loader.get_sd_version();
++    if (!sd_version_is_sdxl(version)) {
++        return fail("the base checkpoint was not identified as an SDXL UNet model");
++    }
++    base_loader.convert_tensors_name();
++    const auto& base_tensors = base_loader.get_tensor_storage_map();
++
++    ModelLoader normalization_loader;
++    if (!normalization_loader.init_from_file(normalization_path, "model.diffusion_model.")) {
++        return fail("could not read the ResAdapter normalization safetensors file");
++    }
++
++    size_t parameter_count = 0;
++    size_t matched_count = 0;
++    for (const auto& entry : normalization_loader.get_tensor_storage_map()) {
++        const std::string& source_name = entry.first;
++        if (!ends_with(source_name, ".weight") && !ends_with(source_name, ".bias")) {
++            continue;
++        }
++        ++parameter_count;
++        const std::string target_name = convert_tensor_name(source_name, version);
++        const auto target = base_tensors.find(target_name);
++        if (target == base_tensors.end()) {
++            return fail("normalization tensor has no matching SDXL UNet parameter: " +
++                        source_name + " -> " + target_name);
++        }
++        const TensorStorage& source_storage = entry.second;
++        const TensorStorage& target_storage = target->second;
++        if (source_storage.n_dims != target_storage.n_dims) {
++            return fail("normalization tensor rank mismatch for '" + source_name +
++                        "' (source " + std::to_string(source_storage.n_dims) +
++                        ", base " + std::to_string(target_storage.n_dims) + ")");
++        }
++        for (int dimension = 0; dimension < SD_MAX_DIMS; ++dimension) {
++            if (source_storage.ne[dimension] != target_storage.ne[dimension]) {
++                return fail("normalization tensor shape mismatch for '" + source_name +
++                            "' mapped to '" + target_name + "'");
++            }
++        }
++        ++matched_count;
++    }
++
++    if (parameter_count == 0 || matched_count == 0) {
++        return fail("the normalization file contains no mappable weight/bias tensors");
++    }
++    if (matched_count != parameter_count) {
++        return fail("not all ResAdapter normalization tensors matched the base UNet");
++    }
++    LOG_INFO("ResAdapter SDXL normalization preflight passed: %zu weight/bias tensors matched by name and shape",
++             matched_count);
++    return true;
++}
++
 +SD_API bool fuse_loras_to_file(const char* input_model_path,
 +                        const char* const* lora_paths,
 +                        const float* lora_scales,
@@ -2344,12 +2421,17 @@
 
 --- a/app/src/main/cpp/sd/include/stable-diffusion.h
 +++ b/app/src/main/cpp/sd/include/stable-diffusion.h
-@@ -635,5 +635,16 @@
+@@ -635,5 +635,21 @@
                                      int n_threads,
                                      const sd_lora_t* loras,
                                      int lora_count);
  
 +// Low-memory Android/embedded LoRA fusion path; streams base tensors one at a time.
++SD_API bool sd_validate_resadapter_normalization(const char* input_model_path,
++                                              const char* normalization_path,
++                                              char* error,
++                                              size_t error_capacity);
++
 +SD_API bool fuse_loras_to_file(const char* input_model_path,
 +                               const char* const* lora_paths,
 +                               const float* lora_scales,
