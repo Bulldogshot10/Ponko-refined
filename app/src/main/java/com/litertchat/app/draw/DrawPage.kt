@@ -384,6 +384,7 @@ class DrawPage(
     private lateinit var quantText: TextView
     private lateinit var quantizeUnetButton: Button
     private lateinit var resAdapterButton: Button
+    private lateinit var resAdapterHint: TextView
     private lateinit var fuseLoraButton: Button
     private var pendingResAdapterSet: ModelSet? = null
     private var pendingResAdapterLoraUri: Uri? = null
@@ -602,7 +603,10 @@ class DrawPage(
             setOnClickListener { showResAdapterWizard() }
         }
         modelCard.addView(resAdapterButton, matchWrap(top = 4))
-        modelCard.addView(body(c.getString(R.string.draw_resadapter_hint)), matchWrap(top = 2))
+        resAdapterHint = body(c.getString(R.string.draw_resadapter_hint)).apply {
+            visibility = View.GONE
+        }
+        modelCard.addView(resAdapterHint, matchWrap(top = 2))
         fuseLoraButton = Button(c).apply {
             text = c.getString(R.string.draw_lora_fusion_button)
             setOnClickListener { showLoraFusionWizard() }
@@ -2664,7 +2668,9 @@ class DrawPage(
         if (!::modelCardTitle.isInitialized) return
         if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
         if (::resAdapterButton.isInitialized) {
-            resAdapterButton.visibility = if (activeSetOrSelected()?.kind == KIND_SINGLE) View.VISIBLE else View.GONE
+            val supportsSingleFile = activeSetOrSelected()?.kind == KIND_SINGLE
+            resAdapterButton.visibility = if (supportsSingleFile) View.VISIBLE else View.GONE
+            resAdapterHint.visibility = if (supportsSingleFile) View.VISIBLE else View.GONE
         }
         modelCardTitle.text = c.getString(R.string.s_164)
         try { statusText.text = modelSummary() } catch (_: Throwable) {}
