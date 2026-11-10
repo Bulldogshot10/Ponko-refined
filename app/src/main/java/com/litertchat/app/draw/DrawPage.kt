@@ -602,6 +602,7 @@ class DrawPage(
             setOnClickListener { showResAdapterWizard() }
         }
         modelCard.addView(resAdapterButton, matchWrap(top = 4))
+        modelCard.addView(body(c.getString(R.string.draw_resadapter_hint)), matchWrap(top = 2))
         fuseLoraButton = Button(c).apply {
             text = c.getString(R.string.draw_lora_fusion_button)
             setOnClickListener { showLoraFusionWizard() }
@@ -2663,7 +2664,7 @@ class DrawPage(
         if (!::modelCardTitle.isInitialized) return
         if (::quantizeUnetButton.isInitialized) quantizeUnetButton.visibility = View.VISIBLE
         if (::resAdapterButton.isInitialized) {
-            resAdapterButton.visibility = if (activeSetOrSelected()?.family == FAM_SDXL) View.VISIBLE else View.GONE
+            resAdapterButton.visibility = if (activeSetOrSelected()?.kind == KIND_SINGLE) View.VISIBLE else View.GONE
         }
         modelCardTitle.text = c.getString(R.string.s_164)
         try { statusText.text = modelSummary() } catch (_: Throwable) {}
@@ -3251,7 +3252,7 @@ class DrawPage(
             toast(c.getString(R.string.draw_resadapter_no_model))
             return
         }
-        if (set.family != FAM_SDXL || set.kind != KIND_SINGLE) {
+        if (set.kind != KIND_SINGLE) {
             toast(c.getString(R.string.draw_resadapter_supported_models))
             return
         }
