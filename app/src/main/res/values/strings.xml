@@ -523,8 +523,9 @@
     <string name="draw_unet_quantize_create_failed">Could not create an output model-set directory.</string>
     <string name="draw_unet_quantize_register_failed">Conversion succeeded, but the new model set could not be registered.</string>
 
-    <string name="draw_resadapter_button">Prepare SDXL ResAdapter</string>
+    <string name="draw_resadapter_button">Prepare SDXL ResAdapter (LoRA + Norm)</string>
     <string name="draw_resadapter_title">Prepare SDXL ResAdapter</string>
+    <string name="draw_resadapter_hint">Single-file models only. Select the ResAdapter LoRA first, then its normalization weights (.safetensors).</string>
     <string name="draw_resadapter_intro">Use the selected single-file SDXL model (%1$s). Choose the target UNet precision, then select the ResAdapter LoRA and normalization weights.</string>
     <string name="draw_resadapter_pick_lora">Choose ResAdapter LoRA (.safetensors)</string>
     <string name="draw_resadapter_pick_norm">Choose normalization weights (.safetensors)</string>
