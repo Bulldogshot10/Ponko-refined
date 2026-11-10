@@ -274,4 +274,4 @@ Fresh build/CI and target-device behavior are not verified by this document. Do 
 - Target-device correctness, kernel selection and performance remain **Needs verification** on the Exynos 2400E.
 
 ### Follow-up
-- Keep LoRA weight normalization in a separate scope; the dedicated backlog slot is created after the CI push. No LoRA normalization implementation is included in this patch.
+- Keep LoRA weight normalization in a separate scope. GitHub Issues are disabled for this repository, so its dedicated planning slot is tracked at `experiments/lora-weight-normalization/PLAN.md`. No LoRA normalization implementation is included in the CPU-kernel patch.
