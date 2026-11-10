@@ -108,7 +108,6 @@ class DrawPage(
     companion object {
         const val DIR_NAME = "draw"
         private const val REQ_IMAGE = 0x5D02
-        private const val REQ_RESADAPTER_LORA = 0x5D04
         private const val REQ_RESADAPTER_NORM = 0x5D05
         private const val REQ_HIRES_MODEL = 0x5D06
         private const val REQ_ADETAILER_MODEL = 0x5D07
@@ -245,6 +244,8 @@ class DrawPage(
         /** SharedPreferences 文件名与键（只存 UI 偏好） */
         private const val PREFS_NAME = "ponko"
         private const val KEY_USE_LORA = "useLora"
+        private const val KEY_RESADAPTER_NORM_URI = "drawResAdapterNormUri"
+        private const val KEY_RESADAPTER_NORM_NAME = "drawResAdapterNormName"
         private const val MAX_LORA_SLOTS = 4
         private const val LORA_SLOT_NONE = "— none —"
 
@@ -383,14 +384,10 @@ class DrawPage(
     private lateinit var statusText: TextView
     private lateinit var quantText: TextView
     private lateinit var quantizeUnetButton: Button
-    private lateinit var resAdapterLoraStatus: TextView
     private lateinit var resAdapterNormStatus: TextView
-    private lateinit var resAdapterLoraPickButton: Button
     private lateinit var resAdapterNormPickButton: Button
     private lateinit var resAdapterApplyButton: Button
     private lateinit var fuseLoraButton: Button
-    private var resAdapterLoraUri: Uri? = null
-    private var resAdapterLoraName: String? = null
     private var resAdapterNormUri: Uri? = null
     private var resAdapterNormName: String? = null
     private lateinit var modelCardTitle: TextView
@@ -604,22 +601,10 @@ class DrawPage(
         modelCard.addView(quantizeUnetButton, matchWrap(top = 8))
         modelCard.addView(title(c.getString(R.string.draw_resadapter_section_title)), matchWrap(top = 10))
         modelCard.addView(body(c.getString(R.string.draw_resadapter_intro)), matchWrap(top = 2))
-        resAdapterLoraStatus = body(c.getString(R.string.draw_resadapter_lora_missing))
-        resAdapterLoraPickButton = Button(c).apply {
-            text = c.getString(R.string.draw_resadapter_pick_lora_button)
-            setOnClickListener { pickResAdapterFile(REQ_RESADAPTER_LORA, R.string.draw_resadapter_pick_lora) }
-        }
-        val resAdapterLoraRow = LinearLayout(c).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(resAdapterLoraStatus, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(resAdapterLoraPickButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
-        modelCard.addView(resAdapterLoraRow, matchWrap(top = 4))
         resAdapterNormStatus = body(c.getString(R.string.draw_resadapter_norm_missing))
         resAdapterNormPickButton = Button(c).apply {
             text = c.getString(R.string.draw_resadapter_pick_norm_button)
-            setOnClickListener { pickResAdapterFile(REQ_RESADAPTER_NORM, R.string.draw_resadapter_pick_norm) }
+            setOnClickListener { pickResAdapterFile(R.string.draw_resadapter_pick_norm) }
         }
         val resAdapterNormRow = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -634,6 +619,8 @@ class DrawPage(
             setOnClickListener { showResAdapterApplyDialog() }
         }
         modelCard.addView(resAdapterApplyButton, matchWrap(top = 4))
+        resAdapterNormUri = prefs().getString(KEY_RESADAPTER_NORM_URI, null)?.let(Uri::parse)
+        resAdapterNormName = prefs().getString(KEY_RESADAPTER_NORM_NAME, null)
         updateResAdapterFileUi()
         fuseLoraButton = Button(c).apply {
             text = c.getString(R.string.draw_lora_fusion_button)
@@ -3270,17 +3257,14 @@ class DrawPage(
         return true
     }
 
-    // ================= ResAdapter (LoRA + normalization weights) =================
+    // ================= ResAdapter normalization weights =================
 
     private fun updateResAdapterFileUi() {
-        if (!::resAdapterLoraStatus.isInitialized) return
-        resAdapterLoraStatus.text = resAdapterLoraName?.let {
-            c.getString(R.string.draw_resadapter_lora_selected, it)
-        } ?: c.getString(R.string.draw_resadapter_lora_missing)
+        if (!::resAdapterNormStatus.isInitialized) return
         resAdapterNormStatus.text = resAdapterNormName?.let {
             c.getString(R.string.draw_resadapter_norm_selected, it)
         } ?: c.getString(R.string.draw_resadapter_norm_missing)
-        resAdapterApplyButton.isEnabled = resAdapterLoraUri != null && resAdapterNormUri != null
+        resAdapterApplyButton.isEnabled = resAdapterNormUri != null
     }
 
     private fun showResAdapterApplyDialog() {
@@ -3303,12 +3287,10 @@ class DrawPage(
             toast(c.getString(R.string.draw_resadapter_supported_models))
             return
         }
-        val loraUri = resAdapterLoraUri
         val normUri = resAdapterNormUri
-        val loraName = resAdapterLoraName
         val normName = resAdapterNormName
-        if (loraUri == null || normUri == null || loraName == null || normName == null) {
-            toast(c.getString(R.string.draw_resadapter_missing_files))
+        if (normUri == null || normName == null) {
+            toast(c.getString(R.string.draw_resadapter_missing_norm))
             return
         }
 
@@ -3323,12 +3305,11 @@ class DrawPage(
                     .setMessage(c.getString(
                         R.string.draw_resadapter_confirm,
                         set.name,
-                        loraName,
                         normName,
                         quantType.uppercase(),
                     ))
                     .setPositiveButton(c.getString(R.string.draw_resadapter_apply)) { _, _ ->
-                        runResAdapterApply(set, loraUri, loraName, normUri, normName, quantType)
+                        runResAdapterApply(set, normUri, normName, quantType)
                     }
                     .setNegativeButton(c.getString(R.string.s_066), null)
                     .show()
@@ -3337,13 +3318,13 @@ class DrawPage(
             .show()
     }
 
-    private fun pickResAdapterFile(requestCode: Int, titleRes: Int) {
+    private fun pickResAdapterFile(titleRes: Int) {
         val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(android.content.Intent.CATEGORY_OPENABLE)
             type = "*/*"
             putExtra(android.content.Intent.EXTRA_TITLE, c.getString(titleRes))
         }
-        act.startActivityForResult(intent, requestCode)
+        act.startActivityForResult(intent, REQ_RESADAPTER_NORM)
     }
 
     private fun copyContentUri(uri: Uri, destination: File) {
@@ -3361,7 +3342,7 @@ class DrawPage(
     }
 
     private fun handleResAdapterPickedFile(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
-        if (requestCode != REQ_RESADAPTER_LORA && requestCode != REQ_RESADAPTER_NORM) return false
+        if (requestCode != REQ_RESADAPTER_NORM) return false
         if (resultCode != Activity.RESULT_OK) return true
         val uri = data?.data
         if (uri == null) {
@@ -3370,24 +3351,24 @@ class DrawPage(
         }
         val fileName = queryDisplayName(uri).orEmpty()
         if (!fileName.endsWith(".safetensors", ignoreCase = true)) {
-            toast(c.getString(if (requestCode == REQ_RESADAPTER_LORA)
-                R.string.draw_resadapter_bad_lora else R.string.draw_resadapter_bad_norm))
+            toast(c.getString(R.string.draw_resadapter_bad_norm))
             return true
         }
-        if (requestCode == REQ_RESADAPTER_LORA) {
-            resAdapterLoraUri = uri
-            resAdapterLoraName = fileName
-        } else {
-            resAdapterNormUri = uri
-            resAdapterNormName = fileName
+        val readPermission = data.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+        if (readPermission != 0) {
+            runCatching { c.contentResolver.takePersistableUriPermission(uri, readPermission) }
         }
+        resAdapterNormUri = uri
+        resAdapterNormName = fileName
+        prefs().edit()
+            .putString(KEY_RESADAPTER_NORM_URI, uri.toString())
+            .putString(KEY_RESADAPTER_NORM_NAME, fileName)
+            .apply()
         updateResAdapterFileUi()
         return true
     }
     private fun runResAdapterApply(
         baseSet: ModelSet,
-        loraUri: Uri,
-        loraName: String,
         normUri: Uri,
         normName: String,
         quantType: String,
@@ -3425,19 +3406,16 @@ class DrawPage(
 
         scope.launch {
             val workDir = File(c.cacheDir, "resadapter-" + System.currentTimeMillis())
-            var installedLora: File? = null
             try {
-                val stagedLora = File(workDir, "resadapter_lora.safetensors")
                 val stagedNorm = File(workDir, "resadapter_normalization.safetensors")
                 val outputFile = File(outputDir, source.nameWithoutExtension + "-resadapter-" + quantType + ".gguf")
 
                 withContext(Dispatchers.IO) {
                     workDir.mkdirs()
-                    copyContentUri(loraUri, stagedLora)
                     copyContentUri(normUri, stagedNorm)
                 }
 
-                // Free model mappings before streaming the full SDXL checkpoint through the converter.
+                // Free model mappings before streaming the selected checkpoint through the converter.
                 unloadModel()
                 val ok = withContext(Dispatchers.IO) {
                     SdCppEngine.nativeApplyResAdapter(
@@ -3452,21 +3430,6 @@ class DrawPage(
                 if (!ok || !outputFile.isFile || outputFile.length() <= 0L) {
                     throw IllegalStateException(c.getString(R.string.draw_resadapter_failed_detail))
                 }
-
-                val finalLora = withContext(Dispatchers.IO) {
-                    val rawStem = File(loraName).nameWithoutExtension
-                        .replace(Regex("[^A-Za-z0-9._-]"), "_")
-                        .take(80).ifBlank { "resadapter" }
-                    var target = File(loraDir(), "$rawStem-resadapter.safetensors")
-                    var suffix = 2
-                    while (target.exists()) {
-                        target = File(loraDir(), "$rawStem-resadapter-$suffix.safetensors")
-                        suffix++
-                    }
-                    stagedLora.copyTo(target, overwrite = false)
-                    target
-                }
-                installedLora = finalLora
 
                 val nextFiles = LinkedHashMap<String, File>()
                 nextFiles["model"] = outputFile
@@ -3485,21 +3448,11 @@ class DrawPage(
                 }
 
                 selectSet(resultSet)
-                useLora = true
-                prefs().edit()
-                    .putString("selLora", finalLora.name)
-                    .putString(loraSlotKey("t2i", 0), finalLora.name)
-                    .putString(loraSlotKey("i2i", 0), finalLora.name)
-                    .putString(loraWeightKey("t2i", 0), "1.0")
-                    .putString(loraWeightKey("i2i", 0), "1.0")
-                    .apply()
-                refreshLoraSelectors()
                 refreshModelCard()
                 Toast.makeText(c, c.getString(R.string.draw_resadapter_success, quantType.uppercase()), Toast.LENGTH_LONG).show()
             } catch (e: Throwable) {
                 withContext(Dispatchers.IO) {
                     runCatching { outputDir.deleteRecursively() }
-                    installedLora?.let { runCatching { it.delete() } }
                 }
                 Toast.makeText(
                     c,
