@@ -2286,9 +2286,9 @@
 +        return fail("could not read the base checkpoint metadata");
 +    }
 +    const SDVersion version = base_loader.get_sd_version();
-+    if (!sd_version_is_sdxl(version)) {
-+        return fail("the base checkpoint was not identified as an SDXL UNet model");
-+    }
++    // Do not gate on the detected model family; validate actual tensor compatibility below.
++
++
 +    base_loader.convert_tensors_name();
 +    const auto& base_tensors = base_loader.get_tensor_storage_map();
 +
@@ -2308,7 +2308,7 @@
 +        const std::string target_name = convert_tensor_name(source_name, version);
 +        const auto target = base_tensors.find(target_name);
 +        if (target == base_tensors.end()) {
-+            return fail("normalization tensor has no matching SDXL UNet parameter: " +
++            return fail("normalization tensor has no matching base UNet parameter: " +
 +                        source_name + " -> " + target_name);
 +        }
 +        const TensorStorage& source_storage = entry.second;
@@ -2333,7 +2333,7 @@
 +    if (matched_count != parameter_count) {
 +        return fail("not all ResAdapter normalization tensors matched the base UNet");
 +    }
-+    LOG_INFO("ResAdapter SDXL normalization preflight passed: %zu weight/bias tensors matched by name and shape",
++    LOG_INFO("ResAdapter normalization preflight passed: %zu weight/bias tensors matched by name and shape",
 +             matched_count);
 +    return true;
 +}
